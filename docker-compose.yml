@@ -3,7 +3,8 @@
 # 用法：
 #   1) 按需修改下面的环境变量（至少确认上游地址与路径）
 #   2) docker compose up -d --build
-#   3) 浏览器打开 http://<服务器IP>:7864
+#   3) 浏览器打开 https://workbuddy-manager.061995.xyz
+#      （宿主机 Caddy 反代 + 自动签证书；容器端口仅监听本机回环）
 #      首次启动若未设 WB_ADMIN_PASSWORD，会随机生成密码并打印到容器日志：
 #      docker compose logs workbuddy-manager | grep -A2 密码
 #
@@ -58,14 +59,16 @@ services:
     # 这个 restart 策略是容器版「一键更新」能生效的前提：
     # 更新完成后容器内的进程会退出，靠它用新代码重新拉起。
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     environment:
       TZ: Asia/Shanghai
-      # 首启管理员密码；不设则随机生成并打印到日志（推荐首启后立即改）
-      # WB_ADMIN_PASSWORD: "改成你的强密码"
-      # 上游地址：若上游与本品在同一 compose 网络，用服务名；否则填宿主机地址
-      #   - 同网络（推荐）：http://workbuddy2api:7863
-      #   - 用宿主机 Docker 网关：http://host.docker.internal:7863
-      WB2API_BASE: http://host.docker.internal:7863
+      # 首启管理员密码：写在与本文件同目录的 .env（已被 .gitignore 忽略，密码不进仓库）；
+      # 留空或不设时由程序随机生成并打印到容器日志。
+      WB_ADMIN_PASSWORD: "${WB_ADMIN_PASSWORD:-}"
+      # 上游地址：本品与上游网关同在 caddy_caddy_net，直接用容器名访问
+      #   （上游端口已收紧为仅宿主机回环 127.0.0.1:7863，host.docker.internal 不再可达）
+      WB2API_BASE: http://workbuddy2api:7863
       # 可选：子路径部署前缀，必须与上面 build.args.BASE_PATH 完全一致（留空则都不填）。
       # 服务端用它补回响应里漏掉的站内地址，并在反代保留前缀时把前缀剥掉。
       # 详见 deploy/README.md 的「子路径部署」。
@@ -82,10 +85,15 @@ services:
       # 新账号默认绑定的命名线路（名字要在上游 config.json 的 proxies 里）
       WB_DEFAULT_ACCOUNT_PROXY: ${WB_DEFAULT_ACCOUNT_PROXY:-}
     ports:
-      # **只监听本机**：管理端必须藏在反向代理之后。
-      # 若确需直接从别的机器访问，改成 "7864:7864"，但请先确保有 HTTPS 与访问控制——
+      # **只监听本机**：管理端必须藏在反向代理之后，公网统一走宿主机 Caddy
+      # （workbuddy-manager.061995.xyz，DNS-01 自动签证书）。
       # 管理端持有全部账号凭据，直接暴露到公网是被打穿的常见原因。
       - "127.0.0.1:7864:7864"
+    networks:
+      - default
+      # 宿主机 Caddy 所在 compose 项目的网络（项目目录 /opt/caddy 时名为 caddy_caddy_net），
+      # Caddy 经容器名 workbuddy-manager:7864 回源；本品也经该网络用容器名访问上游网关。
+      - caddy_caddy_net
     volumes:
       # 数据库、日志、更新状态、上游版本固定标记都在这里。
       # 必须持久化，否则重建容器会丢失统计与审计记录。
@@ -131,7 +139,7 @@ services:
       # 若你的要求是最小权限，把下面这行注释掉即可：此时依赖 docker 的功能会
       # 自动降级为「请到宿主机执行 docker compose ...」，界面如实提示，不会
       # 静默失败。
-      - /var/run/docker.sock:/var/run/docker.sock
+      # - /var/run/docker.sock:/var/run/docker.sock  # [安全巡检] 已移除挂载：避免容器被攻破即取得宿主 root
 
     # 挂上 socket 只是必要条件 —— 还得**进得了那个组**。
     # 宿主的 socket 通常归 root:docker（GID 998/999），而本容器以 uid 10001 运行，
@@ -139,11 +147,14 @@ services:
     #   DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)   # 写进 .env
     # 默认 999 是 Debian/Ubuntu 上最常见的值；取错了不会静默失败 —— 更新上游时会
     # 给出取真实 GID 的提示。不需要容器内操作 docker 的话，连上面那行一起注释掉即可。
-    group_add:
-      - "${DOCKER_GID:-999}"
+    # group_add 与上面被注释的 docker.sock 是一对：不挂 socket 时无需进 docker 组，
+    # 故一并停用（保持最小权限）。将来若恢复 docker.sock，再取消注释下面两行。
+    # group_add:
+    #   - "${DOCKER_GID:-999}"
 
     extra_hosts:
-      # 让容器能通过 host.docker.internal 访问宿主机上的上游
+      # 保留项：某些排障场景可能需要从容器访问宿主机回环（已随上游端口收紧失效，
+      # 正常链路不再依赖它——上游经 caddy_caddy_net 以容器名访问）。
       - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7864/api/healthz"]
@@ -151,3 +162,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+networks:
+  caddy_caddy_net:
+    external: true
