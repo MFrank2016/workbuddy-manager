@@ -31,6 +31,9 @@ config.json
 next-env.d.ts
 *.tsbuildinfo
 
+# 编码代理（oh-my-opencode）的运行时状态
+.omo/
+
 # 调试用临时截图
 .*.png
 # 多语言验收脚本的输出
