@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import http.client
 import os
@@ -176,27 +177,22 @@ UPSTREAM_REF_FILE = Path(os.environ.get('WB_UPSTREAM_REF_FILE') or DATA_DIR / 'u
 
 STEP_TIMEOUT = int(os.environ.get('WB_UPDATE_STEP_TIMEOUT') or 900)
 
-# ── 发布包签名校验 ───────────────────────────────────────
-# 为什么必须有：一键更新会把 Release 产物以 **root** 直接落盘并重启服务。
-# 而「能发 Release」的门槛比想象中低——能合并 PR 的协作者、或被钓鱼的维护者
-# 账号都能发版。于是「合并恶意 PR → 发版 → 用户点更新」是一条完整链路，
-# 一次得手就是**所有部署同时沦陷**（SolarWinds / event-stream 的形态）。
+# 离线升级包（面板「上传更新包」用；issue #153）：指向本机的一份发布包 tar.gz。
+# 走这条路时**不查 GitHub**：版本号从包里的 .version 读；完整性核对复用
+# verify_download（用户在面板里填了发布页 sha256 的话，这里就一并核对）。
+OFFLINE_PACKAGE = (os.environ.get('WB_UPDATE_PACKAGE') or '').strip()
+OFFLINE_PACKAGE_SHA256 = (os.environ.get('WB_UPDATE_PACKAGE_SHA256') or '').strip().lower()
+
+# ── 发布包完整性校验 ─────────────────────────────────────
+# 更新器从项目的 GitHub Release 拉包（HTTPS），并核对**发布页给的 sha256 摘要**
+# 与文件大小 —— 也就是绝大多数开源项目让用户做的那个手工校验，这里自动做了。
+# 能挡住的是「下载被截断 / 传输途中被替换」，这也是实测里真会发生的两类问题
+# （CDN 与代理链路会截断，截断的 tar.gz 往往解压到一半才报错、报错位置还看不出原因）。
 #
-# 签名把「能改代码」与「能发布可信产物」变成两件事：私钥离线保管、不进仓库
-# 也不进 CI（进了 CI 的话，恶意 PR 可以改 workflow 把密钥偷走，签名就白做了）。
-# 攻击者即使拿到合并权限发了版，**签不出名，所有用户的更新会中止**。
-#
-# 用 OpenSSH 自带的 ssh-keygen（8.0+，服务器上必有），不引入新依赖。
-# 公钥**内嵌在代码里**而不是读文件：文件可能被一并替换，那信任锚就没了。
-# 对应私钥 ~/.ssh/workbuddy-release 仅存在于维护者本机（绝不进仓库、不进 CI）。
-RELEASE_PUBKEY = os.environ.get('WB_RELEASE_PUBKEY') or (
-    'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHEGhxZQjEEK/RbtgcRLuuWji0fVB4E2dVKMnhtLlCkx '
-    'workbuddy release signing'
-)
-# 签名者身份（allowed_signers 的第一列），仅作标识，不参与信任判断
-RELEASE_SIGNER_ID = os.environ.get('WB_RELEASE_SIGNER') or 'release'
-# 置 1 可跳过验签，供更换密钥等紧急情况使用；会在日志里显式告警
-SKIP_SIGNATURE = os.environ.get('WB_SKIP_SIGNATURE') == '1'
+# 历史上这里还有一层「维护者离线私钥签名」（OpenSSH 签名 + 代码内嵌公钥），
+# 2026-10-14 起取消：它换来的是「GitHub 账号被拿下也拦得住」，代价是每次发版
+# 维护者都得在带私钥的机器上手工签一遍 —— 权衡后按主流做法只保留摘要校验。
+# 取舍与边界见 docs/release-signing.md。
 
 
 # ── 状态写入 ─────────────────────────────────────────────
@@ -245,14 +241,14 @@ class Reporter:
         self.state['target_version'] = str(tag or '').strip().lstrip('vV')
         self.flush()
 
-    def set_signature(self, status: str, detail: str = '') -> None:
-        """记录签名校验结果，供界面显示「已验签 / 未验签」。
+    def set_integrity(self, status: str, digest: str = '') -> None:
+        """记录发布包完整性校验结果，供界面显示。
 
-        status: verified（验签通过）/ skipped（走了绕过开关）/ none（未执行）
-        界面据此给出安心的绿色标记或醒目告警 —— 这是「本次更新是否经过
-        完整性验证」唯一的用户可见信号，不能只留在日志里。
+        status: digest（sha256 与发布页一致）/ none（回退路径拿不到发布页摘要，
+        只打印了本地摘要供人工比对）。界面据此给一行说明 —— 「这次装的东西
+        有没有被核对过」不该只留在日志里。
         """
-        self.state['signature'] = {'status': status, 'detail': detail}
+        self.state['integrity'] = {'status': status, 'digest': digest}
         self.flush()
 
     def flush(self) -> None:
@@ -371,129 +367,56 @@ def download(url: str, dest: Path, rep: Reporter) -> None:
         raise RuntimeError('下载内容异常偏小，可能是错误页面')
 
 
-def check_signature(archive: Path, sig_path: Path, rep: Reporter) -> None:
-    """用内置公钥校验 `archive` 的签名文件 `sig_path`；不通过即抛错。
+def _sha256_of(path: Path) -> str:
+    """分块算 sha256（发布包十几 MB，分块读更省内存，也便于以后复用）。"""
+    digest = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-    拆成独立函数是刻意的：「验签」是这条信任链的核心，必须是一个**只依赖
-    两个文件 + 内置公钥**的纯函数，便于测试直接调用（不必去 mock 网络层——
-    曾经因为 mock 标准库导致测试之间互相污染，那种脆弱性本身也是风险）。
+
+def verify_download(archive: Path, info: dict, rep: Reporter) -> None:
+    """核对下载到的发布包：文件大小 + sha256 摘要（发布页/API 给的），不符即中止。
+
+    为什么保留这两项（而不是「下载完直接装」）：
+
+      · **大小** —— 实测里最常出的事故是**下载被截断**（CDN / 代理 / TUN 链路），
+        截断的 tar.gz 往往解压到一半才报错，报错位置与真实原因毫无关系；
+      · **摘要** —— 防的是「传输途中被换掉」，而且它就是发布页上给用户的同一个
+        哈希：想人工复核的人拿它就能对得上。
+
+    摘要在 API 路径能拿到（GitHub Releases API 给每个资产带 `digest`）；回退路径
+    （只有 302 重定向）拿不到，那时打印本地 sha256 供人工比对，并**如实记成
+    未比对** —— 不假装校验过。
     """
-    if SKIP_SIGNATURE:
-        rep.log('⚠️ 已通过 WB_SKIP_SIGNATURE 跳过签名校验——'
-                '只有在更换签名密钥等紧急情况下才应这样做，本次更新未经验证', 'warn')
-        rep.set_signature('skipped', '已手动跳过（WB_SKIP_SIGNATURE=1）')
+    size = archive.stat().st_size
+    expected_size = info.get('pkg_size')
+    if isinstance(expected_size, int) and expected_size > 0 and size != expected_size:
+        raise RuntimeError(
+            f'发布包大小不符，已拒绝安装：下载到 {size} 字节，发布页是 {expected_size} 字节。\n'
+            '  通常是下载被中断（网络或代理不稳）—— 再点一次更新即可。'
+        )
+
+    digest = _sha256_of(archive)
+    expected = str(info.get('pkg_digest') or '')
+    if expected.startswith('sha256:'):
+        want = expected.split(':', 1)[1].strip().lower()
+        if digest != want:
+            raise RuntimeError(
+                '❌ 发布包 sha256 与发布页不一致，已拒绝安装。\n'
+                f'  发布页：{want}\n'
+                f'  下载到：{digest}\n'
+                '  多为下载不完整（重试一次）；若始终不一致，'
+                '请到项目 Releases 页面自行核对后再决定是否手动安装。'
+            )
+        rep.log(f'✓ 发布包校验通过（sha256 {digest}，与发布页一致）')
+        rep.set_integrity('digest', digest)
         return
 
-    if 'AAAA_REPLACE_ME' in RELEASE_PUBKEY:
-        raise RuntimeError(
-            '发布包签名公钥未配置（仍是占位值），已拒绝自动更新。\n'
-            '  这是故意的：没有可信公钥时，任何"从 GitHub 下载的包"都可能是'
-            '被篡改的产物。\n'
-            '  请把维护者提供的公钥写入 deploy/update.py 的 RELEASE_PUBKEY，'
-            '或设 WB_RELEASE_PUBKEY 环境变量；'
-            '确需临时跳过可设 WB_SKIP_SIGNATURE=1（不推荐）。'
-        )
-
-    if not sig_path.is_file():
-        raise RuntimeError(
-            '该 Release 尚未附带签名文件，已拒绝安装。\n'
-            '  新版本发布后需要维护者在自己的机器上签名再上传（一般几分钟到几十分钟）；'
-            '稍后重试即可，不需要改任何配置。'
-        )
-
-    # ssh-keygen 要求 allowed_signers 格式（纯 .pub 文件不接受）
-    signers = archive.parent / 'allowed_signers'
-    signers.write_text(f'{RELEASE_SIGNER_ID} {RELEASE_PUBKEY.strip()}\n', encoding='utf-8')
-
-    rep.log('校验发布包签名…')
-    cmd = ['ssh-keygen', '-Y', 'verify',
-           '-f', str(signers),
-           '-I', RELEASE_SIGNER_ID,
-           '-n', 'file',
-           '-s', str(sig_path)]
-    try:
-        with open(archive, 'rb') as fh:
-            proc = subprocess.run(cmd, stdin=fh, capture_output=True, timeout=60)
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            '系统缺少 ssh-keygen，无法校验发布包签名（OpenSSH 8.0+ 自带）。'
-            '请安装 openssh-client 后重试。'
-        ) from exc
-    out = ((proc.stdout or b'') + (proc.stderr or b'')).decode('utf-8', errors='replace').strip()
-    if proc.returncode != 0 or 'Good' not in out:
-        # 区分「验签不通过」与「工具太老不会验」：两者都拒绝（fail-closed），
-        # 但成因不同——旧版 ssh-keygen 会把用法错误也报成失败，若不点明，
-        # 使用者会以为包被篡改，白白排查半天。
-        if 'invalid option' in out.lower() or 'unknown option' in out.lower():
-            raise RuntimeError(
-                '❌ 系统 ssh-keygen 过旧，不支持 -Y 验签（需要 OpenSSH 8.0+）。\n'
-                f'  ssh-keygen: {out[:300]}\n'
-                '  请升级 openssh-client（Debian/Ubuntu：apt install --only-upgrade openssh-client）。'
-            )
-        raise RuntimeError(
-            '❌ 发布包签名校验失败，已拒绝安装（可能是发布流程被篡改或产物被替换）。\n'
-            f'  ssh-keygen: {out[:300]}\n'
-            '  如果你的部署确实需要跳过，可临时设 WB_SKIP_SIGNATURE=1，'
-            '但那等于放弃这道防线，请先确认包来源。'
-        )
-    rep.log(f'✓ 签名校验通过（{out[:80]}）')
-    rep.set_signature('verified', out[:120])
-
-
-def download_signature(sig_url: str, archive: Path, rep: Reporter) -> Path:
-    """下载签名文件到包旁边，返回其路径。失败时抛错（不返回"空签名"）。
-
-    两种失败要分开说（用户报过 #127/#129）：把**网络超时**说成「该 Release 没有
-    可用的签名文件」，会把人引到「发布流程是不是被改坏了」上去，而真正该做的是
-    稍后重试。所以：
-
-      · 404 → Release 里确实没有 `.sig`（维护者签名前的窗口期就是这种）→ 明说
-        「尚未附带签名文件，稍后重试」，不要暗示发布流程被改动；
-      · 其它（超时/连接失败）→ 明说「下载失败（网络问题）」并**重试三次**——
-        GitHub 资产 CDN 偶发超时很常见（维护者本机也遇到过整包下到一半卡住）。
-    """
-    sig_path = archive.with_suffix(archive.suffix + '.sig')
-    if not sig_url:
-        return sig_path  # 让 check_signature 报「缺少签名文件」并给出清晰指引
-    rep.log('下载签名文件…')
-    last: Exception | None = None
-    for attempt in range(1, 4):
-        try:
-            req = urllib.request.Request(sig_url,
-                                         headers={'User-Agent': 'workbuddy-manager-updater'})
-            with _opener().open(req, timeout=60) as resp, open(sig_path, 'wb') as fh:
-                shutil.copyfileobj(resp, fh)
-            return sig_path
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                sig_path.unlink(missing_ok=True)
-                raise RuntimeError(
-                    '该 Release 尚未附带签名文件，已拒绝安装。\n'
-                    '  新版本发布后需要维护者在自己的机器上签名再上传（一般几分钟到几十分钟）；'
-                    '稍后重试即可，不需要改任何配置。'
-                ) from exc
-            last = exc
-        except Exception as exc:  # noqa: BLE001
-            last = exc
-        sig_path.unlink(missing_ok=True)      # 半截文件不能留给后面的验签
-        if attempt < 3:
-            rep.log(f'签名文件下载失败（{last}），第 {attempt}/3 次，稍后重试…', 'warn')
-            time.sleep(3 * attempt)
-    raise RuntimeError(
-        f'下载签名文件失败（网络问题，不是发布流程的问题）：{last}\n'
-        '  已重试 3 次。稍后再试；若一直失败，请检查这台服务器到 GitHub 的网络或代理设置。'
-    ) from last
-
-
-def verify_release_signature(archive: Path, sig_url: str, rep: Reporter) -> None:
-    """校验发布包的签名；不通过就抛错中止（绝不继续安装）。
-
-    这是「包本身可信吗」的唯一防线——路径校验（_safe_extract）只能保证
-    「包里的路径不逃逸」，防不了「包整体就是恶意的」。两者缺一不可。
-    签名覆盖整个 tar.gz，因此包内容被改一个字节都会验签失败。
-    """
-    sig_path = download_signature(sig_url, archive, rep)
-    check_signature(archive, sig_path, rep)
+    rep.log(f'发布包 sha256：{digest}')
+    rep.log('本次未比对发布页摘要（当前走的是回退路径），只校验了下载是否完整', 'warn')
+    rep.set_integrity('none', digest)
 
 
 # ── 上游更新 ─────────────────────────────────────────────
@@ -567,7 +490,8 @@ def _sync_bundled_upstream(src: Path, rep: Reporter) -> int:
 
     上游仓库的公开地址已不可用，源码随面板的 Release 包分发（包内 `upstream/`）。
     在这里同步而不是在 `update_upstream` 里另下载一份，是因为**包是验过签的**：
-    上游代码由此也落在签名信任链里；而 `update_upstream` 的 git 拉取没有这层保证。
+    上游代码由此与面板走同一条下载与校验路径；而 `update_upstream` 的 git 拉取
+    没有这层保证（也正因为上游仓库已不可访问，包里这份才是可靠来源）。
 
     三条克制：
       · 只处理**非 git** 的上游目录 —— git 部署有自己的通道（拉远端），那份源码
@@ -859,8 +783,8 @@ def _clear_version_cache(rep: Reporter) -> None:
         pass
 
 
-# 安全关键文件：它们承载验签逻辑与信任锚，改了必须人工审查
-_TRUST_ANCHOR_FILES = ('update.py', 'release-signing-key.pub')
+# 安全关键文件：更新逻辑本身，改了值得人工看一眼
+_REVIEW_FILES = ('update.py',)
 
 
 def _explain_deploy_risk(rep: Reporter, modified: list[str], added: list[str],
@@ -872,9 +796,10 @@ def _explain_deploy_risk(rep: Reporter, modified: list[str], added: list[str],
     处理方式完全不同：
 
       1. 只新增了工具脚本（如 check-upstream.sh）→ **无需任何操作**
-      2. 修改了非信任锚文件（如 systemd 单元）→ 看一眼即可，想要新功能就覆盖
-      3. 修改了信任锚（update.py / 公钥）→ **必须人工比对**，确认是官方改动
-         而非被替换，再覆盖；这是整条供应链防护的最后一关
+      2. 修改了普通脚本 / systemd 单元 → 看一眼即可，想要新功能就覆盖
+      3. 修改了 update.py（更新器自己）→ 建议比对一眼：它决定「装进来的东西
+         装到哪、怎么重启」。这类改动本来就该由维护者看懂，出问题也是更新器
+         这类文件最先暴露
 
     ## 还要说清「不同步的代价」（issue #55）
 
@@ -884,15 +809,14 @@ def _explain_deploy_risk(rep: Reporter, modified: list[str], added: list[str],
     更新器。所以这里必须给出**代价**与**一条可执行的命令**，而不是只留下
     「需人工确认」四个字。
     """
-    anchors = [f for f in modified if Path(f).name in _TRUST_ANCHOR_FILES]
-    others = [f for f in modified if Path(f).name not in _TRUST_ANCHOR_FILES]
+    anchors = [f for f in modified if Path(f).name in _REVIEW_FILES]
+    others = [f for f in modified if Path(f).name not in _REVIEW_FILES]
 
     if anchors:
-        rep.log('   ⚠️ 其中包含**验签相关文件**：' + '、'.join(anchors), 'warn')
-        rep.log('      这类文件决定「更新包是否可信」，改动必须人工确认后才覆盖，'
-                '否则供应链防护可能被绕过。', 'warn')
+        rep.log('   ⚠️ 其中包含更新器自身：' + '、'.join(anchors), 'warn')
+        rep.log('      它决定「文件装到哪、服务怎么重启」，建议比对一眼再覆盖。', 'warn')
     elif others:
-        rep.log('   这些是普通脚本/配置（不含验签逻辑），看过差异后按需覆盖即可。')
+        rep.log('   这些是普通脚本/配置（不含更新逻辑），看过差异后按需覆盖即可。')
     elif added:
         rep.log('   仅新增文件、未改动现有内容 —— 不影响本次更新，可以不处理。')
 
@@ -915,8 +839,9 @@ def _explain_deploy_risk(rep: Reporter, modified: list[str], added: list[str],
 def _deploy_sync_enabled() -> bool:
     """更新管理端时，`deploy/` 是否随包更新。**默认更新**，`WB_SYNC_DEPLOY=0` 关闭。
 
-    见 `update_manager` 里那段说明：包在解压前已验签，覆盖 deploy/ 与覆盖 server/
-    同一性质；而**不**更新的代价是更新器永远是旧的（它本身就在 deploy/ 里）。
+    见 `update_manager` 里那段说明：包在解压前已核对大小与 sha256 摘要，覆盖 deploy/
+    与覆盖 server/ 是同一性质（同一份下载来的内容）；而**不**更新的代价是更新器
+    永远是旧的（它本身就在 deploy/ 里）。
     """
     return os.environ.get('WB_SYNC_DEPLOY', '').strip() != '0'
 
@@ -925,9 +850,9 @@ def _sync_deploy(new_deploy: Path, install_dir: Path, backup: Path,
                  rep: Reporter) -> tuple[list[str], list[str]]:
     """把包内的 deploy/ 覆盖到安装目录（仅在与本地不同时动手），返回 (新增, 修改)。
 
-    调用前提：包**已经通过验签**（`verify_release_signature` 在解压之前执行）。
-    因此这里的覆盖与替换 server/ 是同一性质的 —— 都是维护者签过名的内容，
-    不会降级信任链。仍然先备份，便于回退。
+    调用前提：包**已经通过大小与 sha256 校验**（`verify_download` 在解压之前执行）。
+    因此这里的覆盖与替换 server/ 是同一性质的 —— 都是同一份下载来的内容。
+    仍然先备份，便于回退。
 
     抽成独立函数是为了可测：它决定「更新器自己能不能被更新」，而这段逻辑
     过去只存在于 `update_manager` 内联代码里，改错了没有测试会红。
@@ -1233,13 +1158,14 @@ def fetch_release_via_api() -> dict:
     pkg = next((a for a in assets if str(a.get('name', '')).endswith('.tar.gz')), None)
     if not pkg:
         raise RuntimeError('该 Release 未提供 .tar.gz 产物')
-    sig = next((a for a in assets
-                if str(a.get('name', '')).endswith('.tar.gz.sig')), None)
     return {
         'tag': rel.get('tag_name') or '',
         'pkg_url': pkg['browser_download_url'],
         'pkg_name': Path(str(pkg.get('name') or 'pkg.tar.gz')).name,
-        'sig_url': str(sig.get('browser_download_url') or '') if sig else '',
+        # 下载后据此核对（见 verify_download）：GitHub 给每个资产带 size 与
+        # sha256 摘要（形如 `sha256:…`，老响应里可能没有 → 那时只能比对大小）。
+        'pkg_size': pkg.get('size'),
+        'pkg_digest': pkg.get('digest'),
     }
 
 
@@ -1276,11 +1202,14 @@ def fetch_release_via_redirect(latest_url: str | None = None,
 
     base = f'https://github.com/{repo}/releases/download/{tag}'
     pkg_name = f'workbuddy-manager-{tag}.tar.gz'
+    # 这条路径拿不到资产的 sha256（只有重定向里的 tag），下载后只校验完整性、
+    # 并把本地摘要打进日志供人工比对 —— 见 verify_download。
     return {
         'tag': tag,
         'pkg_url': f'{base}/{pkg_name}',
         'pkg_name': pkg_name,
-        'sig_url': f'{base}/{pkg_name}.sig',
+        'pkg_size': None,
+        'pkg_digest': '',
     }
 
 
@@ -1354,14 +1283,69 @@ _release_cache: tuple[Path, dict] | None = None
 _release_tmp: tempfile.TemporaryDirectory | None = None
 
 
+def read_package_version(archive: Path) -> str:
+    """从发布包里读出 `.version`（只解那一个成员，不展开整包）。
+
+    两条路径都用到它：离线升级包要靠它拿版本号（不查 GitHub），面板上传时也用
+    它回显「包内版本」。读 64 字节足够（里面就是 `v1.0.86` 这种短串）。
+    """
+    try:
+        with tarfile.open(archive, 'r:gz') as tf:
+            for member in tf:
+                name = member.name.replace('\\', '/')
+                if name.count('/') == 1 and name.endswith('/.version'):
+                    fh = tf.extractfile(member)
+                    return fh.read(64).decode('utf-8', 'replace').strip() if fh else ''
+    except (OSError, tarfile.TarError) as exc:
+        raise RuntimeError(
+            f'升级包读不了（{exc}）—— 确认它是发布页面下载的 .tar.gz，且下载完整') from exc
+    return ''
+
+
+def offline_package_info(rep: Reporter) -> dict:
+    """离线升级包的元信息（不联网）。
+
+    版本号取自包内 `.version` 而不是文件名：文件名谁都能改，而 `.version` 是
+    打包时写进去的（面板侧也按同一份读，两边口径一致）。
+    """
+    archive = Path(OFFLINE_PACKAGE)
+    if not archive.is_file():
+        raise RuntimeError(f'找不到离线升级包：{archive}')
+    size = archive.stat().st_size
+    if size < 100_000:
+        raise RuntimeError('离线升级包过小，不像是完整的发布包（下载可能中断了）')
+    version = read_package_version(archive)
+    if not version:
+        raise RuntimeError('离线升级包里没有 .version —— 不是本项目的发布包，已中止')
+    rep.log(f'使用离线升级包：{archive.name}（{size / 1024 / 1024:.1f} MB，包内版本 {version}）')
+    if not OFFLINE_PACKAGE_SHA256:
+        rep.log('未提供发布页 sha256：本次只校验包能不能解开、内容结构对不对，'
+                '包本身的可信度取决于你从哪拿到它', 'warn')
+    return {
+        'tag': version,
+        'pkg_url': '',
+        'pkg_name': archive.name,
+        'pkg_size': None,          # 没有独立的「期望大小」（文件就在本机）
+        'pkg_digest': f'sha256:{OFFLINE_PACKAGE_SHA256}' if OFFLINE_PACKAGE_SHA256 else '',
+        'local_package': str(archive),
+    }
+
+
 def _fetch_release_info(rep: Reporter) -> dict:
     """取最新 Release 的元信息（**不下载**）。同一进程内只查一次。
 
     API 优先（认证后 5000 次/小时；未认证仅 60 次/小时/IP，共享出口极易被同出口
     用户打满而 403）；失败时回退到 releases/latest 的 302 重定向（不走 API、无配额）。
+
+    指定了离线升级包（`WB_UPDATE_PACKAGE`）时不联网：内网机器上这条路本来就是
+    为了「完全拿不到 GitHub」才存在的。
     """
     global _release_info_cache
     if _release_info_cache is not None:
+        return _release_info_cache
+
+    if OFFLINE_PACKAGE:
+        _release_info_cache = offline_package_info(rep)
         return _release_info_cache
 
     info: dict | None = None
@@ -1383,9 +1367,9 @@ def _fetch_release_info(rep: Reporter) -> dict:
 
 
 def _release_root(rep: Reporter, info: dict | None = None) -> tuple[Path, dict]:
-    """下载 + 验签 + 解压最新发布包，返回 `(顶层目录, info)`。进程内只做一次。
+    """下载 + 校验 + 解压最新发布包，返回 `(顶层目录, info)`。进程内只做一次。
 
-    验签必须在下解压之前：先确认「这个包是你签的」，再谈包里的内容。
+    校验必须在下解压之前：先确认「这个包下全了、没被换过」，再谈包里的内容。
     解压目录的生命周期到本次更新结束（`main()` 的 finally 回收）—— 因为
     `update_upstream` 与 `update_manager` 要共用这一份。
     """
@@ -1401,8 +1385,15 @@ def _release_root(rep: Reporter, info: dict | None = None) -> tuple[Path, dict]:
     _release_tmp = tempfile.TemporaryDirectory(prefix='wbm-update-')
     tmp = Path(_release_tmp.name)
     archive = tmp / info['pkg_name']
-    download(info['pkg_url'], archive, rep)
-    verify_release_signature(archive, info['sig_url'], rep)
+    local = str(info.get('local_package') or '')
+    if local:
+        # 离线升级包：文件就在本机，复制一份到临时目录只是让后续步骤共用同一条
+        # 路径（解压、清理都在 tmp 里，不动用户上传的那份原件）。
+        shutil.copyfile(local, archive)
+        rep.log('离线升级包已就位（跳过下载）')
+    else:
+        download(info['pkg_url'], archive, rep)
+    verify_download(archive, info, rep)
 
     rep.log('解压…')
     with tarfile.open(archive, 'r:gz') as tf:
@@ -1435,19 +1426,22 @@ def update_manager(rep: Reporter) -> None:
     #    _fetch_release_info；上游那条路径也走它，所以回退只修一处。
     info = _fetch_release_info(rep)
     tag = info['tag']
-    rep.log(f'最新版本：{tag or "(未知)"}')
+    rep.log(('升级包版本：' if info.get('local_package') else '最新版本：') + f'{tag or "(未知)"}')
     rep.set_target_version(tag)
 
     current = read_local_version()
-    if current and tag and current == tag.lstrip('v'):
+    if not info.get('local_package') and current and tag and current == tag.lstrip('v'):
         rep.log(f'当前已是最新版本（{tag}）')
         return
+    if info.get('local_package'):
+        # 离线包是用户**显式指定**的：即使版本号与当前相同也继续装（重装/修复
+        # 正是它最常见的用法之一），所以这里不套用上面的「已是最新就跳过」。
+        rep.log('离线升级包：按你指定的包安装，不比较版本新旧')
 
     pkg_name = info['pkg_name']
     pkg_url = info['pkg_url']
-    sig_url = info['sig_url']
 
-    # 2) 取包（下载 + 验签 + 解压）。与 update_upstream 共用同一次：
+    # 2) 取包（下载 + 校验大小/摘要 + 解压）。与 update_upstream 共用同一次：
     #    `--target both` 时只下一次、只解压一次（上游源码也在包里）。
     new_root, info = _release_root(rep, info)
 
@@ -1489,10 +1483,9 @@ def update_manager(rep: Reporter) -> None:
 
     # deploy/ 里的脚本**默认随包更新**（`WB_SYNC_DEPLOY=0` 可关掉）。
     #
-    # 为什么默认更新（issue #55）：发布包在**解压之前**就已经验签，所以包内的
-    # deploy/ 与 server/ 属于同一批「维护者签过名的内容」——覆盖它与覆盖
-    # server/ 是同一性质，不会降级信任链（验签用的是**本地**这一份的公钥，
-    # 只有验签通过之后才会走到这里）。
+    # 为什么默认更新（issue #55）：包在**解压之前**已经核对过大小与摘要，包内的
+    # deploy/ 与 server/ 属于同一份下载来的内容 —— 覆盖它与覆盖 server/ 是
+    # 同一性质。
     #
     # 反过来不更新的代价很实在：**更新器本身就在 deploy/ 里**。不换它意味着
     # 以后每次都还用旧逻辑，它修过的问题永远到不了用户机器上——#28 修过的
@@ -1502,7 +1495,7 @@ def update_manager(rep: Reporter) -> None:
     # systemd 单元、或另有分发流程）。
     #
     # 提示仍要**分清轻重**：早先无论什么差异都只说「已跳过同步」，于是
-    # 「新增了一个无害的检查脚本」与「验签逻辑被改」看起来一模一样，管理员
+    # 「新增了一个无害的检查脚本」与「更新器被改」看起来一模一样，管理员
     # 无从判断该紧张还是该忽略（实测：有用户为此专门来问）。现在逐文件标注
     # 新增/修改，并把安全关键文件单独点出来。
     new_deploy = new_root / 'deploy'

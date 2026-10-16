@@ -54,7 +54,7 @@ class _Rep:
     def set_target_version(self, tag: str) -> None:
         self.state['target_version'] = tag
 
-    def set_signature(self, status: str, detail: str = '') -> None:
+    def set_integrity(self, status: str, digest: str = '') -> None:
         self.state['signature'] = {'status': status, 'detail': detail}
 
     def finish(self, ok: bool) -> None:

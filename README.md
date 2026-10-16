@@ -86,7 +86,7 @@
 - **定时任务** —— 签到 / 旅行 / 活跃 / 保活四类开关与执行时刻
 - **多上游** —— 「设置 → 上游」配多个实例，各带地址与 `api_key`
 - **安全** —— 入站 IP 白 / 黑名单（CIDR）、审计日志、会话与令牌分离
-- **更新与备份** —— 一键更新（带签名校验）、PostgreSQL 异地备份
+- **更新与备份** —— 一键更新（核验发布包摘要）、PostgreSQL 异地备份
 - **五语种界面** —— 简体中文 / 繁体 / English / 日本語 / 한국어
 
 完整清单（每条带详解）见 [功能一览（完整版）](docs/features.md)。
@@ -117,15 +117,34 @@
 
 ## 快速开始
 
-部署需要一台能跑 Docker 的服务器（1 核 1G 起）。两种方式任选：
+服务器部署需要 Docker（1 核 1G 起）；Windows 桌面用户可直接用图形安装器。三种方式任选：
 
-**① Docker（自己起容器）**
+**① Windows 安装器（桌面图形化，无需 Docker / 命令行）**
+
+1. 从该版本 [Release](https://github.com/ithtelab/workbuddy-manager/releases) 下载
+   `WorkBuddyManagerSetup.exe`（发版时由 CI 在 Windows runner 上自动构建并附带，同目录还有
+   一个 `.sha256` 可核对）。v1.0.88 的安装器曾因卸载会误删文件被下线（见该版本 Release
+   说明），**v1.0.89 起已修复**：卸载只删程序自己的文件，安装目录也改成「选中目录 +
+   `WorkBuddyManager` 子目录」。
+2. 按向导选择安装目录 → 安装 → 完成时可勾选「立即启动」。
+3. 之后用桌面快捷方式打开控制台：点 **启动项目**，状态变「运行中」并自动打开管理面板；
+   随时可 **重启 / 关闭项目**、修改监听 IP 与端口（保存后重启生效）、点 **打开面板** 回到页面。
+4. 点 X 可选「最小化到托盘」或「退出程序」（可记住选择，托盘图标随时恢复）。
+
+> 默认成功构建的单文件安装包内置全部运行环境（Python 运行时、上游网关、前端页面），
+> 目标机器**无需安装任何依赖**，Windows 10 (1903+) / 11 双击即用。当前安装器没有
+> Authenticode 签名，SmartScreen 可能显示警告；请确认文件来自可信 Release 或自行构建。
+> 安装器自身不会自动升级，升级时重新获取新 exe 并覆盖安装即可；`.env`、账号和 `data`
+> 等个人数据会保留。卸载：**设置 → 应用** 或开始菜单「卸载 WorkBuddy Manager」，
+> 可选保留账号与配置。细节见 [Windows 启动器](windows/README.md#启动器安装版)。
+
+**② Docker（自己起容器）**
 
 ```bash
 docker run -d --name workbuddy-manager -p 7864:7864 -v /opt/workbuddy-manager/data:/app/data ghcr.io/ithtelab/workbuddy-manager:latest
 ```
 
-**② 服务器一键脚本（装依赖、拉包、配 systemd）**
+**③ 服务器一键脚本（装依赖、拉包、配 systemd）**
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/ithtelab/workbuddy-manager/main/deploy/install.sh)
@@ -182,7 +201,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ithtelab/workbuddy-manager/m
 - 密钥只在创建时显示一次，库里只存哈希；账号凭据不返回前端
 - 入站 IP 白 / 黑名单（支持 CIDR）、每把密钥的 IP 与模型白名单
 - 敏感操作全部留审计日志（谁、什么时候、做了什么）
-- 发布包带签名校验，一键更新验签通过才安装
+- 发布包校验：一键更新会核对发布页给的 sha256 与文件大小，不符即拒绝安装
 
 完整的威胁模型与加固建议见 [安全说明](docs/security-notes.md) 与
 [安全审计报告](docs/SECURITY-AUDIT.md)。

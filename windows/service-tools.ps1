@@ -16,7 +16,9 @@ param(
 # 项目根在上一级（server/、web/out、.env 所在处）；兄弟脚本用 $scriptDir 找
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root = Split-Path -Parent $scriptDir
-$python = Join-Path $root '.venv\Scripts\python.exe'
+# Python 解释器：预置运行时（.runtime\python）优先，uv 虚拟环境（.venv）兜底
+. (Join-Path $scriptDir 'python-env.ps1')
+$python = Get-WbPython -Root $root
 $outLog = Join-Path $root 'data\manager.out.log'
 $errLog = Join-Path $root 'data\manager.err.log'
 
@@ -63,10 +65,10 @@ function Start-Manager {
     }
 
     if (Get-ManagerProcess) { Write-Host "端口 $port 已被占用，服务似乎已在运行（用 status 确认）"; return }
-    if (-not (Test-Path $python)) {
+    if (-not $python) {
         # 只报一次就返回：原来 Write-Error 之后会继续往下跑，紧接着再抛一条
         # 「Start-Process: 系统找不到指定的文件」，用户看到的是两条错、猜不出哪条是真因。
-        Write-Error "未找到 $python，请先创建虚拟环境并安装依赖（在项目根双击 windows\start.cmd 会自动准备）"
+        Write-Error "未找到可用的 Python 环境（.runtime\python 或 .venv），请先运行 windows\prepare.ps1 完成准备"
         return
     }
     New-Item -ItemType Directory -Force (Join-Path $root 'data') | Out-Null

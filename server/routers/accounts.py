@@ -16,7 +16,8 @@ from fastapi.responses import StreamingResponse
 
 from .. import config, db, security, upstreamsvc
 from ..services import (
-    credits as creditsvc, modelcatalog, reload, tasklog, taskrun, tencent, wb2api,
+    credits as creditsvc, dailyplan, modelcatalog, reload, renew, tasklog, taskrun,
+    tencent, wb2api,
 )
 from ..services.realm import realm_of, supports_checkin
 
@@ -1613,6 +1614,69 @@ async def account_test(filename: str, upstream_id: int | None = Query(None),
     return {'ok': ok, 'message': message}
 
 
+async def _refresh_one_token(filename: str, base_dir: Path) -> dict:
+    """刷新单个账号的 accessToken 并原子写回（**不含上游重载**）。
+
+    单账号端点与「一键刷新令牌」批量端点共用这一份实现——协议本身、错误文案、
+    原子写回的口径只有一处，两个入口对同一个失败不会给出不同说法。
+
+    返回 `{'ok', 'message', 'nickname', 'uid', 'expires_at'}`；**不抛异常**：
+    批量刷新时一个账号失败不该中断整批。
+    """
+    try:
+        raw = _load(filename, base_dir)
+    except HTTPException as exc:
+        return {'ok': False, 'message': str(exc.detail), 'nickname': '',
+                'uid': '', 'expires_at': None}
+    acct = raw.get('account') or {}
+    auth = raw.get('auth') or {}
+    nickname = str(acct.get('nickname') or '')
+    uid = str(acct.get('uid') or '')
+    if not auth.get('accessToken'):
+        return {'ok': False, 'message': '该账号无有效 accessToken', 'nickname': nickname,
+                'uid': uid, 'expires_at': None}
+    if not str(auth.get('refreshToken') or '').strip():
+        return {'ok': False, 'message': '该账号没有 refreshToken —— 只能重新扫码或登录',
+                'nickname': nickname, 'uid': uid, 'expires_at': None}
+
+    ok, message, fields = await tencent.refresh_token({
+        'access_token': auth.get('accessToken', ''),
+        'refresh_token': auth.get('refreshToken', ''),
+        'uid': uid,
+        'enterprise_id': acct.get('enterpriseId', ''),
+        'domain': auth.get('domain', ''),
+        'realm': auth.get('realm'),
+        'device_token': str(raw.get('device_token') or ''),
+        # v1.0.78 起：刷新要带上该账号的线路（proxy），否则走默认出口，
+        # 与账号绑定的线路不一致可能被风控当成异常来源。
+        'proxy': str(raw.get('proxy') or ''),
+    })
+    if not ok:
+        return {'ok': False, 'message': message, 'nickname': nickname,
+                'uid': uid, 'expires_at': None}
+
+    try:
+        tencent.update_auth_tokens(filename, fields, base_dir)
+    except (ValueError, FileNotFoundError, OSError) as exc:
+        # 刷新成功但写不进去：如实说清。**不能报成功**——用户以为续期了，
+        # 而磁盘上还是旧 token，重启后又变回过期状态，比直接失败更难查。
+        return {'ok': False,
+                'message': f'{message}，但写入账号文件失败：{exc}（有效期未保存）',
+                'nickname': nickname, 'uid': uid, 'expires_at': None}
+    return {'ok': True, 'message': message, 'nickname': nickname,
+            'uid': uid, 'expires_at': fields.get('expires_at')}
+
+
+def _refresh_reload_tail(group: dict, reloaded: bool, reload_error: str) -> str:
+    """重载结果 → 追在成功文案后面的那句话（单账号 / 批量共用）。"""
+    if reloaded:
+        return '，上游已重载生效'
+    if group['is_default'] or str(group.get('container') or '').strip():
+        return f'；上游重载失败：{reload_error}，请在宿主机重启上游容器'
+    # 分组没登记容器名：不猜也不冒报错——上游的 auths 热加载会自己收录
+    return f'；{reload_error}；新凭证将由该分组的上游热加载（约 5 秒）自动收录'
+
+
 @router.post('/accounts/{filename}/refresh')
 async def account_refresh(filename: str, upstream_id: int | None = Query(None),
                           user: dict = Depends(security.require_admin)) -> dict:
@@ -1627,56 +1691,248 @@ async def account_refresh(filename: str, upstream_id: int | None = Query(None),
 
     流程：读账号 → 调腾讯刷新接口 → **原子写回**新 token（保留 device_token
     等未知字段）→ 触发一次上游重载让新凭证立刻生效（不重载的话上游要等
-    auths 热加载轮询，旧上游甚至要等重启）。
+    auths 热加载轮询，旧上游甚至要等重启）。批量版见 `refresh_all_tokens`。
     """
     group = _group(upstream_id)
     base_dir = _require_dir(group)
-    raw = _load(filename, base_dir)
-    auth = raw.get('auth') or {}
-    acct = raw.get('account') or {}
-    if not auth.get('accessToken'):
-        return {'ok': False, 'message': '该账号无有效 accessToken'}
-    if not str(auth.get('refreshToken') or '').strip():
-        return {'ok': False, 'message': '该账号没有 refreshToken —— 只能重新扫码或登录'}
-
-    ok, message, fields = await tencent.refresh_token({
-        'access_token': auth.get('accessToken', ''),
-        'refresh_token': auth.get('refreshToken', ''),
-        'uid': acct.get('uid', ''),
-        'enterprise_id': acct.get('enterpriseId', ''),
-        'domain': auth.get('domain', ''),
-        'realm': auth.get('realm'),
-        'device_token': str(raw.get('device_token') or ''),
-        'proxy': str(raw.get('proxy') or ''),
-    })
-    if not ok:
-        return {'ok': False, 'message': message}
-
-    try:
-        tencent.update_auth_tokens(filename, fields, base_dir)
-    except (ValueError, FileNotFoundError, OSError) as exc:
-        # 刷新成功但写不进去：如实说清。**不能报成功**——用户以为续期了，
-        # 而磁盘上还是旧 token，重启后又变回过期状态，比直接失败更难查。
-        return {'ok': False,
-                'message': f'{message}，但写入账号文件失败：{exc}（有效期未保存）'}
+    result = await _refresh_one_token(filename, base_dir)
+    if not result['ok']:
+        return {'ok': False, 'message': result['message']}
 
     # restart_now() 返回 (ok, message) 二元组，必须解包：直接当布尔用会因为
     # 非空元组恒为真，从而在重载失败时仍报「已重载生效」（且 reload_triggered
     # 会变成数组、与前端声明的 boolean 不符）。
     reloaded, reload_error = await reload.restart_now(upstream=_reload_target(group))
-    if reloaded:
-        tail = '，上游已重载生效'
-    elif group['is_default'] or str(group.get('container') or '').strip():
-        tail = f'；上游重载失败：{reload_error}，请在宿主机重启上游容器'
-    else:
-        # 分组没登记容器名：不猜也不冒报错——上游的 auths 热加载会自己收录
-        tail = f'；{reload_error}；新凭证将由该分组的上游热加载（约 5 秒）自动收录'
     return {
         'ok': True,
-        'message': message + tail,
+        'message': result['message'] + _refresh_reload_tail(group, reloaded, reload_error),
         'reload_triggered': reloaded,
-        'expires_at': fields.get('expires_at'),
+        'expires_at': result.get('expires_at'),
     }
+
+
+def _refresh_semaphore() -> asyncio.Semaphore:
+    """限制刷新并发数：太高容易触发腾讯风控，太低又会拖到前端超时。"""
+    return asyncio.Semaphore(config.REFRESH_CONCURRENCY)
+
+
+@router.post('/accounts/refresh-tokens')
+async def refresh_all_tokens(upstream_id: int | None = Query(None),
+                             user: dict = Depends(security.require_admin)) -> dict:
+    """一键刷新**所有**账号的 accessToken（issue #40 的批量版）。
+
+    单个账号的「刷新 Token」已经在真续期（见 `account_refresh`），但账号一多就得
+    逐个点。这里用同一份实现并发跑一遍，最后**只重载一次上游**——若照着单账号
+    端点每个号各重载一次，14 个号会把上游重启 14 遍，既慢又会打断在途请求。
+
+    并发上限见 `WB_REFRESH_CONCURRENCY`（默认 3，与签到同口径）：刷新要过腾讯的
+    风控接口，并发太高可能被当成异常来源。返回逐条结果，好让界面说清是「全部
+    续期成功」还是「哪几个 refreshToken 已失效、需要重新扫码」。
+    """
+    group = _group(upstream_id)
+    base_dir = _require_dir(group)
+    accounts = wb2api.list_auth_accounts(base_dir)
+    sem = _refresh_semaphore()
+
+    async def one(acc: dict) -> dict:
+        filename = acc['file']
+        async with sem:
+            r = await _refresh_one_token(filename, base_dir)
+        return {
+            'file': filename,
+            'nickname': r['nickname'] or str(acc.get('nickname') or ''),
+            'uid': r['uid'] or str(acc.get('uid') or ''),
+            'ok': r['ok'],
+            'message': r['message'],
+        }
+
+    results = await asyncio.gather(*(one(a) for a in accounts)) if accounts else []
+    succeeded = sum(1 for r in results if r['ok'])
+    failed = [f"{r['nickname'] or r['uid'][:12]}: {r['message']}"
+              for r in results if not r['ok']]
+
+    # 一个都没成功就不重载：重载既不续期，也治不了 refreshToken 失效。
+    reloaded, reload_error = False, ''
+    if succeeded > 0:
+        reloaded, reload_error = await reload.restart_now(upstream=_reload_target(group))
+
+    return {
+        'total': len(results),
+        'succeeded': succeeded,
+        'failed': failed,
+        'results': results,
+        'reload_triggered': reloaded,
+        'reload_error': '' if (not succeeded or reloaded) else reload_error,
+    }
+
+
+# ── 令牌刷新计划（计划任务：每 N 天全量刷一次）────────────────────
+#
+# 与上面「一键刷新」的区别：那个是**手动**点一次；这三个是把它做成**定时**任务。
+# 调度实现与配置存在 services/renew.py（进程内巡检，与自动续期同一套刷新逻辑），
+# 这里只做读写配置与「立即执行一次」。
+
+
+@router.get('/accounts/refresh-plan')
+def get_refresh_plan(user: dict = Depends(security.current_user)) -> dict:
+    """令牌刷新计划：开关 + 间隔天数 + 执行整点 + 上次/下次执行时刻。
+
+    只读，任何已登录用户可看（只读账号也能知道计划开着没）——改计划要管理员。
+    """
+    plan = renew.get_plan()
+    return {**plan, 'next_run': renew.plan_next_run(plan)}
+
+
+@router.put('/accounts/refresh-plan')
+def save_refresh_plan(body: dict,
+                      user: dict = Depends(security.require_admin)) -> dict:
+    """保存计划（校验失败 400）。改的是调度意图，限管理员。"""
+    try:
+        plan = renew.set_plan(body.get('enabled'), body.get('interval_days'),
+                              body.get('hour'))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    security.audit(user, 'update_refresh_plan', '',
+                   f"enabled={plan['enabled']} interval={plan['interval_days']}d "
+                   f"hour={plan['hour']}")
+    return {**plan, 'next_run': renew.plan_next_run(plan)}
+
+
+@router.post('/accounts/refresh-plan/run')
+async def run_refresh_plan_now(user: dict = Depends(security.require_admin)) -> dict:
+    """立即执行一次全量刷新（不等下一个整点），并把它算作本轮。
+
+    与上面「一键刷新令牌」的共同点：都真续期。区别：那个并发、末尾重载一次上游；
+    这里串行（与后台巡检同一套，防腾讯风控），**不重载上游**——写回的凭证由上游
+    的 auths 热加载自行收录。执行后重置计划计时，避免刚手动跑完到点又跑一次。
+    """
+    stats = await renew.refresh_all(force=True)
+    renew.mark_plan_ran()
+    plan = renew.get_plan()
+    return {**stats, 'last_run': plan['last_run'],
+            'next_run': renew.plan_next_run(plan)}
+
+
+# ── 每日任务计划（签到 / 领取补偿 / 领奖 / 做任务）──────────────
+# 与上面「令牌刷新计划」并列的第二类计划任务：到点自动跑管理端的几个「一键」
+# 动作。安全等级不同（full 会伪造活跃上报），所以有写风险的那个默认关闭、由用户
+# 显式开；领取补偿是幂等的「有则领」（见该任务的说明），默认开启。
+
+
+@router.post('/accounts/claim-compensation')
+async def claim_compensation_all(upstream_id: int | None = Query(None),
+                                 user: dict = Depends(security.require_admin)) -> dict:
+    """对所有账号领一次「活动补偿」（有则领，没有就跳过）。
+
+    **为什么管理端要自己再做一遍**：上游调度器的活跃上报里本来就会调同一个接口
+    （`ClaimCompensation`），但它挂在「活跃上报」这个开关下 —— 关掉活跃上报、或
+    上游版本较旧，就领不到了。而这类补偿是**有时限**的（公告写着截止日期），
+    漏了就真的没了，所以管理端自己也要有一条不依赖上游开关的路。
+
+    每号先查一次状态（`compensation-status`）再决定要不要领：状态里能看出「已经
+    领过」时直接跳过，省掉一次注定失败的写请求；状态接口认不出来（结构变了）时
+    照常尝试领取 —— 认不出不等于领过了。
+    """
+    base_dir = _require_dir(_group(upstream_id))
+    accounts = wb2api.list_auth_accounts(base_dir)
+    sem = _checkin_semaphore()
+
+    async def one(acc: dict) -> dict:
+        filename = acc['file']
+        uid = acc.get('uid', '')
+        nickname = acc.get('nickname', '')
+        try:
+            raw = wb2api.read_account_file(filename, base_dir)
+            auth = raw.get('auth') or {}
+            token = auth.get('accessToken', '')
+        except Exception as exc:  # noqa: BLE001
+            return {'nickname': nickname, 'status': 'failed', 'credit': 0,
+                    'message': f'读取失败: {exc}'}
+        if not token:
+            return {'nickname': nickname, 'status': 'failed', 'credit': 0,
+                    'message': '无有效 accessToken'}
+        # 传完整 auth dict：billing 域要带 X-User-Id 等身份头（与签到同口径）
+        self_auth = {
+            'access_token': token,
+            'uid': str((raw.get('account') or {}).get('uid') or uid),
+            'enterprise_id': str((raw.get('account') or {}).get('enterpriseId') or ''),
+            'domain': str(auth.get('domain') or ''),
+            'realm': auth.get('realm'),
+            'device_token': str(raw.get('device_token') or ''),
+            'proxy': str(raw.get('proxy') or ''),
+        }
+        realm = realm_of(auth)
+        async with sem:
+            ok, data, _msg = await tencent.compensation_status(self_auth, realm)
+            if ok and tencent.compensation_already_claimed(data):
+                return {'nickname': nickname, 'status': 'already', 'credit': 0,
+                        'message': '这个补偿已经领过了'}
+            status, credit, message = await tencent.claim_compensation(self_auth, realm)
+        return {'nickname': nickname, 'status': status, 'credit': credit, 'message': message}
+
+    results = await asyncio.gather(*(one(a) for a in accounts)) if accounts else []
+    # 分母只算**真的发了请求**的账号：already / skipped 既不是成功也不是失败，
+    # 算进 total 会让界面显示成「5/6 成功」，用户以为有个号没领到（与签到同口径）。
+    tried = [r for r in results if r['status'] in ('claimed', 'nothing', 'failed')]
+    claimed = [r for r in results if r['status'] == 'claimed']
+    failed = [r for r in results if r['status'] == 'failed']
+    return {
+        'ok': not failed,
+        'total': len(tried),
+        'claimed': len(claimed),
+        'credit': sum(r.get('credit') or 0 for r in claimed),
+        'already': len([r for r in results if r['status'] == 'already']),
+        'skipped': len([r for r in results if r['status'] == 'skipped']),
+        'nothing': len([r for r in results if r['status'] == 'nothing']),
+        'failed': len(failed),
+        'results': results,
+    }
+
+
+@router.get('/accounts/daily-plan')
+def get_daily_plan(user: dict = Depends(security.current_user)) -> dict:
+    """每日任务计划：每个任务的开关 + 执行整点 + 本小时是否已跑。
+
+    只读，任何已登录用户可看；改计划要管理员。
+    """
+    return dailyplan.get_plan()
+
+
+@router.put('/accounts/daily-plan')
+def save_daily_plan(body: dict,
+                    user: dict = Depends(security.require_admin)) -> dict:
+    """保存每日任务计划（校验失败 400）。跑的是**无人值守的写操作**，限管理员。"""
+    try:
+        plan = dailyplan.set_plan(body)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    security.audit(user, 'update_daily_plan', '',
+                   '; '.join(f"{t}={plan[t]['enabled']}@{plan[t]['hour']}h"
+                             for t in ('checkin', 'compensation', 'claim', 'full')))
+    return plan
+
+
+@router.post('/accounts/daily-plan/run')
+async def run_daily_task_now(body: dict = Body(...),
+                             user: dict = Depends(security.require_admin)) -> dict:
+    """立即执行一次某个每日任务（不等定时）。
+
+    body 形如 `{"task": "checkin" | "compensation" | "claim" | "full"}`。用 **body 而不是 query**
+    传参：写端点的 query 参数要登记进 `test_request_binding.ALLOWED_QUERY_POSTS`，
+    body 不需要。
+
+    执行后把这个任务标记为「本小时已跑」——与「令牌刷新计划」的「立即执行」同一
+    口径，避免刚手动跑完到点又跑一次。
+    """
+    task = str((body or {}).get('task') or '').strip()
+    if task not in dailyplan.TASKS:
+        # 允许清单只此一份（dailyplan.TASKS）：这里再抄一遍就会在加任务时漏掉，
+        # 而漏掉的症状是「计划里能开、手动执行按钮报 400」。
+        raise HTTPException(status_code=400,
+                            detail='task 只能是 ' + ' / '.join(dailyplan.TASKS))
+    ok, message = await dailyplan.run_task(task)
+    plan = dailyplan.mark_ran(task)
+    return {'ok': ok, 'message': message, 'task': task, 'plan': plan}
 
 
 @router.post('/accounts/{filename}/clear-cooling')

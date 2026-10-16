@@ -165,6 +165,10 @@ class PostParamLocationAuditTest(unittest.TestCase):
         # 账号分组（多账号池）：下列写端点都接受 `?upstream_id=` 指定作用于哪个
         # 分组（前端 accountApi 统一按 query 拼；缺省不传 = 默认分组）。
         '/api/accounts/checkin-all': {'upstream_id'},
+        # 领取活动补偿：与 checkin-all 同形，按 `?upstream_id=` 指定分组。
+        '/api/accounts/claim-compensation': {'upstream_id'},
+        # 一键刷新令牌：同 checkin-all，按 `?upstream_id=` 指定作用于哪个分组。
+        '/api/accounts/refresh-tokens': {'upstream_id'},
         '/api/accounts/{filename}/checkin': {'upstream_id'},
         '/api/accounts/{filename}/test': {'upstream_id'},
         '/api/accounts/{filename}/refresh': {'upstream_id'},

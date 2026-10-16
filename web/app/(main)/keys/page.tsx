@@ -265,10 +265,12 @@ export default function KeysPage() {
         // '' 是有意义的取值（不限制版本），必须照传——后端以它区分
         // 「存量密钥，两版都能调」与「限定了某一版」
         //
-        // 新建时**以当前所在版本为准**（而不是 openCreate 时的快照）：
+        // 新建时默认**以当前所在版本为准**（而不是 openCreate 时的快照）：
         // 弹窗开着的时候用户可能切了版本，若沿用快照，创建出来的密钥版本
         // 会与界面上显示的不一致——那种错是静默的，只有调用时才暴露。
-        realm: editing ? form.realm : realm,
+        // 例外是用户在新建弹窗里显式打开了「不限制」（form.realm === ''，
+        // issue #191）：那是明确的意图，不能被页面版本覆盖掉。
+        realm: editing || form.realm === '' ? form.realm : realm,
         // 绑定上游（多上游 / 分组隔离）：null = 默认上游，照传——
         // 后端以它区分「显式改回默认上游」与「本次没提交该字段」（PATCH 语义）。
         upstream_id: form.upstream_id,
@@ -900,22 +902,45 @@ export default function KeysPage() {
                     </p>
                   </>
                 ) : (
-                  <div className="flex flex-wrap items-center gap-1.5 rounded-lg bg-muted px-3 py-2">
-                    <Badge
-                      variant="secondary"
-                      className={
-                        'rounded-full text-[10px] ' +
-                        (realm === 'global'
-                          ? 'text-blue-600 dark:text-blue-400'
-                          : 'text-emerald-600 dark:text-emerald-400')
-                      }
+                  <>
+                    <div className="flex flex-wrap items-center gap-1.5 rounded-lg bg-muted px-3 py-2">
+                      <Badge
+                        variant="secondary"
+                        className={
+                          'rounded-full text-[10px] ' +
+                          (form.realm === ''
+                            ? ''
+                            : realm === 'global'
+                              ? 'text-blue-600 dark:text-blue-400'
+                              : 'text-emerald-600 dark:text-emerald-400')
+                        }
+                      >
+                        {form.realm === ''
+                          ? t('keys.realmUnset')
+                          : realm === 'global'
+                            ? t('realm.global')
+                            : t('realm.cn')}
+                      </Badge>
+                      <span className="text-[10px] leading-4 text-muted-foreground">
+                        {form.realm === '' ? t('keys.realmUnlimitedOn') : t('keys.realmFollowsPage')}
+                      </span>
+                    </div>
+                    {/* 新建默认跟随当前版本（不给「国内版/国际版」二选一，选错了是静默的），
+                        但要留一个**显式**的「不限制」出口（issue #191）：有人需要一把两版
+                        都能调的密钥，而不必先建出来再编辑。 */}
+                    <label
+                      htmlFor="key-realm-unlimited"
+                      className="mt-1.5 flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground"
                     >
-                      {realm === 'global' ? t('realm.global') : t('realm.cn')}
-                    </Badge>
-                    <span className="text-[10px] leading-4 text-muted-foreground">
-                      {t('keys.realmFollowsPage')}
-                    </span>
-                  </div>
+                      <Switch
+                        id="key-realm-unlimited"
+                        checked={form.realm === ''}
+                        disabled={!isAdmin}
+                        onCheckedChange={(on) => setForm({...form, realm: on ? '' : realm})}
+                      />
+                      {t('keys.realmAll')}
+                    </label>
+                  </>
                 )}
               </div>
               <div className="space-y-1.5">

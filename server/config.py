@@ -78,6 +78,9 @@ TENCENT_TIMEOUT = _env_int('WB_TENCENT_TIMEOUT', 15)
 # 「全部签到」的并发上限：太低会拖到前端超时（几十个账号时），
 # 太高又容易触发腾讯风控。5 是保守且够快的取值。
 CHECKIN_CONCURRENCY = max(1, _env_int('WB_CHECKIN_CONCURRENCY', 5))
+# 「一键刷新令牌」的并发上限：与签到同理，太低会拖到前端超时，太高容易被
+# 腾讯风控当成异常来源。刷新走的是刷新接口（比签到更敏感），默认取 3。
+REFRESH_CONCURRENCY = max(1, _env_int('WB_REFRESH_CONCURRENCY', 3))
 TRUST_PROXY = _env('WB_TRUST_PROXY', '1') == '1'
 # 可信反向代理跳数：用于从 X-Forwarded-For 右侧取真实客户端 IP。
 # 前面直接是 1Panel/OpenResty 时保持 1；若还挂了 CDN 则设为 CDN+反代的层数。

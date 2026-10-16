@@ -74,7 +74,10 @@ class RedirectFallback(_HTTPServerBase, unittest.TestCase):
         self.assertEqual(info['tag'], 'v9.9.9')
         self.assertEqual(info['pkg_url'], f'{base}/workbuddy-manager-v9.9.9.tar.gz')
         self.assertEqual(info['pkg_name'], 'workbuddy-manager-v9.9.9.tar.gz')
-        self.assertEqual(info['sig_url'], f'{base}/workbuddy-manager-v9.9.9.tar.gz.sig')
+        # 这条路径只有重定向里的 tag，拿不到发布页摘要与大小 —— 如实留空，
+        # 由 verify_download 把「未比对」记进状态（别在这里编一个假的）。
+        self.assertEqual(info['pkg_digest'], '')
+        self.assertIsNone(info['pkg_size'])
 
     def test_redirect_fallback_rejects_tagless_location(self):
         """Location 里没有 /tag/ 时必须报错，不能拿空 tag 去拼下载地址。"""

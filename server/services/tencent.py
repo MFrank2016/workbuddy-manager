@@ -68,6 +68,30 @@ STATE_TTL = 900
 # 该端点有 UA 门禁：只有三段式 CLI UA（我们 _ua 的形态）能过，web UA 被 400 拒。
 V3_CONFIG_PATH = '/v3/config'
 
+# 「活动补偿」两个端点（2026-10-16 的 DeepSeek 故障补偿公告，网页入口
+# https://www.workbuddy.cn/profile/plans-usage 的「领取」按钮）。
+#
+# **路径不带 `/v2`**，这与 daily-checkin / get-user-resource 不同 —— 那两个两种
+# 前缀都通，而这两个只有非前缀形式：2026-10-16 实测
+#
+#     POST https://www.codebuddy.cn/billing/meter/compensation-status      → 401（存在，待鉴权）
+#     POST https://www.codebuddy.cn/v2/billing/meter/compensation-status   → 404
+#     POST https://www.codebuddy.cn/billing/meter/claim-compensation       → 401
+#     POST https://www.codebuddy.cn/v2/billing/meter/claim-compensation    → 404
+#
+# 所以**不能**走 `billing_paths()`（它给国内版拼的正是 `/v2`）：那样每次都会 404，
+# 而 404 的表现是「无可领补偿」，看起来跟「今天没得领」一模一样 —— 静默失效。
+# 端点名与网页 bundle（assets.workbuddy.cn/web/usercenter）里的调用逐字一致。
+#
+# **基址用 codebuddy.cn（= desktop 客户端的 billing 基址），不是公告链接里的
+# workbuddy.cn**：两条都实测存在（都是 401），但我们的账号是客户端账号，出生入死的
+# 是客户端那套 Origin/UA/身份头；而该域上的领取历史有效（升级日志里出现过
+# 「compensation ok (+100 credit)」）。公告页与客户端应是同一后端的不同品牌前端。
+# 将来若要改基址，先确认身份头（Origin/Referer）一起改 —— 不匹配的 Origin 正是
+# 风控最容易挑出来的形态。
+COMPENSATION_STATUS_PATH = '/billing/meter/compensation-status'
+COMPENSATION_CLAIM_PATH = '/billing/meter/claim-compensation'
+
 
 def _envelope(resp: httpx.Response) -> tuple[int, Any]:
     """腾讯接口统一信封 {code, msg, data}；HTTP 4xx 也可能是业务信封。"""
@@ -526,6 +550,93 @@ async def checkin(access_token: str | dict, realm: Realm = CN) -> tuple[int, str
         return code, f'签到返回 code={code}'
     except Exception as exc:  # noqa: BLE001
         return -1, f'签到异常: {err_text(exc)}'
+
+
+async def compensation_status(access_token: str | dict,
+                              realm: Realm = CN) -> tuple[bool, dict, str]:
+    """查询「活动补偿」当前状态（有没有得领、领过没）。
+
+    页面口径（`/profile/plans-usage` 的「领取」模块，2026-10 补偿公告）读的字段：
+    `claimed` / `claimed_at` / `claimed_text` / `button_text` / `credit_num` / `title`。
+    返回 `(ok, data, message)`；`ok=False` 时 message 是原因（网络/业务错误）。
+
+    **只在官方网页上才有的可领状态**：这个端点比「直接领」多一次请求，但它能回答
+    「有得领吗」，而领取接口在没得领时只回业务错误——用户看到「无可领」无法区分
+    「已经领过了」和「活动还没给我」。
+    """
+    try:
+        async with _account_http_client(access_token if isinstance(access_token, dict) else {}) as client:
+            resp = await client.post(
+                f'{billing_base(realm)}{COMPENSATION_STATUS_PATH}',
+                json={},
+                headers=_billing_hdr(realm, access_token),
+            )
+        code, data = _envelope(resp)
+        if code != 0:
+            return False, {}, f'查询返回 code={code}'
+        if not isinstance(data, dict):
+            return False, {}, '查询返回结构无法识别'
+        return True, data, '已查询'
+    except Exception as exc:  # noqa: BLE001
+        return False, {}, f'查询异常: {err_text(exc)}'
+
+
+async def claim_compensation(access_token: str | dict,
+                             realm: Realm = CN) -> tuple[str, int, str]:
+    """领取「活动补偿」（有则领，领过/没有则跳过）。
+
+    返回 `(status, credit, message)`，status 只有四种取值 —— **分开「无可领」与
+    「失败」是刻意的**：上游对「没有可领的补偿」和「已经领过了」都回业务错误，
+    而这两种都不是故障。混成一个 ok=False，界面会把「今天本来就没得领」报成
+    「N 个账号失败」，用户于是反复重试一个永远不会成功的动作。
+
+      · `claimed` —— 本次到账（credit 是积分，回执缺字段记 0）
+      · `nothing` —— 业务错误：没有可领的补偿 / 已经领过
+      · `failed`  —— 网络或协议层失败（可重试）
+      · `skipped` —— 国际版没有这个活动，未发请求
+    """
+    if not supports_checkin(realm):
+        # 公告只面向国内版（原话「面向 WorkBuddy 国内版全量用户」）；国际版连这个
+        # 模块都没有，打过去只会白吃一次 4xx —— 与签到的门控同理。
+        return 'skipped', 0, '国际版无此活动，已跳过'
+    try:
+        async with _account_http_client(access_token if isinstance(access_token, dict) else {}) as client:
+            resp = await client.post(
+                f'{billing_base(realm)}{COMPENSATION_CLAIM_PATH}',
+                json={},
+                headers=_billing_hdr(realm, access_token),
+            )
+        code, data = _envelope(resp)
+        if code == 0:
+            credit = 0
+            if isinstance(data, dict):
+                raw = data.get('credit')
+                if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                    credit = int(raw)
+            return 'claimed', credit, ('已领取 +%d 积分' % credit) if credit else '已领取（回执未给积分数）'
+        # 业务错误：**不是**故障（HTTP 多半还是 200，只是信封里的 code != 0）
+        return 'nothing', 0, f'无可领补偿（code={code}）'
+    except Exception as exc:  # noqa: BLE001
+        return 'failed', 0, f'领取异常: {err_text(exc)}'
+
+
+def compensation_already_claimed(data: object) -> bool:
+    """补偿状态回执是否表示「已经领过」。
+
+    字段按网页 bundle 的口径解析，且**宽容**：三个字段任一能证明领过就算领过
+    （`claimed` 布尔 / `claimed_at` 时间 / `claimed_text` 文案）。字段全缺时返回
+    False —— 那表示我们认不出这个结构，此时应继续尝试领取，而不是当成「已领」
+    把机会放过（认不出 ≠ 领过了）。
+    """
+    if not isinstance(data, dict):
+        return False
+    if data.get('claimed') is True:
+        return True
+    for key in ('claimed_at', 'claimed_text'):
+        value = data.get(key)
+        if value not in (None, '', 0):
+            return True
+    return False
 
 
 async def fetch_credits(auth: dict) -> tuple[bool, int | float | None, str, list[dict]]:

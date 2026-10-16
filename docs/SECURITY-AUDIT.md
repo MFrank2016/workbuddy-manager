@@ -295,8 +295,9 @@ WAL 模式下还有 `-wal` / `-shm` 伴生文件，同样含未落盘数据。
 
 #### 其他
 - 日志写入前统一 `_clean()`，剥离控制字符 —— 防**日志注入**（用换行伪造日志行）
-- 更新目标为固定枚举 `manager|upstream|both`；更新包**强制验签**（详见
-  [release-signing.md](release-signing.md)）；`deploy/` 不从包内自动替换
+- 更新目标为固定枚举 `manager|upstream|both`；更新包**核对发布页给的 sha256 与文件大小**
+  （详见 [release-signing.md](release-signing.md)；本报告写于 2026-09-12，当时用的是
+  离线私钥验签，2026-10-14 起改为摘要校验）；`deploy/` 不从包内自动替换
 
 ---
 
