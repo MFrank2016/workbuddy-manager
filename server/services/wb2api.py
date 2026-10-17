@@ -691,12 +691,11 @@ def clear_account_cooling_state(uid: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f'上游状态文件不是合法 JSON（{path}）：{exc}') from exc
     accounts = state.get('accounts') if isinstance(state, dict) else None
-    if not isinstance(accounts, dict) or not isinstance(accounts.get(uid), dict):
-        raise ValueError('该账号不在上游状态文件中')
-
-    # 保留一份最近一次强制清除前的快照，便于人工回退。state.json 不含凭证。
-    backup = path.with_name(path.name + '.force-clear.bak')
-    shutil.copy2(path, backup)
+    if not isinstance(accounts, dict):
+        raise ValueError(f'上游状态文件缺少 accounts 对象（{path}）')
+    if uid not in accounts or not isinstance(accounts.get(uid), dict):
+        # 尚未进入 state.json 的账号本来就没有持久化冷却状态，无需修改文件
+        return {'uid': uid, 'state_file': str(path), 'backup': '', 'before': {}}
 
     account = accounts[uid]
     before = {
@@ -712,6 +711,10 @@ def clear_account_cooling_state(uid: str) -> dict:
     # 落盘逻辑就这么做，其注释写明是为了避免「until 零值 + cool_kind」的不一致快照。
     # 写 0 不会立刻出问题（until 是零值，上游下次 Flush 也会按规范抹掉），但没必要
     # 在别人的文件里留一个自己造的非规范形态。
+    #
+    # 与 set_account_cooling_state 的取舍**不对称，这是刻意的**：那边是「要有一段
+    # 冷却」，必须写出 cool_kind=0（否则 until 有值却没有类型，上游按未知形态处理）；
+    # 这边是「不要冷却」，就按上游自己的规范删键。两条路都对，别"统一"成一个写法。
     account.pop('cool_kind', None)
     account['soft_streak'] = 0
     account.pop('model_cooldowns', None)
@@ -719,12 +722,78 @@ def clear_account_cooling_state(uid: str) -> dict:
     account['retry_count'] = 0
     account.pop('degrade_until', None)
     account['consecutive_fails'] = 0
-    # disabled=true 时 reason 是禁用原因，不属于冷却域，不能误清。
     if not bool(account.get('disabled')):
         account.pop('reason', None)
 
+    backup = path.with_name(path.name + '.force-clear.bak')
+    shutil.copy2(path, backup)
     _atomic_write_json(path, state)
     return {'uid': uid, 'state_file': str(path), 'backup': str(backup), 'before': before}
+
+
+def set_account_cooling_state(
+    uid: str,
+    until: str,
+    reason: str = '手动设置冷却',
+) -> dict:
+    """设定一个账号在 state.json 中的冷却截止时间与原因。
+
+    只修改 target uid 对应条目，`disabled` / `manual_disabled` / 凭证 / 积分
+    等正交状态保持不变。调用方必须先停止上游，否则周期 Flush 会覆盖本改动。
+    """
+    uid = str(uid or '').strip()
+    if not uid:
+        raise ValueError('uid 为空')
+    path = upstream_state_file()
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError as exc:
+        raise ValueError(f'未找到上游状态文件：{path}') from exc
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f'上游状态文件不是合法 JSON（{path}）：{exc}') from exc
+    accounts = state.get('accounts') if isinstance(state, dict) else None
+    if not isinstance(state, dict):
+        state = {'accounts': {}}
+    accounts = state.setdefault('accounts', {})
+    if not isinstance(accounts, dict):
+        accounts = state['accounts'] = {}
+
+    # 保留一份最近一次强制设置前的快照，便于人工回退。
+    backup = path.with_name(path.name + '.force-cooling.bak')
+    shutil.copy2(path, backup)
+
+    # 若账号尚未存在于 state.json 中（如新添加或刚启用尚未触发 Flush 的账号），
+    # 自动初始化默认结构，避免报错拒绝
+    account = accounts.setdefault(uid, {
+        'credits': 0,
+        'disabled': False,
+        'manual_disabled': False,
+        'until': '0001-01-01T00:00:00Z',
+        'cool_kind': 0,
+        'soft_streak': 0,
+        'session_dead_fails': 0,
+        'consecutive_fails': 0,
+        'credits_expiring': 0,
+    })
+    before = {
+        'until': account.get('until'),
+        'reason': account.get('reason'),
+        'cool_kind': account.get('cool_kind'),
+    }
+    account['until'] = until
+    account['cool_kind'] = 0  # 0 = CoolHard (hard_credit)，保证全冷却兜底时也不会被选中
+    account['reason'] = str(reason or '手动设置冷却').strip()
+    account['soft_streak'] = 0
+
+    _atomic_write_json(path, state)
+    return {
+        'uid': uid,
+        'state_file': str(path),
+        'backup': str(backup),
+        'before': before,
+        'until': until,
+        'reason': account['reason'],
+    }
 
 
 async def _set_upstream_running(running: bool) -> tuple[bool, str]:
@@ -829,6 +898,46 @@ async def force_clear_account_cooling(uid: str) -> tuple[bool, str, dict]:
         return False, '上游已重启，但冷却或模型限流状态仍然存在', changed
 
     return True, '已强制清除冷却与模型限流状态，上游已重启生效', changed
+
+
+async def force_set_account_cooling(
+    uid: str,
+    until: str,
+    reason: str = '手动设置冷却',
+) -> tuple[bool, str, dict]:
+    """强制设定账号冷却时间，并重启上游使离线修改生效。"""
+    uid = str(uid or '').strip()
+    if not uid:
+        return False, 'uid 为空', {}
+
+    stopped, stop_message = await _set_upstream_running(False)
+    if not stopped:
+        return False, f'停止上游失败：{stop_message}', {}
+
+    try:
+        changed = set_account_cooling_state(uid, until, reason)
+    except Exception as exc:  # noqa: BLE001
+        # 修改失败也必须尽力把上游拉回来，不能让它停在 maintenance 状态。
+        await _set_upstream_running(True)
+        return False, f'设定冷却失败：{exc}', {}
+
+    started, start_message = await _set_upstream_running(True)
+    if not started:
+        return False, f'状态已设定，但启动上游失败：{start_message}', changed
+
+    status = await _wait_for_upstream()
+    if not status.get('connected'):
+        return False, f'上游重启后未就绪：{status.get("error") or "未知错误"}', changed
+    account = next(
+        (x for x in status.get('accounts') or [] if str(x.get('uid') or '') == uid),
+        None,
+    )
+    if account is None:
+        return False, '状态已设定且上游已启动，但账号尚未进入账号池', changed
+    if not account.get('cooling'):
+        return False, '上游已重启，但冷却状态未生效（可能已过截止时间）', changed
+
+    return True, '已强制设定冷却状态，上游已重启生效', changed
 
 
 def admin_enabled_in_config() -> tuple[bool | None, str]:

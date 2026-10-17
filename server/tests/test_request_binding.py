@@ -173,6 +173,7 @@ class PostParamLocationAuditTest(unittest.TestCase):
         '/api/accounts/{filename}/test': {'upstream_id'},
         '/api/accounts/{filename}/refresh': {'upstream_id'},
         '/api/accounts/{filename}/clear-cooling': {'upstream_id'},
+        '/api/accounts/{filename}/force-cooling': {'upstream_id'},
         '/api/accounts/{filename}/note': {'upstream_id'},
         '/api/accounts/{filename}/proxy': {'upstream_id'},
         # 代理线路（设置 → 代理）：改名/删除要按分组重绑账号，前端按 query 传。

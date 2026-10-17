@@ -117,6 +117,8 @@ def export_accounts(
     files += sorted(auth_dir.glob('workbuddy*.json.disabled'))
 
     payload = io.BytesIO()
+    written = 0
+    seen: set[str] = set()
     with zipfile.ZipFile(payload, mode='w', compression=zipfile.ZIP_DEFLATED) as archive:
         for path in files:
             try:
@@ -127,11 +129,22 @@ def export_accounts(
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 logger.warning('跳过无法导出的账号文件 file=%s', path.name)
                 continue
-            archive.writestr(_export_account_name(path), raw)
+            out_name = _export_account_name(path)
+            if out_name in seen:
+                # `.json` 与 `.json.disabled` 同时存在（手工拷贝或异常状态）时，
+                # 两者会折成同一个导出名（`.disabled` 被剥掉才能重新导入）——
+                # zip 里出现**重复条目**，解压方行为依工具而异（Python 打包时
+                # 自己都会告警）。保留先扫到的 enabled 那一份（上游实际加载的
+                # 就是它），后续同名跳过。
+                logger.warning('同名账号文件重复，跳过 file=%s', path.name)
+                continue
+            seen.add(out_name)
+            archive.writestr(out_name, raw)
+            written += 1
 
     payload.seek(0)
     security.audit(user, 'accounts.export', group['name'],
-                   f'导出 {len(files)} 个账号文件（含凭据）')
+                   f'导出 {written} 个账号文件（含凭据）')
     return StreamingResponse(
         payload,
         media_type='application/zip',
@@ -162,9 +175,20 @@ async def upload_accounts(
 
     for upload in files:
         name = upload.filename or '未命名文件'
+        # 名字不是 .json 的，**在进 try 之前**直接给出可操作的原因。
+        #
+        # 以前这条检查抛的 ValueError 会落进下面 `except ValueError` 的兜底分支，
+        # 被统一换成「文件内容无效」——用户传 PDF / CSV / 或**直接传导出得到的
+        # ZIP 包**，看到那句话完全不知道下一步干什么（现场：连传两个非 JSON
+        # 文件都被这句打回；导出侧文案还写着「可直接用于另一台面板导入」，进一步
+        # 坐实了「ZIP 可以直接传」的误判）。这里把「支持什么、ZIP 该怎么办」一次说清。
+        if not name.lower().endswith('.json'):
+            failed.append({
+                'file': name,
+                'message': '只支持 .json 文件：请上传面板导出的账号 JSON（ZIP 导出包请先解压）',
+            })
+            continue
         try:
-            if not name.lower().endswith('.json'):
-                raise ValueError('只支持 .json 文件')
             content = await upload.read(_ACCOUNT_UPLOAD_MAX_BYTES + 1)
             if len(content) > _ACCOUNT_UPLOAD_MAX_BYTES:
                 raise ValueError('文件不能超过 2 MB')
@@ -582,6 +606,8 @@ async def auth_poll(
     """
     if not state:
         return {'status': 'invalid'}
+    # 出站网络失败（线路连不上等）→ 502 + 中文原因：与 /auth/start 同一口径。
+    # 不转的话前端拿到的是英文 500，用户看不出「是线路的问题、该换线路」。
 
     # 后台已经跑出终态：直接返回那一份，**不再问腾讯**。
     # 只对终态短路：失败态（落盘失败等）要继续走下面的原路径，那里有
@@ -613,7 +639,12 @@ async def auth_poll(
         memo_result, memo_realm, memo_msg = ready[0], ready[1], ready[2]
         return _save_and_finish(memo_result, memo_realm, memo_msg, state, group=group)
 
-    result = await tencent.poll_login(state, r)
+    try:
+        result = await tencent.poll_login(state, r)
+    except RuntimeError as exc:
+        # 线路/网络层失败：转 502 + 中文原因（与 /auth/start 同一口径）。
+        # 不转的话界面上只有一句英文 500，用户看不出「是线路的问题、该换线路」。
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     if result.get('status') != 'ready':
         return result
 
@@ -1967,6 +1998,80 @@ async def account_clear_cooling(
 
     ok, message, detail = await wb2api.force_clear_account_cooling(uid)
     return {'ok': ok, 'message': message, **(detail or {})}
+
+
+@router.post('/accounts/{filename}/force-cooling')
+async def account_force_cooling(
+    filename: str,
+    body: dict = Body(...),
+    upstream_id: int | None = Query(None),
+    user: dict = Depends(security.require_admin),
+) -> dict:
+    """强制设定账号级冷却时间（保留排程任务执行）。
+
+    参数：
+      duration_seconds: int，正整数，冷却时长（秒）
+      until: str 可选，ISO 8601 / RFC 3339 字符串（若提供则优先于 duration_seconds）
+      reason: str 可选，冷却原因（缺省为「手动设置冷却」）
+    """
+    group = _group(upstream_id)
+    if not group['is_default']:
+        raise HTTPException(
+            status_code=409,
+            detail=('该分组暂不支持从面板设置冷却（需要该实例的 state.json 路径）；'
+                    '可等它自然冷却，或在宿主机上维护该分组的实例'),
+        )
+    try:
+        raw = wb2api.read_account_file_any(filename)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail='账号文件不存在') from exc
+    uid = str((raw.get('account') or {}).get('uid') or '').strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail='该账号文件缺少 uid，无法定位上游状态')
+
+    duration_seconds = body.get('duration_seconds') if isinstance(body, dict) else None
+    until_str = str(body.get('until') or '').strip() if isinstance(body, dict) else ''
+    is_permanent = bool(body.get('permanent')) or until_str.lower() in ('permanent', 'forever')
+    reason = (str(body.get('reason') or '').strip() if isinstance(body, dict) else '')
+
+    target_dt: datetime.datetime | None = None
+    if is_permanent:
+        target_dt = datetime.datetime(2099, 12, 31, 23, 59, 59, tzinfo=datetime.timezone.utc)
+        reason = reason or '手动永久冷却'
+    elif until_str:
+        try:
+            parsed = datetime.datetime.fromisoformat(until_str.replace('Z', '+00:00'))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+            target_dt = parsed
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f'无效的截止时间格式（需要 ISO 8601 / RFC 3339）：{exc}') from exc
+        reason = reason or '手动设置冷却'
+    elif duration_seconds is not None:
+        try:
+            sec = int(duration_seconds)
+            if sec <= 0:
+                raise ValueError()
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail='冷却时长必须为正整数（秒）') from exc
+        target_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=sec)
+        reason = reason or '手动设置冷却'
+    else:
+        raise HTTPException(status_code=400, detail='请提供 duration_seconds、until 或 permanent 参数')
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if target_dt <= now:
+        raise HTTPException(status_code=400, detail='冷却截止时间必须在未来')
+
+    # 回写与回显统一按 **UTC** 格式化（`astimezone()` 跟随面板所在时区）：
+    # 「永久」用的 2099-12-31T23:59:59Z 在东八区会被写成 2100-01-01T07:59:59+08:00 ——
+    # 同一瞬间，但年份跳到 2100 会让人以为"永久"被算错了，接口返回值也随部署时区变。
+    # （贡献者的环境是 UTC，所以在 +08 才暴露；那条断言 '2099' 也只在 UTC 下绿。）
+    until_formatted = target_dt.astimezone(datetime.timezone.utc).isoformat()
+    ok, message, detail = await wb2api.force_set_account_cooling(uid, until_formatted, reason)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {'ok': ok, 'message': message, 'until': until_formatted, **(detail or {})}
 
 
 @router.put('/accounts/{filename}/note')

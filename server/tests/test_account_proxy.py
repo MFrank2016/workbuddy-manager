@@ -249,3 +249,51 @@ class ProxyUiGatingTest(unittest.TestCase):
         src = self.DIALOG.read_text(encoding='utf-8')
         self.assertRegex(src, r'\{proxyRoutes\.length > 0 && \(',
                          '添加账号弹窗在没有线路可选时仍会渲染那个下拉')
+
+
+class LoginNetworkHintTest(unittest.TestCase):
+    """扫码登录/轮询的网络失败要给**可执行的中文**（issue #194）。
+
+    现场：用户配了一条解析不了 .cn 的国家线路，点「添加账号（国内版）」二维码一直
+    出不来，界面上只显示英文 `Internal Server Error`；关掉代理就好了 —— 也就是说
+    原因明明是线路，但错误里一个字都没提线路。
+    """
+
+    def _failing_client(self):
+        class _Boom(httpx.AsyncClient):  # noqa: D401 - 只为抛异常
+            async def post(self, *a, **k):
+                raise httpx.ProxyError('proxy refused to connect')
+
+            async def get(self, *a, **k):
+                raise httpx.ConnectTimeout('timed out')
+
+        return _Boom
+
+    def test_start_login_names_the_route(self) -> None:
+        with mock.patch.object(config, 'http_client', self._failing_client()):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(tencent.start_login('cn', 'route-x'))
+        msg = str(ctx.exception)
+        self.assertIn('route-x', msg, '错误里要点出是哪条线路')
+        self.assertIn('线路', msg)
+        self.assertIn('换一条线路', msg, '要给下一步动作')
+        self.assertNotIn('Internal Server Error', msg)
+
+    def test_start_login_without_route_mentions_network(self) -> None:
+        with mock.patch.object(config, 'http_client', self._failing_client()):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(tencent.start_login('cn', ''))
+        msg = str(ctx.exception)
+        self.assertIn('网络出口', msg)
+        self.assertNotIn('route-x', msg)
+
+    def test_poll_login_names_the_route(self) -> None:
+        # 先登记一个 state（正常路径里由 start_login 写入），再让出站失败
+        state = 'unit-test-state'
+        with mock.patch.dict(tencent._state_cache, {state: (time.time(), 'cn', 'route-y')}):
+            with mock.patch.object(config, 'http_client', self._failing_client()):
+                with self.assertRaises(RuntimeError) as ctx:
+                    asyncio.run(tencent.poll_login(state, 'cn'))
+        msg = str(ctx.exception)
+        self.assertIn('route-y', msg)
+        self.assertIn('换一条线路', msg)

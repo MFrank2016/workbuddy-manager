@@ -1010,6 +1010,15 @@ export interface VersionSide {
   has_update: boolean;
   /** 检测失败原因 */
   error: string;
+  /**
+   * 这一侧的值是否来自**上一次**成功检测（本次失败了）。
+   *
+   * 为 true 时界面不能下「已是最新」的结论 —— 那等于把一次 403/网络失败说成
+   * 「确实没有新版本」（issue #204）。
+   */
+  stale?: boolean;
+  /** 旧值的检测时间（秒，配合 stale 显示「下面是 X 时的结果」） */
+  stale_at?: number;
 }
 
 export interface ManagerVersion extends VersionSide {

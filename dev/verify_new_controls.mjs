@@ -48,7 +48,10 @@ function chromiumExecutable() {
 fs.mkdirSync(OUT, {recursive: true});
 const chromium = await loadPlaywright();
 const browser = await chromium.launch({executablePath: chromiumExecutable()});
-const ctx = await browser.newContext({viewport: {width: 1600, height: 1000}});
+// 视口宽度可用 WB_WIDTH 覆盖：issue #151 的现场是 1828px 出现横向滚动条，
+// 固定 1600 永远看不到它。
+const WIDTH = Number(process.env.WB_WIDTH || 1600);
+const ctx = await browser.newContext({viewport: {width: WIDTH, height: 1000}});
 const page = await ctx.newPage();
 
 const findings = [];
@@ -328,6 +331,65 @@ await page.screenshot({path: path.join(OUT, 'tasks-compensation.png'), fullPage:
   step(direct.status === 200 && String(direct.body?.message || '').includes('1 个领到 +500 积分'),
        '直接调 /api/accounts/daily-plan/run 也回报领到 500',
        JSON.stringify(direct.body).slice(0, 180));
+}
+
+// ═══ 账号页「强制冷却」对话框 ═══
+// 只验界面：点了会真的去停/起上游（harness 里没有 docker），所以**不提交**，
+// 只确认按钮在、弹窗能开、档位与「永久」都在。
+console.log('\n── 账号页 › 强制冷却');
+await page.goto(`${BASE}/accounts`, {waitUntil: 'load'});
+await page.waitForTimeout(2500);
+await page.screenshot({path: path.join(OUT, 'accounts-cooling.png'), fullPage: true});
+
+{
+  // 先确认账号行真的渲染了 —— 否则「按钮找不到」会被误读成功能没接上
+  const pageText = await page.evaluate(() => document.body.innerText);
+  step(pageText.includes('演示号'), '账号列表里有那个演示账号');
+
+  // 标题按 zh-CN 文案精确匹配（「强制进入冷却」/「调整冷却时间」）。
+  // 不能只用 [title*=冷却]：行内还有「清除冷却」，会命中错的那个按钮。
+  // 也必须加 `:visible` —— 账号页同时渲染**移动卡片**（md:hidden）与**桌面表**
+  // （hidden md:block），不加就会点到 1600px 下被 display:none 的那一份，
+  // 表现为「元素不可见」的点击超时（第一次跑就是这样）。
+  const snowflake = page.locator(
+    'button[title="强制进入冷却"]:visible, button[title="调整冷却时间"]:visible').first();
+  step(await snowflake.count() > 0, '账号行上有「强制进入冷却」按钮（雪花）');
+  if (await snowflake.count() > 0) {
+    await snowflake.click();
+    await page.waitForTimeout(700);
+    const dialog = page.locator('[role=dialog]').last();
+    const text = await dialog.textContent().catch(() => '');
+    step(!!text && text.includes('永久'), '弹窗里有「永久」档', (text || '').slice(0, 80));
+    step(!!text && /(小时|分钟|天)/.test(text), '弹窗里有自定义时长输入');
+    await page.screenshot({path: path.join(OUT, 'accounts-cooling-dialog.png')});
+    await page.keyboard.press('Escape');   // 不提交：真实停/起上游不在这里做
+    await page.waitForTimeout(400);
+  }
+}
+
+// ═══ 横向溢出（issue #151：1828px 下账号页/任务页出现横向滚动条） ═══
+console.log(`
+── 横向溢出（视口 ${WIDTH}px）`);
+for (const path of ['/accounts', '/tasks']) {
+  await page.goto(`${BASE}${path}`, {waitUntil: 'load'});
+  await page.waitForTimeout(2200);
+  const info = await page.evaluate(() => {
+    const d = document.documentElement;
+    const over = d.scrollWidth - d.clientWidth;
+    let widest = null;
+    if (over > 1) {
+      for (const el of Array.from(document.querySelectorAll('*'))) {
+        const r = el.getBoundingClientRect();
+        if (r.right > d.clientWidth + 1) {
+          widest = {tag: el.tagName, cls: String(el.className || '').slice(0, 80), right: Math.round(r.right)};
+          break;
+        }
+      }
+    }
+    return {over, widest, table: !!document.querySelector('table')};
+  });
+  step(info.over <= 1, `${path} 没有横向滚动条（溢出 ${info.over}px）`,
+       info.widest ? `${info.widest.tag}.${info.widest.cls} 右边界 ${info.widest.right}` : '');
 }
 
 // ═══ 控制台 ═══

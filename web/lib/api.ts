@@ -330,6 +330,16 @@ export const accountApi = {
     post<{ok: boolean; message: string; uid?: string; backup?: string}>(
       `/api/accounts/${encodeURIComponent(file)}/clear-cooling${groupQs(upstreamId)}`,
     ),
+  /** 强制设定账号级冷却（会重启一次上游）。 */
+  forceCooling: (
+    file: string,
+    body: {duration_seconds?: number; until?: string; permanent?: boolean; reason?: string},
+    upstreamId?: number | null,
+  ) =>
+    post<{ok: boolean; message: string; uid?: string; until?: string; backup?: string}>(
+      `/api/accounts/${encodeURIComponent(file)}/force-cooling${groupQs(upstreamId)}`,
+      body,
+    ),
   /**
    * 给账号写备注（issue #67）。传空串 = 清除备注。
    * 存的是本端库、按 uid 关联——临时停用（改文件名）不会丢。
@@ -681,6 +691,11 @@ export const systemApi = {
   /** 检测新版本；force=true 绕过 6 小时缓存 */
   checkUpdate: (force = false) => get<UpdateCheck>('/api/system/check-update', {force}),
   versions: () => get<Versions>('/api/system/versions'),
+  /** GitHub Token（版本检测 / 一键更新的认证）：读回掩码，写只传明文 */
+  githubToken: () => get<{configured: boolean; masked: string; source: 'env' | 'panel' | ''}>(
+    '/api/settings/github-token'),
+  saveGithubToken: (token: string) =>
+    put<{configured: boolean; masked: string}>('/api/settings/github-token', {token}),
   /**
    * 启动一键更新；target: manager | upstream | both。
    * source='uploaded' 用面板里已上传的离线升级包（issue #153）。

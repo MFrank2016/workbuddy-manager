@@ -505,6 +505,11 @@ def start_update(target: str, *, source: str = 'release') -> tuple[bool, str]:
         env['WB_HTTP_PROXY'] = stored_http_proxy
     if stored_update_proxy:
         env['WB_UPDATE_PROXY'] = str(stored_update_proxy)
+    # GitHub Token 一并传给更新器（issue #205）：它拉 Release / 校验也走 GitHub API，
+    # 未认证同样吃 60/h 的限流。空值不传（避免把空变量覆盖掉部署环境里的那份）。
+    _token = github_token()
+    if _token:
+        env['WB_GITHUB_TOKEN'] = _token
     env.update({
         'WB_INSTALL_DIR': str(config.ROOT),
         'WB_UPSTREAM_DIR': str(_upstream_dir()),
@@ -606,6 +611,32 @@ MANAGER_REPO = os.environ.get('WB_MANAGER_REPO') or 'ithtelab/workbuddy-manager'
 _upstream_api_repo_cache: str | None = None
 
 
+def github_token() -> str:
+    """生效的 GitHub Token：环境变量优先，其次「设置 → 系统」里填的那份。
+
+    为什么要有面板这一份（issue #205）：未认证的 API 配额只有 60 次/小时/IP，
+    容器/系统代理共享出口时极易被同出口的其他人打满，表现为「检测更新」403；
+    而代码一直支持认证（限额 5000 次/小时），用户却没地方知道、也没地方填 ——
+    只能翻源码或更新日志。面板填的这份与部署时注入的环境变量等价。
+    """
+    for key in ('WB_GITHUB_TOKEN', 'GITHUB_TOKEN'):
+        v = (os.environ.get(key) or '').strip()
+        if v:
+            return v
+    try:
+        return str(db.get_setting('github_token', '') or '').strip()
+    except Exception:  # noqa: BLE001
+        return ''
+
+
+def mask_token(token: str) -> str:
+    """只露尾 4 位，供界面回显（**绝不回明文**）。"""
+    t = (token or '').strip()
+    if not t:
+        return ''
+    return ('*' * max(0, len(t) - 4)) + t[-4:]
+
+
 def _gh_get(url: str, timeout: int = 15) -> object:
     headers = {
         'Accept': 'application/vnd.github+json',
@@ -613,8 +644,7 @@ def _gh_get(url: str, timeout: int = 15) -> object:
     }
     # 认证后 5000 次/小时；未认证仅 60 次/小时/IP——共享出口（TUN/系统代理）
     # 极易被同出口的其他用户打满，表现为设置页"检测更新"偶发 403
-    token = (os.environ.get('WB_GITHUB_TOKEN')
-             or os.environ.get('GITHUB_TOKEN') or '').strip()
+    token = github_token()
     if token:
         headers['Authorization'] = f'Bearer {token}'
     req = urllib.request.Request(url, headers=headers)
@@ -809,9 +839,16 @@ def check_updates(force: bool = False) -> dict:
     if force or not cache or age > ttl:
         fresh = _fetch_remote_versions()
         # 保留上次成功结果：临时网络故障不应让界面显示「未知」
+        #
+        # 但**必须标记这是旧结果**（issue #204）：把上一次的 latest 当成这次检测的
+        # 结论，界面就会在 403 限流时照样报「已是最新版本」—— 把一次失败说成了
+        # 结论，用户会以为确实没有新版本。stale/stale_at 让界面能如实说
+        # 「这次没拿到，下面是 X 时刻的旧结果」。
         for key in ('manager', 'upstream'):
             if fresh[key].get('error') and cache.get(key, {}).get('latest'):
-                fresh[key] = {**cache[key], 'error': fresh[key]['error']}
+                old_at = int(cache.get('checked_at') or 0)
+                fresh[key] = {**cache[key], 'error': fresh[key]['error'],
+                              'stale': True, 'stale_at': old_at}
         _write_cache(fresh)
         cache = fresh
 
@@ -838,6 +875,10 @@ def check_updates(force: bool = False) -> dict:
             'url': str(cache.get('manager', {}).get('url') or ''),
             'assets_ready': cache.get('manager', {}).get('assets_ready'),
             'error': str(cache.get('manager', {}).get('error') or ''),
+            # stale=True：这一节的值来自**上一次**成功检测（本次失败了），
+            # 界面不能据此下「已是最新」的结论（issue #204）。
+            'stale': bool(cache.get('manager', {}).get('stale')),
+            'stale_at': int(cache.get('manager', {}).get('stale_at') or 0),
             'repo': MANAGER_REPO,
         },
         'upstream': {
@@ -853,6 +894,8 @@ def check_updates(force: bool = False) -> dict:
             'changes': cache.get('upstream', {}).get('changes') or [],
             'truncated': bool(cache.get('upstream', {}).get('truncated')),
             'error': str(cache.get('upstream', {}).get('error') or ''),
+            'stale': bool(cache.get('upstream', {}).get('stale')),
+            'stale_at': int(cache.get('upstream', {}).get('stale_at') or 0),
             'repo': _upstream_api_slug(),
         },
         'has_any': manager_has or upstream_has,

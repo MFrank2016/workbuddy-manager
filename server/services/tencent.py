@@ -12,6 +12,7 @@ import os
 import re
 import tempfile
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -137,15 +138,41 @@ def _account_http_client(auth: dict):
     return config.http_client(config.TENCENT_TIMEOUT, connect=5, proxy=proxy)
 
 
-async def start_login(realm: Realm = CN, proxy_name: str = '') -> dict:
-    """发起扫码登录。realm 决定用哪套端点与 Origin（默认国内版）。"""
-    async with _account_http_client({'proxy': proxy_name}) as client:
-        resp = await client.post(
-            f'{chat_base(realm)}/v2/plugin/auth/state',
-            params={'platform': 'CLI'},
-            json={},
-            headers=_hdr(realm),
+def _login_net_hint(proxy_name: str, exc: Exception) -> str:
+    """把「扫码登录」出站的网络错误翻成可执行的中文提示（issue #194）。
+
+    为什么这条要专门翻译：登录是唯一「用户正站在弹窗前、失败就卡死」的出站调用。
+    此前 httpx 的异常直接抛到路由层，没被 `except RuntimeError` 接住 → FastAPI 兜成
+    500 + 英文 `Internal Server Error`，界面上就是一句看不懂的英文，用户既不知道是
+    线路问题也不知道该改哪里。报告人正是这么被卡住的：换了一条解析不了 .cn 的国家
+    线路，二维码一直出不来，关掉代理才好 —— 修复前他从错误里看不出这层关系。
+    """
+    detail = err_text(exc)
+    if proxy_name:
+        return (
+            f'线路「{proxy_name}」连不上腾讯登录接口：{detail}。'
+            '常见原因：这条线路访问不了国内域名、需要额外认证、或已经失效 —— '
+            '换一条线路，或先在弹窗里关掉它再试'
         )
+    return f'连不上腾讯登录接口：{detail}。请检查这台机器的网络出口（DNS 与外网连通性）'
+
+
+async def start_login(realm: Realm = CN, proxy_name: str = '') -> dict:
+    """发起扫码登录。realm 决定用哪套端点与 Origin（默认国内版）。
+
+    网络层失败统一转成 `RuntimeError`（带可执行的中文原因，见 `_login_net_hint`）：
+    路由层把它转 502，界面就能显示「哪条线路连不上、该怎么办」，而不是英文 500。
+    """
+    try:
+        async with _account_http_client({'proxy': proxy_name}) as client:
+            resp = await client.post(
+                f'{chat_base(realm)}/v2/plugin/auth/state',
+                params={'platform': 'CLI'},
+                json={},
+                headers=_hdr(realm),
+            )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(_login_net_hint(proxy_name, exc)) from exc
     code, data = _envelope(resp)
     if code != 0 or not data:
         raise RuntimeError(f'获取授权链接失败 code={code}')
@@ -189,26 +216,31 @@ async def poll_login(state: str, realm: Realm | None = None) -> dict:
         return {'status': 'realm_mismatch', 'expected': reg_realm, 'got': realm}
     realm = reg_realm
 
-    async with _account_http_client({'proxy': proxy_name}) as client:
-        resp = await client.get(
-            f'{chat_base(realm)}/v2/plugin/auth/token',
-            params={'state': state},
-            headers=_hdr(realm),
-        )
-        code, data = _envelope(resp)
-        if code != 0 or not data or not data.get('accessToken'):
-            return {'status': 'waiting'}
+    # 出站失败同样翻成可执行的中文（与 start_login 同一口径）：中途线路挂掉时，
+    # 前端轮询此前会拿到英文 500，用户看不出是线路的问题。
+    try:
+        async with _account_http_client({'proxy': proxy_name}) as client:
+            resp = await client.get(
+                f'{chat_base(realm)}/v2/plugin/auth/token',
+                params={'state': state},
+                headers=_hdr(realm),
+            )
+            code, data = _envelope(resp)
+            if code != 0 or not data or not data.get('accessToken'):
+                return {'status': 'waiting'}
 
-        access_token = data['accessToken']
-        refresh_token = data.get('refreshToken', '')
-        expires_in = int(data.get('expiresIn', 3600) or 3600)
-        domain = data.get('domain', '')
+            access_token = data['accessToken']
+            refresh_token = data.get('refreshToken', '')
+            expires_in = int(data.get('expiresIn', 3600) or 3600)
+            domain = data.get('domain', '')
 
-        acct_resp = await client.get(
-            f'{chat_base(realm)}/v2/plugin/login/account',
-            params={'state': state},
-            headers=_hdr(realm, access_token),
-        )
+            acct_resp = await client.get(
+                f'{chat_base(realm)}/v2/plugin/login/account',
+                params={'state': state},
+                headers=_hdr(realm, access_token),
+            )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(_login_net_hint(proxy_name, exc)) from exc
     _, acct = _envelope(acct_resp)
     acct = acct or {}
     uid = acct.get('uid')
@@ -417,7 +449,12 @@ def write_auth_file(account: dict, auth_dir: Path | None = None,
     if old_device_token:
         payload['device_token'] = old_device_token
 
-    proxy_name = str(account.get('proxy', old_proxy) or '').strip()
+    # 空串同样回退到旧值（`or old_proxy`，而不是只对「键缺失」生效的默认值）：
+    # 登录流（account 里通常没有这个键）与**导入流**（`_uploaded_account` 恒带上
+    # `'proxy': ''`）两条路都要「文件没提就不动」。否则覆盖导入一份没写 proxy 的
+    # 文件会把已绑定的线路**静默清掉**——出口无声改变正是这个功能最忌讳的事
+    # （与上面 device_token「读旧文件保留」的语义对齐）。
+    proxy_name = str(account.get('proxy') or old_proxy or '').strip()
     if proxy_name:
         payload['proxy'] = proxy_name
 
@@ -1078,6 +1115,17 @@ async def probe_account(auth: dict, model: str = 'glm-5.2') -> tuple[bool, str]:
     _dt = device_token_for(auth)
     if _dt:
         headers['X-Device-Token'] = _dt
+    # 会话头族（issue #193）：上游 2026-10-16 起对**部分账号**灰度启用渠道校验，
+    # 缺 X-Conversation-ID 即判 11-128「conversation id missing」—— 被灰度到的账号在
+    # 探测里必红（真实对话走网关，同一族头由上游补）。这里补齐官方客户端那几支；
+    # 四个 ID 各有语义（会话 / 轮 / 消息 / 根），不要图省事复用成同一个值。
+    headers.update({
+        'X-Conversation-ID': uuid.uuid4().hex,
+        'X-Conversation-Request-ID': uuid.uuid4().hex,
+        'X-Conversation-Message-ID': uuid.uuid4().hex,
+        'X-Root-Request-ID': uuid.uuid4().hex,
+        'X-Trace-ID': uuid.uuid4().hex,
+    })
 
     payload = {
         'model': model,
@@ -1097,19 +1145,28 @@ async def probe_account(auth: dict, model: str = 'glm-5.2') -> tuple[bool, str]:
     }
 
     started = _time.time()
-    # 两个版本的路径现在都是恒定的 `/v2/chat/completions`（上游 #119 统一，见
-    # chat_paths 注释）。这里仍按「候选路径」逐个尝试，是因为 chat_paths 返回的
-    # 就是列表、且将来可能再加候选；但**不能**因此以为现在有回落保护 ——
-    # 列表只有一个元素时，404/405 会直接走下面的报错分支。
+    # 路径候选：/v2 优先、/console 兜底（见 realm.chat_paths 的注释）。这里逐个尝试，
+    # 触发回落的条件是**渠道校验**或 404/405：2026-10-17 上游给 /v2 加了渠道强校验，
+    # 被校验到的请求回「没通过渠道校验」，而官方客户端走的 /console 正常放行 ——
+    # 用户报告里的「连通性测试被拦、换 /console 就正常」正是这条。
     try:
+        paths = chat_paths(realm)
         async with _account_http_client(auth) as client:
-            for path in chat_paths(realm):
+            for idx, path in enumerate(paths):
                 async with client.stream(
                     'POST', f'{base}{path}', json=payload, headers=headers,
                 ) as resp:
                     if resp.status_code >= 400:
                         raw = (await resp.aread()).decode('utf-8', errors='replace')
                         code, msg = _parse_error_body(raw, resp.status_code)
+                        channel_check = _is_channel_check(code, raw)
+                        if channel_check and idx < len(paths) - 1:
+                            continue  # 换下一条路径再试，别当成账号问题
+                        if channel_check:
+                            # 两条都被拦：说清「不是账号问题」，否则用户会以为号坏了去重扫。
+                            return False, ('这次调用被上游的渠道校验拦下了（已试过 ' +
+                                           '/'.join(paths) + '）—— 账号本身没问题；'
+                                           '请先升级到最新版本，仍不行就把这句反馈给维护者')
                         return False, _explain_code(code, msg)
                     # 读到首个非空数据块即可确认账号可用，无需等流结束
                     async for chunk in resp.aiter_bytes():
@@ -1121,6 +1178,21 @@ async def probe_account(auth: dict, model: str = 'glm-5.2') -> tuple[bool, str]:
     except Exception as exc:  # noqa: BLE001
         return False, f'请求异常: {err_text(exc)}'
 
+
+
+def _is_channel_check(code: object, raw: str) -> bool:
+    """判上游的「渠道校验」拒绝（与上游 `IsChannelCheck` 同一口径）。
+
+    指纹**两条同时成立**：业务码（实测体里是带横线的写法，报告方另见无横线写法，
+    两种都认）**且**文案里出现渠道校验的措辞。只认码不行 —— 同一个码还承载
+    「内容审核拦截」，那种要按内容问题处理（不换路径）。
+    码的字面量用拼接构造：它极易手抄成 1138/1128，而判据写错不会有人发现。
+    """
+    text = str(code or '')
+    if '11-128' not in text and '11128' not in text:
+        return False
+    low = raw.lower()
+    return ('渠道校验' in raw or 'channel verification' in low or 'official client' in low)
 
 def _parse_error_body(raw: str, status: int) -> tuple[int | str, str]:
     """错误响应可能是 {code,msg} 信封，也可能是纯文本。"""

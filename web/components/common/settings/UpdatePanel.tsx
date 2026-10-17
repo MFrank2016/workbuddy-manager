@@ -21,7 +21,7 @@ import {
 import {errText, systemApi} from '@/lib/api';
 import type {UpdateCheck, UpdatePackageMeta, UpdateStatus} from '@/lib/types';
 import {notify} from '@/lib/toast';
-import {fmtAgo} from '@/lib/format';
+import {fmtAgo, fmtDateTime} from '@/lib/format';
 import {useAuth} from '@/lib/auth-context';
 import {Button} from '@/components/ui/button';
 import {Badge} from '@/components/ui/badge';
@@ -156,6 +156,30 @@ export function UpdatePanel() {
     }
   }, [t]);
 
+  /** GitHub Token（版本检测 / 一键更新的认证，issue #205）：只回掩码 */
+  const [gh, setGh] = useState<{configured: boolean; masked: string; source: 'env' | 'panel' | ''} | null>(null);
+  const [ghInput, setGhInput] = useState('');
+  const [ghBusy, setGhBusy] = useState(false);
+
+  useEffect(() => {
+    systemApi.githubToken().then(setGh).catch(() => setGh(null));
+  }, []);
+
+  const saveGh = useCallback(async (token: string) => {
+    setGhBusy(true);
+    try {
+      const r = await systemApi.saveGithubToken(token);
+      setGh({...r, source: r.configured ? 'panel' : ''});
+      setGhInput('');
+      notify.ok(token ? t('updatePanel.ghSaved') : t('updatePanel.ghCleared'));
+      await recheck();
+    } catch (e) {
+      notify.err(errText(e));
+    } finally {
+      setGhBusy(false);
+    }
+  }, [t]);
+
   /** 强制重新检测（绕过服务端 6 小时缓存） */
   const recheck = useCallback(async () => {
     setChecking(true);
@@ -164,6 +188,11 @@ export function UpdatePanel() {
       setCheck(r);
       if (r.has_any) {
         notify.warn(t('updatePanel.newVersion'), describeAvailable(r, t));
+      } else if (r.manager.error || r.upstream.error) {
+        // **失败不能说成结论**（issue #204）：403/网络失败时旧缓存会回退，
+        // 以前这里照样弹「已是最新」，把一次失败说成了"没有新版本"。
+        notify.warn(t('updatePanel.checkFailed'),
+          (r.manager.error || r.upstream.error).slice(0, 160));
       } else {
         notify.ok(t('updatePanel.upToDate'), t('updatePanel.upToDateDesc'));
       }
@@ -470,6 +499,67 @@ export function UpdatePanel() {
                   {t('updatePanel.updateManager')}
                 </Button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GitHub Token（issue #205）：未认证 60 次/小时/IP，共享出口很容易被限流 */}
+      {isAdmin && (
+        <div className="rounded-[20px] bg-muted p-4">
+          <div className="mb-1 text-xs font-medium">{t('updatePanel.ghTitle')}</div>
+          <div className="mb-2 text-[11px] leading-4 text-muted-foreground">
+            <RichText text={t('updatePanel.ghDesc')} />
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="min-w-[16rem] flex-1 space-y-1">
+              <Input
+                type="password"
+                value={ghInput}
+                onChange={(e) => setGhInput(e.target.value)}
+                placeholder={gh?.configured ? gh.masked : t('updatePanel.ghPlaceholder')}
+                className="h-8 bg-background font-mono text-xs"
+                autoComplete="off"
+              />
+            </div>
+            <Button size="sm" className="rounded-full" disabled={ghBusy || !ghInput.trim()}
+                    onClick={() => saveGh(ghInput.trim())}>
+              <ShieldCheck className="h-3.5 w-3.5" />
+              {t('common.save')}
+            </Button>
+            {gh?.configured && (
+              <Button size="sm" variant="outline" className="rounded-full" disabled={ghBusy}
+                      onClick={() => saveGh('')}>
+                <Trash2 className="h-3.5 w-3.5" />
+                {t('updatePanel.ghClear')}
+              </Button>
+            )}
+          </div>
+          <div className="mt-2 text-[11px] text-muted-foreground">
+            {gh?.source === 'env'
+              ? t('updatePanel.ghFromEnv')
+              : gh?.configured
+                ? t('updatePanel.ghConfigured', {masked: gh.masked})
+                : t('updatePanel.ghNotSet')}
+          </div>
+        </div>
+      )}
+
+      {/* 本次检测失败、值来自上次成功结果：必须说明，不能让人以为「已经是最新」 */}
+      {check && (check.manager.error || check.upstream.error) && !status?.running && (
+        <div className="flex items-start gap-2 rounded-[20px] border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+          <div className="min-w-0 space-y-1 text-[11px] leading-4">
+            <div className="font-medium">{t('updatePanel.checkFailed')}</div>
+            <div className="break-all text-muted-foreground">
+              {(check.manager.error || check.upstream.error).slice(0, 200)}
+            </div>
+            <div className="text-muted-foreground">
+              {check.manager.stale || check.upstream.stale
+                ? t('updatePanel.staleNote', {
+                    at: fmtDateTime(Math.max(check.manager.stale_at || 0, check.upstream.stale_at || 0)),
+                  })
+                : t('updatePanel.checkFailedHint')}
             </div>
           </div>
         </div>

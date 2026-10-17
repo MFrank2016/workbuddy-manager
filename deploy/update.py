@@ -482,6 +482,30 @@ def _compose_looks_customized(rep: Reporter) -> bool:
         return False
 
 
+def _normalize_eol(raw: bytes) -> bytes:
+    """文本内容的 CRLF → LF；二进制原样返回（issue #202）。
+
+    为什么必须在这一步归一：随包分发的上游源码是在 Windows 上打的包，**包内就带
+    CRLF**（实测 293/298 个文件）。同步是字节拷贝，于是宿主源码树、进而网关镜像里的
+    脚本首行变成 `#!/usr/bin/env bash\\r` —— 解释器路径对不上，一键登录 / 签到 / 积分
+    这些依赖脚本的功能整体失效。
+
+    判据与报告方本地兜底一致：**能按 UTF-8 解码且不含 NUL** 的当文本，其余（图片、
+    压缩包等）一个字节都不动。猜错方向的代价是把二进制改坏，比行尾问题严重得多，
+    所以宁可漏归一一个奇怪的文本，也不碰任何可能非文本的东西。
+
+    顺带解决第二件事：内容只差行尾的文件此前会被算成「有改动」→ 白等一次网关重建
+    （报告方实测：不归一 295 个文件全算改动，归一后只报 7 改写 + 2 新增）。
+    """
+    if b'\x00' in raw:
+        return raw
+    try:
+        raw.decode('utf-8')
+    except UnicodeDecodeError:
+        return raw
+    return raw.replace(b'\r\n', b'\n')
+
+
 def _sync_bundled_upstream(src: Path, rep: Reporter) -> int:
     """把发布包内自带的上游源码同步进 `UPSTREAM_DIR`（保留用户数据与定制）。
 
@@ -536,15 +560,24 @@ def _sync_bundled_upstream(src: Path, rep: Reporter) -> int:
             continue
         dst = UPSTREAM_DIR / rel
         try:
+            incoming = _normalize_eol(f.read_bytes())
             if dst.is_file():
-                if dst.read_bytes() == f.read_bytes():
+                if dst.read_bytes() == incoming:
                     continue
+                # 注意：**内容一致、只差行尾**时也要重写（changed 照计）——已经带 CRLF
+                # 更新过的机器，本地脚本是坏的（容器里执行不了），只比原始字节会两边
+                # 都是 CRLF、被判成「没变」，于是永远修不回来。归一遍之后，下次更新
+                # 就真的「没变」了。
                 changed += 1
             else:
                 added += 1
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(f, dst)
-            shutil.copymode(f, dst)
+            # 先写临时文件再原子替换：中途断电/被杀不会留下半个 .go 文件（网关构建
+            # 会因此直接失败），也不会让容器读到半截脚本。
+            tmp = dst.with_name(dst.name + '.wbtmp')
+            tmp.write_bytes(incoming)
+            shutil.copymode(f, tmp)
+            os.replace(tmp, dst)
         except OSError as exc:
             rep.log(f'  同步 {rel} 失败：{exc}', 'warn')
 

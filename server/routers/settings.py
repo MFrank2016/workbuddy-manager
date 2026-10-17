@@ -1,6 +1,7 @@
 """上游配置、模型映射与管理端用户。"""
 from __future__ import annotations
 
+import os
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -105,6 +106,42 @@ def save_model_map(body: dict[str, str], user: dict = Depends(security.require_a
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.set_setting('model_map', clean)
     return clean
+
+# ── GitHub Token（版本检测 / 一键更新）────────────────────
+@router.get('/settings/github-token')
+def get_github_token(user: dict = Depends(security.require_admin)) -> dict:
+    """读当前生效的 GitHub Token（**只回掩码**）。
+
+    为什么只给管理员：它是凭据，能操作对应的 GitHub 账号配额；普通用户不需要它。
+    环境变量里已有值时界面要说明「由部署注入、面板填写不生效」，否则用户会以为
+    自己填的那份没保存（issue #205 的现场就是「没地方填、也不知道有没有生效」）。
+    """
+    env_token = next((str(os.environ.get(k) or '').strip()
+                      for k in ('WB_GITHUB_TOKEN', 'GITHUB_TOKEN')
+                      if (os.environ.get(k) or '').strip()), '')
+    stored = str(db.get_setting('github_token', '') or '').strip()
+    effective = env_token or stored
+    return {
+        'configured': bool(effective),
+        'masked': updater.mask_token(effective),
+        'source': 'env' if env_token else ('panel' if stored else ''),
+    }
+
+
+@router.put('/settings/github-token')
+def save_github_token(body: dict, user: dict = Depends(security.require_admin)) -> dict:
+    """保存面板这份 GitHub Token（空串 = 清除）。
+
+    不做格式校验（GitHub 的 token 形态换过几次），但长度上限兜住误贴整段文本；
+    保存后不返回明文 —— 与其它凭据字段同一口径。
+    """
+    raw = str((body or {}).get('token') or '').strip()
+    if len(raw) > 512:
+        raise HTTPException(status_code=400, detail='GitHub Token 过长（最多 512 字符）')
+    db.set_setting('github_token', raw)
+    security.audit(user, 'update_github_token', '', '已配置' if raw else '已清除')
+    return {'configured': bool(raw), 'masked': updater.mask_token(raw)}
+
 
 # ── 管理端用户 ───────────────────────────────────────────
 class UserIn(BaseModel):
