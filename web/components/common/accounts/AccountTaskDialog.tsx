@@ -18,6 +18,7 @@ import {useI18n} from '@/lib/i18n/provider';
 import {RichText} from '@/lib/i18n/rich-text';
 import {notify} from '@/lib/toast';
 import {translateRunLine} from '@/lib/i18n/taskrun';
+import {taskName} from '@/lib/i18n/taskname';
 import type {Account, TaskRunStatus} from '@/lib/types';
 
 /**
@@ -39,6 +40,44 @@ import type {Account, TaskRunStatus} from '@/lib/types';
  * 后端同一时刻只允许一个任务（taskrun 是进程内单例），所以这里必须能回答
  * 「现在跑的是本账号还是别人（或全量）」——否则用户会以为自己的点击没生效。
  */
+/** 任务状态 → 短语表 key（后端只给机器可读枚举，文案由前端按语言渲染） */
+const STATE_KEY: Record<'pending' | 'claimed' | 'skipped' | 'failed', string> = {
+  failed: 'tasks.stateFailed',
+  pending: 'tasks.statePending',
+  claimed: 'tasks.stateClaimed',
+  skipped: 'tasks.stateSkipped',
+};
+
+/** 正则转义（任务码里可能有 `.` 这类元字符，如 `Model_chat_GLM5.2`） */
+function escapeRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 摘要行的「一句说明」：把原始行处理成能读的一句话。
+ *
+ * 三步（顺序有意义）：
+ *   1. 先按既有规则翻译（未命中就是原文，日志完整性优先）；
+ *   2. 去掉 `[task_runner] <uid8> <任务码>: ` 前缀 —— 行标题已经是任务名，
+ *      uid 与内部标识在这里只是噪声（原文页签里一字不少地留着）；
+ *   3. 去掉 `ids=[...]` 对象 id 清单：那是排障细节，长度还会把这一行挤成两行。
+ */
+function detailLine(line: string, code: string): string {
+  let text = translateRunLine(line);
+  text = text.replace(/^[^:]*\[task_runner\][^:]*:\s*/, '');
+  text = text.replace(new RegExp('^' + escapeRe(code) + '\\s*[:：]\\s*'), '');
+  text = text.replace(/\s*ids=\[[^\]]*\]/g, '');
+  return text.trim();
+}
+
+/** 状态徽标配色：失败红、待处理琥珀、已领取绿、跳过灰 */
+const STATE_BADGE: Record<'pending' | 'claimed' | 'skipped' | 'failed', string> = {
+  failed: 'bg-red-500/10 text-red-600 dark:text-red-400',
+  pending: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  claimed: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+  skipped: 'text-muted-foreground',
+};
+
 export function AccountTaskDialog({
   account,
   open,
@@ -56,6 +95,8 @@ export function AccountTaskDialog({
   const [status, setStatus] = useState<TaskRunStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmFull, setConfirmFull] = useState(false);
+  /** 输出视图：按任务（默认）/ 原文。切换只影响展示，不重新拉数据。 */
+  const [view, setView] = useState<'tasks' | 'raw'>('tasks');
   // 轮询定时器：跑的时候高频，闲着的时候低频（与 TaskRunnerPanel 同一策略）
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 上一次是否在跑 —— 用来识别「刚刚跑完」这一刻，通知外部刷新一次 */
@@ -205,14 +246,77 @@ export function AccountTaskDialog({
                   </div>
                 )}
 
-                {/* 输出回显：脚本按行打印进度，单账号也要能看到「跑到哪了」 */}
+                {/* 输出回显（issue #189）：默认按**任务**聚合 —— 上游原始行是
+                    「Sequential_Tasks_2: query 1/1 -> 可点亮 … dry-run 跳过」这类
+                    内部标识，普通用户看不出哪些做了、哪些没做。这里每个任务一行：
+                    中文名 + 状态 + 一句说明；原始日志仍在「原文」页签里一字不改
+                    （出问题要拿它跟上游对账）。 */}
                 {status && status.lines.length > 0 && (
-                  <div className="max-h-[220px] overflow-auto rounded-xl bg-muted/60 p-3">
-                    <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-foreground/80">
-                      {/* 回显的是上游脚本的原始 stdout（写死中文），译文只在展示层
-                          按模板逐行替换 —— 详见 lib/i18n/taskrun.ts。 */}
-                      {status.lines.map((l) => translateRunLine(l)).join('\n')}
-                    </pre>
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {(['failed', 'pending', 'claimed', 'skipped'] as const).map((st) => {
+                          const n = (status.tasks || []).filter((x) => x.state === st).length;
+                          if (!n) return null;
+                          return (
+                            <Badge key={st} variant="secondary"
+                                   className={'rounded-full text-[10px] ' + STATE_BADGE[st]}>
+                              {t(STATE_KEY[st])} {n}
+                            </Badge>
+                          );
+                        })}
+                      </div>
+                      {/* 视图切换：只在真有任务摘要时出现；否则「按任务」是空页 */}
+                      {(status.tasks || []).length > 0 && (
+                        <div className="flex items-center gap-0.5 rounded-full bg-muted p-0.5">
+                          {(['tasks', 'raw'] as const).map((v) => (
+                            <button
+                              key={v}
+                              type="button"
+                              onClick={() => setView(v)}
+                              className={
+                                'rounded-full px-2 py-0.5 text-[11px] transition-colors ' +
+                                (view === v
+                                  ? 'bg-background text-foreground shadow-sm'
+                                  : 'text-muted-foreground hover:text-foreground')
+                              }
+                            >
+                              {t(v === 'tasks' ? 'tasks.viewByTask' : 'tasks.viewRaw')}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {view === 'raw' || (status.tasks || []).length === 0 ? (
+                      <div className="max-h-[220px] overflow-auto rounded-xl bg-muted/60 p-3">
+                        <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-foreground/80">
+                          {/* 回显的是上游脚本的原始 stdout（写死中文），译文只在展示层
+                              按模板逐行替换 —— 详见 lib/i18n/taskrun.ts。 */}
+                          {status.lines.map((l) => translateRunLine(l)).join('\n')}
+                        </pre>
+                      </div>
+                    ) : (
+                      <ul className="max-h-[240px] space-y-1.5 overflow-auto">
+                        {(status.tasks || []).map((item) => (
+                          <li key={item.code} className="rounded-xl bg-muted/60 px-3 py-2">
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="text-[12px] font-medium leading-snug">
+                                {taskName(item.code)}
+                              </span>
+                              <Badge variant="secondary"
+                                     className={'shrink-0 rounded-full text-[10px] ' + STATE_BADGE[item.state]}>
+                                {t(STATE_KEY[item.state])}
+                              </Badge>
+                            </div>
+                            <p className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground"
+                               title={translateRunLine(item.line)}>
+                              {detailLine(item.line, item.code)}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 )}
               </>

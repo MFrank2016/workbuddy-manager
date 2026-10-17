@@ -76,7 +76,12 @@ def apply_patches(source: Path, patch_dir: Path) -> list[str]:
         env.pop(key, None)
     for patch in patches:
         def run(*args: str) -> subprocess.CompletedProcess[str]:
-            return subprocess.run(['git', 'apply', *args, str(patch)], cwd=source,
+            # core.autocrlf 必须显式关掉：Windows 上的默认值会把补丁里的 LF 在
+            # 工作树上写成 CRLF，于是「打完补丁的树」与资产基线行尾不一致 ——
+            # 后续补丁的上下文一旦跨到这些行就再也对不上（issue #202 的同一类
+            # 事故）。资产最终由 pack 脚本归一，但中途的树也应当是干净的。
+            return subprocess.run(['git', '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
+                                   'apply', *args, str(patch)], cwd=source,
                                   env=env, capture_output=True, text=True)
         check = run('--check')
         if check.returncode:

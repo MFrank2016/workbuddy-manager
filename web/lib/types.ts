@@ -7,6 +7,11 @@ export interface Me {
 
 export interface Account {
   proxy?: string;
+  /**
+   * 手写权重（issue #187）：上游选号的**乘数**，默认 1；0 = 未设置（等价 1）。
+   * 写在上游 auth 文件顶层 `weight` 里 —— 上游刷新 token 时会保留它。
+   */
+  weight?: number;
   /** 该令牌签发的总时长（秒）；后端从 JWT 解出，解不出为 null */
   ttl_seconds?: number | null;
   /** 令牌签发时间（秒）≈ 最近一次刷新时间；后端从 JWT iat 解出，解不出为 null */
@@ -930,6 +935,17 @@ export interface TaskLogResponse {
  *   claim   只领已完成任务的奖励（幂等，不伪造行为）
  *   full    点亮 + 领奖（会伪造活跃上报，有风控风险，需二次确认）
  */
+/** 活动任务的一行摘要（后端 task_summary.summarize 产出，issue #189） */
+export interface TaskRunSummaryItem {
+  /** 上游任务码，如 `Sequential_Tasks_2`；认不出的就原样显示 */
+  code: string;
+  state: 'pending' | 'claimed' | 'skipped' | 'failed';
+  /** 该任务最有代表性的一条原始日志行（未翻译） */
+  line: string;
+  /** 命中该任务的行数（多行时取最需要行动的那条做代表） */
+  count: number;
+}
+
 export interface TaskRunStatus {
   running: boolean;
   mode: string;
@@ -941,6 +957,12 @@ export interface TaskRunStatus {
   error: string;
   /** 输出尾部（脚本按行打印，后端只保留最近若干行） */
   lines: string[];
+  /**
+   * 按任务聚合的摘要（issue #189）：每条 `{code, state, line, count}`。
+   * `line` 是原始日志行（前端按当前语言渲染），`state` 是机器可读枚举。
+   * 后端按「失败 → 待处理 → 已领取 → 跳过」排好序，前端不再重排。
+   */
+  tasks?: TaskRunSummaryItem[];
   /** 上游脚本与账号目录是否就位；false 时 unavailable_reason 说明原因与做法 */
   available: boolean;
   unavailable_reason: string;

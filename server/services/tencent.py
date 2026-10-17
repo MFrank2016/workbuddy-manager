@@ -131,11 +131,21 @@ def _billing_hdr(realm: Realm, auth: dict | str | None = None) -> dict:
     return billing_headers(realm, auth)
 
 
-def _account_http_client(auth: dict):
+def _account_http_client(auth: dict, *, lane: str = ''):
+    """账号出站客户端（按账号线路选代理）。
+
+    `lane` 透传给 `config.http_client`，把客户端**按用途分池**（issue #161）：
+    批量任务（刷积分/签到/刷新令牌）与交互操作（单号测活）各有各的连接预算，
+    否则批量把池占满时，用户手点的那次测活会一直排队到 PoolTimeout。
+    """
     proxy = config.account_proxy(auth)
+    # lane 只在**非空**时才传：既有调用点（签到/积分/刷新…）的调用形态保持
+    # `http_client(15, connect=5)` 一字不差 —— 那些路径的 mock 断言就是这么写的，
+    # 多传一个空 lane 会把它们全打红，而语义上「默认车道」本来就不该有痕迹。
+    extra = {'lane': lane} if lane else {}
     if proxy is None:
-        return config.http_client(config.TENCENT_TIMEOUT, connect=5)
-    return config.http_client(config.TENCENT_TIMEOUT, connect=5, proxy=proxy)
+        return config.http_client(config.TENCENT_TIMEOUT, connect=5, **extra)
+    return config.http_client(config.TENCENT_TIMEOUT, connect=5, proxy=proxy, **extra)
 
 
 def _login_net_hint(proxy_name: str, exc: Exception) -> str:
@@ -1151,7 +1161,9 @@ async def probe_account(auth: dict, model: str = 'glm-5.2') -> tuple[bool, str]:
     # 用户报告里的「连通性测试被拦、换 /console 就正常」正是这条。
     try:
         paths = chat_paths(realm)
-        async with _account_http_client(auth) as client:
+        # lane='probe'：测活是**用户正在等**的那一次请求，给它独立连接池，
+        # 不被并发的批量任务（刷积分/签到）挤到 pool 超时（issue #161）。
+        async with _account_http_client(auth, lane='probe') as client:
             for idx, path in enumerate(paths):
                 async with client.stream(
                     'POST', f'{base}{path}', json=payload, headers=headers,

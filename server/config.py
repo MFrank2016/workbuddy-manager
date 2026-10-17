@@ -81,6 +81,13 @@ CHECKIN_CONCURRENCY = max(1, _env_int('WB_CHECKIN_CONCURRENCY', 5))
 # 「一键刷新令牌」的并发上限：与签到同理，太低会拖到前端超时，太高容易被
 # 腾讯风控当成异常来源。刷新走的是刷新接口（比签到更敏感），默认取 3。
 REFRESH_CONCURRENCY = max(1, _env_int('WB_REFRESH_CONCURRENCY', 3))
+# 「刷新积分」的并发上限（issue #161）：
+# 这个接口对**全部账号**扇出（页面加载与「刷新积分」按钮都走它），而它们共用
+# 同一个 httpx 连接池。以前没有上限：账号一多就把池占满，排队超过 pool 超时
+# （`WB_TENCENT_TIMEOUT`）就抛 PoolTimeout；而单号测活借的是同一个池，于是
+# 「测活失败」先报到用户面前（真凶是这批批量请求）。8 与页面节奏匹配：缓存
+# 命中时不发请求，冷启动也够快。
+CREDITS_CONCURRENCY = max(1, _env_int('WB_CREDITS_CONCURRENCY', 8))
 TRUST_PROXY = _env('WB_TRUST_PROXY', '1') == '1'
 # 可信反向代理跳数：用于从 X-Forwarded-For 右侧取真实客户端 IP。
 # 前面直接是 1Panel/OpenResty 时保持 1；若还挂了 CDN 则设为 CDN+反代的层数。
@@ -634,7 +641,8 @@ def effective_http_proxy() -> str:
     return global_http_proxy()
 
 
-def http_client(timeout, *, connect: float | None = None, proxy: str | None = None):
+def http_client(timeout, *, connect: float | None = None, proxy: str | None = None,
+                lane: str = ''):
     """统一的 httpx 客户端：默认忽略系统/环境代理，避免内网请求被代理劫持。
 
     需要走代理时显式设置 WB_HTTP_PROXY。
@@ -646,6 +654,12 @@ def http_client(timeout, *, connect: float | None = None, proxy: str | None = No
     **返回的是借用语义的上下文管理器**（退出时不关客户端，见 `_BorrowedClient`）：
     同一事件循环 + 同一组超时/代理只建一次，连接池复用（issue #144：Windows 上
     每次新建要 ~1 秒，正好是页面切换的耗时）。
+
+    `lane` 把客户端**按用途分池**（issue #161）：池是 httpx 的私有属性，缓存键
+    一样就共用一个池，于是「批量刷积分的几十个请求」和「用户手点的单号测活」
+    会互相排队——批量把池占满时，交互操作得等到 pool 超时才报 PoolTimeout，
+    看起来像是「测活坏了」。给交互操作单独的 lane，两边各有各的连接预算。
+    留空 = 默认车道（既有调用点全部不受影响）。
     """
     import httpx
 
@@ -664,7 +678,7 @@ def http_client(timeout, *, connect: float | None = None, proxy: str | None = No
         # 免得把一个绑在未知循环上的客户端留在池里。
         return _build_client(tmo, selected_proxy)
 
-    key = (*_timeout_key(tmo), selected_proxy or '')
+    key = (*_timeout_key(tmo), selected_proxy or '', lane)
     entry = _CLIENTS.get(key)
     if entry is not None and entry[0] is loop and not entry[1].is_closed:
         return _BorrowedClient(entry[1])

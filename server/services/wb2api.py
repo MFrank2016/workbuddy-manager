@@ -77,6 +77,59 @@ def set_account_proxy(filename: str, proxy: str, auth_dir: Path | None = None) -
     return {'file': filename, 'proxy': proxy}
 
 
+# 手写权重的取值范围（issue #187）：与上游 `auth.MinWeight` / `auth.MaxWeight`
+# 是同一口径。两边各有一份常量是因为它们跑在不同进程里——改一处必须同时改另一处。
+WEIGHT_MIN = 0.1
+WEIGHT_MAX = 100.0
+
+
+def _weight_of(raw: dict) -> float:
+    """读 auth 文件顶层 `weight`：非法值按 0（未设置）处理，与上游 Parse 同口径。
+
+    不做上下限钳制：钳制只在选号时发生（上游 `auth.PickWeight`），而列表要按
+    文件里的真实值回显，否则用户会看到「我填了 0.01，界面显示 0.1」。
+    """
+    try:
+        value = float(raw.get('weight') or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if value != value or value in (float('inf'), float('-inf')) or value < 0:
+        return 0.0
+    return value
+
+
+def set_account_weight(filename: str, weight: float,
+                       auth_dir: Path | None = None) -> dict:
+    """只更新手写权重，保留凭据及其他字段；写入复用账号文件的原子替换。
+
+    `weight` 传 0 = **清除**（恢复默认 1.0），与「把 1 写进文件」刻意区分：
+    默认值不该出现在每个账号文件里，否则手改过的文件会被悄悄加上一个键。
+    范围校验只在这里做（服务层唯一口径），路由负责把 ValueError 转成 400。
+    """
+    from .tencent import _atomic_write_json
+
+    try:
+        value = float(weight)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('权重必须是数字') from exc
+    if value != value or value in (float('inf'), float('-inf')):
+        raise ValueError('权重必须是有限数字')
+    if value != 0 and not (WEIGHT_MIN <= value <= WEIGHT_MAX):
+        raise ValueError(f'权重需在 {WEIGHT_MIN:g} 与 {WEIGHT_MAX:g} 之间（0 = 清除）')
+    path = _safe_file(filename, auth_dir)
+    if path.is_symlink():
+        raise ValueError('账号文件不能是符号链接')
+    raw = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(raw, dict):
+        raise ValueError('账号文件格式异常')
+    if value == 0:
+        raw.pop('weight', None)
+    else:
+        raw['weight'] = value
+    _atomic_write_json(path, raw)
+    return {'file': filename, 'weight': value}
+
+
 def _jwt_times(access_token: str) -> tuple[int, int] | None:
     """从 accessToken（JWT）里读出 (iat, exp)。解不出返回 None。
 
@@ -206,6 +259,10 @@ def list_auth_accounts(auth_dir: Path | None = None) -> list[dict]:
                 'realm': realm_of({'realm': raw.get('realm') or auth.get('realm'),
                                    'domain': auth.get('domain')}),
                 'domain': str(auth.get('domain') or ''),
+                # 手写权重（issue #187）：0 = 未设置（上游按 1.0 处理）。
+                # 原样给出，不做钳制——界面要按文件里的真实值回显，
+                # 钳制与默认值只在选号时生效（上游 auth.PickWeight）。
+                'weight': _weight_of(raw),
                 # 该版本是否支持签到体系（国际版没有，调用方据此跳过而不是打 4xx）
                 'checkin_supported': supports_checkin(
                     realm_of({'realm': raw.get('realm') or auth.get('realm'),

@@ -162,6 +162,15 @@ export const accountApi = {
     put<{ok: boolean; proxy: string; reload_triggered: boolean}>(
       `/api/accounts/${encodeURIComponent(filename)}/proxy` + groupQs(upstreamId), {proxy}),
   /**
+   * 设置 / 清除账号手写权重（issue #187）。`weight = 0` 表示恢复默认（1.0）。
+   *
+   * 写的是上游 auth 文件顶层 `weight`（不是本端库）：选号发生在上游，它必须能读到。
+   * 后端会顺带请求重载上游 —— 权重和线路一样是**加载时**解析进内存的。
+   */
+  setWeight: (filename: string, weight: number, upstreamId?: number | null) =>
+    put<{ok: boolean; weight: number; reload_triggered: boolean}>(
+      `/api/accounts/${encodeURIComponent(filename)}/weight` + groupQs(upstreamId), {weight}),
+  /**
    * 某分组的账号列表。upstreamId 省略 / null = 默认分组。
    *
    * 「分组」= 一套上游实例（账号池）：账号文件读该分组的目录、运行状态问该

@@ -48,6 +48,7 @@ from pathlib import Path
 
 from .. import config, db
 from .errtext import err_text
+from .task_summary import summarize as summarize_tasks
 
 
 logger = logging.getLogger('workbuddy.taskrun')
@@ -319,6 +320,10 @@ def status() -> dict:
     """
     snap = dict(_state)
     snap['lines'] = list(_state['lines'])
+    # 按任务聚合（issue #189）：原始行照旧给全，额外给一份「任务 → 状态」的摘要，
+    # 界面默认展示它（用户看不出 `Sequential_Tasks_2: query 1/1 -> 可点亮…` 的
+    # 要点），原文仍在「原文」页签里可查。
+    snap['tasks'] = summarize_tasks(snap['lines'])
     snap['available'], snap['unavailable_reason'] = available()
     snaps = db.get_setting('task_claim_schedule') or {}
     snap['schedule'] = snaps if isinstance(snaps, dict) else {}

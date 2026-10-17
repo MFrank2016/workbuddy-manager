@@ -24,6 +24,7 @@ import {
   Snowflake,
   Sparkles,
   StickyNote,
+  Scale,
   FolderInput,
   TriangleAlert,
 } from 'lucide-react';
@@ -67,6 +68,7 @@ import {AddAccountDialog} from '@/components/common/accounts/AddAccountDialog';
 import {UploadAccountsButton} from '@/components/common/accounts/UploadAccountsButton';
 import {CreditCountdown} from '@/components/common/accounts/CreditCountdown';
 import {AccountNoteDialog} from '@/components/common/accounts/AccountNoteDialog';
+import {AccountWeightDialog} from '@/components/common/accounts/AccountWeightDialog';
 import {MoveAccountDialog} from '@/components/common/accounts/MoveAccountDialog';
 import {UpstreamFormDialog} from '@/components/common/upstreams/UpstreamFormDialog';
 import {AccountCoolingDialog} from '@/components/common/accounts/AccountCoolingDialog';
@@ -120,6 +122,9 @@ export default function AccountsPage() {
   // 备注编辑（issue #67）：记的是**哪个账号**而不是布尔——弹窗要以该账号当前的
   // 备注为初值，否则会拿上一个账号的内容去保存。
   const [noteTarget, setNoteTarget] = useState<Account | null>(null);
+  // 权重弹窗的目标账号（issue #187）：与备注分开两个弹窗 —— 备注存本端库，
+  // 权重写上游账号文件，混在一起容易让人以为「改了不用重启」。
+  const [weightTarget, setWeightTarget] = useState<Account | null>(null);
   const [coolingTarget, setCoolingTarget] = useState<Account | null>(null);
   // 活动任务（单账号执行成长任务）的目标账号；null = 对话框关闭
   const [taskTarget, setTaskTarget] = useState<Account | null>(null);
@@ -940,6 +945,24 @@ export default function AccountsPage() {
         >
           <StickyNote className={'h-3.5 w-3.5 ' + (a.note ? 'text-amber-600 dark:text-amber-400' : '')} />
         </Button>
+        {/* 手写权重（issue #187）：上游选号的乘数，默认 1。
+            与备注同一类「账号元数据」，所以挨着放；但它是**写上游账号文件**的，
+            改完要重载上游才生效——弹窗里写清了这一点。设过权重（≠1）时图标染成
+            主题色，否则一眼看不出这个号被特殊对待过。 */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 rounded-md"
+          title={`${t('accounts.weight')}${a.weight ? ' ×' + a.weight : ''}`}
+          disabled={busy}
+          onClick={() => setWeightTarget(a)}
+        >
+          <Scale
+            className={
+              'h-3.5 w-3.5 ' + (a.weight ? 'text-primary' : '')
+            }
+          />
+        </Button>
         {/* 临时停用 / 启用（issue #21、#45）。放在最前：它是最轻的「止血」动作——
             某个号在拖后腿（一直失败、触发风控）时，先停用它比删掉更合适
             （删除会丢凭证、只能重新扫码；停用是可逆的）。 */}
@@ -1586,6 +1609,13 @@ export default function AccountsPage() {
         account={noteTarget}
         open={noteTarget !== null}
         onOpenChange={(open) => { if (!open) setNoteTarget(null); }}
+        onSaved={reloadAll}
+        upstreamId={groupId}
+      />
+      <AccountWeightDialog
+        account={weightTarget}
+        open={weightTarget !== null}
+        onOpenChange={(open) => { if (!open) setWeightTarget(null); }}
         onSaved={reloadAll}
         upstreamId={groupId}
       />
