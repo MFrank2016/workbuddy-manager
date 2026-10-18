@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from .. import config
+from .filelock import file_lock
 from . import realm as _realm
 from .errtext import err_text
 from .realm import realm_of, supports_checkin
@@ -66,14 +67,17 @@ def set_account_proxy(filename: str, proxy: str, auth_dir: Path | None = None) -
     path = _safe_file(filename, auth_dir)
     if path.is_symlink():
         raise ValueError('账号文件不能是符号链接')
-    raw = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(raw, dict):
-        raise ValueError('账号文件格式异常')
-    if proxy:
-        raw['proxy'] = proxy
-    else:
-        raw.pop('proxy', None)
-    _atomic_write_json(path, raw)
+    # 读—改—写串行（见 filelock.py）：与续期/导入并发时，后写者不会用旧快照
+    # 把先写者刚改的字段盖回去。
+    with file_lock(path):
+        raw = json.loads(path.read_text(encoding='utf-8'))
+        if not isinstance(raw, dict):
+            raise ValueError('账号文件格式异常')
+        if proxy:
+            raw['proxy'] = proxy
+        else:
+            raw.pop('proxy', None)
+        _atomic_write_json(path, raw)
     return {'file': filename, 'proxy': proxy}
 
 
@@ -119,14 +123,15 @@ def set_account_weight(filename: str, weight: float,
     path = _safe_file(filename, auth_dir)
     if path.is_symlink():
         raise ValueError('账号文件不能是符号链接')
-    raw = json.loads(path.read_text(encoding='utf-8'))
-    if not isinstance(raw, dict):
-        raise ValueError('账号文件格式异常')
-    if value == 0:
-        raw.pop('weight', None)
-    else:
-        raw['weight'] = value
-    _atomic_write_json(path, raw)
+    with file_lock(path):
+        raw = json.loads(path.read_text(encoding='utf-8'))
+        if not isinstance(raw, dict):
+            raise ValueError('账号文件格式异常')
+        if value == 0:
+            raw.pop('weight', None)
+        else:
+            raw['weight'] = value
+        _atomic_write_json(path, raw)
     return {'file': filename, 'weight': value}
 
 
@@ -1713,7 +1718,12 @@ def save_upstream_config(patch: dict) -> dict:
             'token': str(current.get('token') or ''),
         }
 
-    path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding='utf-8')
+    # 原子写（issue：审计 2026-10-18）：直接 write_text 会先截断再写，保存的瞬间
+    # 并发的网关请求可能读到半截文件（api_key / 代理线路回退为空），进程崩溃还会
+    # 留下坏配置。与账号文件同一套 tmp + os.replace。
+    from .tencent import _atomic_write_json
+    with file_lock(path):
+        _atomic_write_json(path, cfg)
     # 保存后立即让 realm 的配置缓存失效：否则 global.enabled / 两个 base 的改动
     # 最长要 10 秒后才生效，用户会以为没保存成功
     _realm.invalidate()
@@ -1992,9 +2002,18 @@ async def test_upstash(url: str, token: str | None = None) -> tuple[bool, str]:
         return False, blocked
 
     if not token:
+        # 用**已保存**的 Token 时，地址也必须是已保存的那一个：只允许测保存过的
+        # 组合，不允许「拿存好的 Token 去请求任意公网地址」。否则管理端（或
+        # admin scope 的 API Token）传入自己的服务器地址、token 留空，就能把
+        # 配置里的 Upstash Token 以 Authorization 头带出去（审计 2026-10-18）。
         try:
             cfg = json.loads(config.UPSTREAM_CONFIG.read_text(encoding='utf-8'))
-            token = str((cfg.get('upstash') or {}).get('token') or '')
+            saved = (cfg.get('upstash') or {}) if isinstance(cfg, dict) else {}
+            saved_base = _upstash_rest_base(str(saved.get('url') or ''))
+            if not saved_base or saved_base != base:
+                return False, ('未提供 Token，且地址与已保存的不一致 —— '
+                               '请填写 Token 后再测试（不会把已存 Token 发往新地址）')
+            token = str(saved.get('token') or '')
         except Exception:  # noqa: BLE001
             token = ''
     if not token:

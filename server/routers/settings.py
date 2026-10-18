@@ -64,7 +64,8 @@ class UpstashTestIn(BaseModel):
 
 
 @router.post('/settings/upstash/test')
-async def test_upstash(body: UpstashTestIn, user: dict = Depends(security.require_admin)) -> dict:
+async def test_upstash(body: UpstashTestIn,
+                       user: dict = Depends(security.require_session_admin)) -> dict:
     """探测 Upstash 是否可用（走其 REST 接口 PING）。"""
     ok, message = await wb2api.test_upstash(body.url, body.token)
     return {'ok': ok, 'message': message}
@@ -141,6 +142,45 @@ def save_github_token(body: dict, user: dict = Depends(security.require_admin)) 
     db.set_setting('github_token', raw)
     security.audit(user, 'update_github_token', '', '已配置' if raw else '已清除')
     return {'configured': bool(raw), 'masked': updater.mask_token(raw)}
+
+
+# ── GitHub 镜像（issue #216）─────────────────────────────────
+@router.get('/settings/github-mirror')
+def get_github_mirror(user: dict = Depends(security.require_admin)) -> dict:
+    """当前生效的 GitHub 镜像基址 + 来源（面板 / 环境变量 / 未配置）。"""
+    env_value = updater.normalize_mirror(os.environ.get('WB_GITHUB_MIRROR') or '')
+    stored = updater.stored_github_mirror()
+    effective = updater.normalize_mirror(stored or env_value)
+    return {
+        'mirror': effective,
+        'stored': stored,
+        'env_mirror': env_value,
+        'source': 'panel' if stored else ('env' if env_value else ''),
+        'presets': ['https://gh-proxy.com/', 'https://gh-proxy.org/'],
+    }
+
+
+@router.put('/settings/github-mirror')
+def save_github_mirror(body: dict, user: dict = Depends(security.require_admin)) -> dict:
+    """保存镜像基址（空串 = 清除，回落到环境变量）。
+
+    只接受「协议 + 主机 + 可选路径」：拼地址的规则是「基址 + 完整原始地址」，
+    带查询串或片段的写法拼出来必然是一个错误页，所以在入口就拒掉。
+    """
+    raw = str((body or {}).get('mirror') or '').strip()
+    if not raw:
+        db.set_setting('github_mirror', '')
+        security.audit(user, 'update_github_mirror', '', '已清除')
+        return get_github_mirror(user)
+    value = updater.normalize_mirror(raw)
+    if not value:
+        raise HTTPException(
+            status_code=400,
+            detail='镜像地址要以 http:// 或 https:// 开头，且不能带查询串或 # 片段',
+        )
+    db.set_setting('github_mirror', value)
+    security.audit(user, 'update_github_mirror', '', value)
+    return get_github_mirror(user)
 
 
 # ── 管理端用户 ───────────────────────────────────────────

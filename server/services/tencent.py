@@ -37,6 +37,7 @@ from .realm import (
 )
 
 from .errtext import err_text
+from .filelock import file_lock
 
 class AccountExistsError(ValueError):
     """Raised when an import attempts to replace an existing account without consent."""
@@ -352,33 +353,35 @@ def update_auth_tokens(filename: str, fields: dict,
     也不要把一份坏内容覆盖到用户仅存的凭证上）。
     """
     target = _safe_auth_path(filename, auth_dir)
-    try:
-        raw = json.loads(target.read_text(encoding='utf-8'))
-    except FileNotFoundError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f'账号文件无法解析，已放弃写入：{err_text(exc)}') from exc
-    if not isinstance(raw, dict):
-        raise ValueError('账号文件格式异常，已放弃写入')
+    # 读—改—写必须串行（见 filelock.py）：否则续期与其它写者会互相覆盖。
+    with file_lock(target):
+        try:
+            raw = json.loads(target.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f'账号文件无法解析，已放弃写入：{err_text(exc)}') from exc
+        if not isinstance(raw, dict):
+            raise ValueError('账号文件格式异常，已放弃写入')
 
-    auth = raw.get('auth')
-    if not isinstance(auth, dict):
-        auth = {}
-        raw['auth'] = auth
-    if 'access_token' in fields:
-        auth['accessToken'] = fields['access_token']
-    if 'refresh_token' in fields:
-        auth['refreshToken'] = fields['refresh_token']
-    if 'expires_at' in fields:
-        auth['expiresAt'] = fields['expires_at']
-    if 'domain' in fields:
-        auth['domain'] = fields['domain']
-    # realm 若缺失则补上（与 write_auth_file 同口径，用 resolve_realm 不含逃生门）
-    if not auth.get('realm'):
-        auth['realm'] = resolve_realm(raw.get('realm'),
-                                      str(auth.get('domain') or ''))
+        auth = raw.get('auth')
+        if not isinstance(auth, dict):
+            auth = {}
+            raw['auth'] = auth
+        if 'access_token' in fields:
+            auth['accessToken'] = fields['access_token']
+        if 'refresh_token' in fields:
+            auth['refreshToken'] = fields['refresh_token']
+        if 'expires_at' in fields:
+            auth['expiresAt'] = fields['expires_at']
+        if 'domain' in fields:
+            auth['domain'] = fields['domain']
+        # realm 若缺失则补上（与 write_auth_file 同口径，用 resolve_realm 不含逃生门）
+        if not auth.get('realm'):
+            auth['realm'] = resolve_realm(raw.get('realm'),
+                                          str(auth.get('domain') or ''))
 
-    _atomic_write_json(target, raw)
+        _atomic_write_json(target, raw)
 
 
 def _safe_auth_path(filename: str, auth_dir: Path | None = None) -> Path:
@@ -430,46 +433,58 @@ def write_auth_file(account: dict, auth_dir: Path | None = None,
     domain = account.get('domain', '')
     resolved = resolve_realm(account.get('realm'), domain)
 
-    # 保留旧的 device_token（若有）。读失败不影响主流程。
-    old_device_token = ''
-    old_proxy = ''
-    if existed:
-        try:
-            old = json.loads(target.read_text(encoding='utf-8'))
-            if isinstance(old, dict):
-                old_device_token = str(old.get('device_token') or '')
-                old_proxy = str(old.get('proxy') or '')
-        except Exception:  # noqa: BLE001
-            old_device_token = ''
+    # 读旧值 → 合并 → 原子写，整体串行：重登/导入不能把别人刚写的字段盖掉。
+    with file_lock(target):
+        # 保留旧的 device_token（若有）。读失败不影响主流程。
+        old_device_token = ''
+        old_proxy = ''
+        old_weight = None
+        if existed:
+            try:
+                old = json.loads(target.read_text(encoding='utf-8'))
+                if isinstance(old, dict):
+                    old_device_token = str(old.get('device_token') or '')
+                    old_proxy = str(old.get('proxy') or '')
+                    old_weight = old.get('weight')
+            except Exception:  # noqa: BLE001
+                old_device_token = ''
 
-    payload = {
-        'account': {
-            'uid': uid,
-            'enterpriseId': account.get('enterprise_id', ''),
-            'nickname': account.get('nickname', ''),
-        },
-        'auth': {
-            'accessToken': account['access_token'],
-            'refreshToken': account.get('refresh_token', ''),
-            'expiresAt': account['expires_at'],
-            'domain': domain,
-            'realm': resolved,
-        },
-    }
-    if old_device_token:
-        payload['device_token'] = old_device_token
+        payload = {
+            'account': {
+                'uid': uid,
+                'enterpriseId': account.get('enterprise_id', ''),
+                'nickname': account.get('nickname', ''),
+            },
+            'auth': {
+                'accessToken': account['access_token'],
+                'refreshToken': account.get('refresh_token', ''),
+                'expiresAt': account['expires_at'],
+                'domain': domain,
+                'realm': resolved,
+            },
+        }
+        if old_device_token:
+            payload['device_token'] = old_device_token
 
-    # 空串同样回退到旧值（`or old_proxy`，而不是只对「键缺失」生效的默认值）：
-    # 登录流（account 里通常没有这个键）与**导入流**（`_uploaded_account` 恒带上
-    # `'proxy': ''`）两条路都要「文件没提就不动」。否则覆盖导入一份没写 proxy 的
-    # 文件会把已绑定的线路**静默清掉**——出口无声改变正是这个功能最忌讳的事
-    # （与上面 device_token「读旧文件保留」的语义对齐）。
-    proxy_name = str(account.get('proxy') or old_proxy or '').strip()
-    if proxy_name:
-        payload['proxy'] = proxy_name
+        # 空串同样回退到旧值（`or old_proxy`，而不是只对「键缺失」生效的默认值）：
+        # 登录流（account 里通常没有这个键）与**导入流**（`_uploaded_account` 恒带上
+        # `'proxy': ''`）两条路都要「文件没提就不动」。否则覆盖导入一份没写 proxy 的
+        # 文件会把已绑定的线路**静默清掉**——出口无声改变正是这个功能最忌讳的事
+        # （与上面 device_token「读旧文件保留」的语义对齐）。
+        proxy_name = str(account.get('proxy') or old_proxy or '').strip()
+        if proxy_name:
+            payload['proxy'] = proxy_name
 
-    # 原子替换的完整理由见 `_atomic_write_json`（热加载读到空文件会误判账号被删）
-    _atomic_write_json(target, payload)
+        # 手写权重同 device_token / proxy：文件没提就沿用旧值。
+        # 重新登录/覆盖导入是「按响应重建整份文件」，不读旧值就会把
+        # 用户设的权重静默清零（#187 的同一条坑）。
+        weight = account.get('weight', old_weight)
+        if (isinstance(weight, (int, float)) and not isinstance(weight, bool)
+                and weight > 0):
+            payload['weight'] = weight
+
+        # 原子替换的完整理由见 `_atomic_write_json`（热加载读到空文件会误判账号被删）
+        _atomic_write_json(target, payload)
     return target.name, existed
 
 

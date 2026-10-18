@@ -1502,6 +1502,8 @@ def task_logs(
     分页返回：列表只取当前页，`total` 为**当前筛选下**的总数，
     概览 `stats` 也按同一时间范围统计，保证数字与列表一致。
     """
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, min(int(offset), 10_000_000))
     logs = db.list_task_logs(limit=limit, uid=uid, kind=kind, offset=offset, days=days)
 
     # 按版本过滤（realm 为空则不过滤）。日志表无 realm 列，按账号表映射 uid
@@ -1656,6 +1658,7 @@ def upstream_logs(limit: int = 200, user: dict = Depends(security.current_user))
     上游只在失败时打日志、成功大多静默（旅行与活跃上报除外，它们会记录
     积分与服务端判据）。结构化、可长期保留的记录见 /api/task-logs。
     """
+    limit = max(1, min(int(limit), 2000))
     lines = wb2api.read_container_logs(limit=limit)
     keywords = ('checkin', 'keepalive', 'user-resource', 'travel', 'activity')
     interesting = [

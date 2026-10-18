@@ -26,6 +26,7 @@ import type {
   CreditExpiry,
   CreditsMeta,
   DrawResult,
+  GithubMirror,
   IpAccessLog,
   IpRule,
   KeyExportResult,
@@ -104,7 +105,10 @@ http.interceptors.response.use(
   (r) => r,
   (error: AxiosError) => {
     if (error.response?.status === 401 && typeof window !== 'undefined') {
-      // 会话失效：清掉缓存的登录态，避免仍显示管理员入口
+      // 会话失效：清掉缓存的登录态，避免仍显示管理员入口。
+      // `hadSession` 决定要不要说「会话已过期」：首次访问本来就没有会话，
+      // 那是「请登录」而不是「过期了」（用户会以为面板坏了）。
+      const hadSession = !!window.sessionStorage.getItem('wb-me');
       window.sessionStorage.removeItem('wb-me');
       const path = window.location.pathname;
       // **公开页不跳登录页**：红包抽奖页就是给没账号的人看的（同事朋友收到链接
@@ -117,11 +121,14 @@ http.interceptors.response.use(
       // window.location.href 会跳到域名根（通常 404）—— 登录页与公开页都一样。
       const loginPath = `${BASE_PATH}/login`;
       const publicPaths = [loginPath, `${BASE_PATH}/claim`];
-      if (!publicPaths.some((p) => path.startsWith(p))) {
+      // 根路径只是「跳到 /dashboard」的中转页，不在这里拦（否则首次访问者
+      // 会先被重定向到登录页并显示「会话已过期」）。
+      const isRoot = path === BASE_PATH || path === `${BASE_PATH}/`;
+      if (!isRoot && !publicPaths.some((p) => path.startsWith(p))) {
         // 带上 `?expired=1`：登录页据此显示「会话已过期，请重新登录」，而不是毫无
         // 解释地把人丢回登录页 —— 实测用户会以为自己点了退出、或面板坏了（明明刚才
         // 还在用）。服务端鉴权不受影响，这只是给跳转补一个原因。
-        window.location.href = `${loginPath}?expired=1`;
+        window.location.href = `${loginPath}${hadSession ? '?expired=1' : ''}`;
       }
     }
     return Promise.reject(error);
@@ -705,6 +712,10 @@ export const systemApi = {
     '/api/settings/github-token'),
   saveGithubToken: (token: string) =>
     put<{configured: boolean; masked: string}>('/api/settings/github-token', {token}),
+  /** GitHub 镜像（issue #216）：国内机器用它加速版本检测与发布包下载 */
+  githubMirror: () => get<GithubMirror>('/api/settings/github-mirror'),
+  saveGithubMirror: (mirror: string) =>
+    put<GithubMirror>('/api/settings/github-mirror', {mirror}),
   /**
    * 启动一键更新；target: manager | upstream | both。
    * source='uploaded' 用面板里已上传的离线升级包（issue #153）。

@@ -733,6 +733,13 @@ export interface UsageBreakdown {
   completion_tokens: number;
   /** 该维度实际扣费合计 */
   credit: number;
+  /**
+   * 输出速率（tokens/秒，issue #214）：按「生成耗时 = 总耗时 − 首字耗时」估算。
+   * null / 缺省 = 没有可用样本（日志已清或该模型没成功请求），界面显示「—」。
+   */
+  tokens_per_sec?: number | null;
+  /** 参与速率计算的请求条数（只覆盖日志保留期内的成功请求） */
+  throughput_samples?: number;
 }
 
 export interface StatsSummary {
@@ -1053,6 +1060,12 @@ export interface ManagerVersion extends VersionSide {
    * 只会拿到 404，界面要**先说清楚**。`null` = 未知（旧缓存）。
    */
   assets_ready: boolean | null;
+  /** Release 正文（纯文本，截断）；更新前展示，避免装完才知道配套要求 */
+  release_notes?: string;
+  /** Release 发布时间（ISO 字符串） */
+  published_at?: string;
+  /** 本次发布包内的上游与本机不一致（由 Release 正文里的 upstream-id 判断） */
+  upstream_changed?: boolean;
   repo: string;
 }
 
@@ -1113,6 +1126,22 @@ export interface Versions {
   upstream_connected: boolean;
   upstream_accounts: number | null;
   upstream_dir: string;
+}
+
+/**
+ * GitHub 镜像（issue #216）：国内机器直连 GitHub 超时时，用加速服务取
+ * Release 元信息与发布包。走镜像时**不会**发送 GitHub Token。
+ */
+export interface GithubMirror {
+  /** 生效的镜像基址（规范化后带尾斜杠）；空串 = 直连 */
+  mirror: string;
+  /** 面板里存的值（空 = 没设过） */
+  stored: string;
+  /** 部署时注入的环境变量 WB_GITHUB_MIRROR */
+  env_mirror: string;
+  source: 'panel' | 'env' | '';
+  /** 界面上的快捷选项 */
+  presets: string[];
 }
 
 /** 更新日志中的一条（level 1 = 二级缩进，作为子项展示） */

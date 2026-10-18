@@ -205,6 +205,57 @@ async function main() {
     await page.getByRole('button', {name: L.byTask, exact: true}).click();
     step((await page.locator('[role="dialog"]').last().innerText()).includes(L.seq2),
          '切回「按任务」仍正常');
+
+    // ── 用量页：模型输出 tok/s 列（issue #214）─────────────────────
+    // by-model 用 stub：真实数据要写 usage_daily + request_logs，这里只验渲染
+    // 与「没有样本时显示 —」；计算口径由 server/tests/test_stats_throughput.py 守。
+    await page.route('**/api/stats/by-model*', (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      return route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify([
+          {name: 'glm-5.2', requests: 10, prompt_tokens: 1000, completion_tokens: 500,
+           credit: 0.2, tokens_per_sec: 37.5, throughput_samples: 8},
+          {name: 'deepseek-v4.1-flash', requests: 3, prompt_tokens: 300,
+           completion_tokens: 120, credit: 0.1, tokens_per_sec: null,
+           throughput_samples: 0},
+        ]),
+      });
+    });
+    await page.goto(`${BASE}/stats`, {waitUntil: 'domcontentloaded'});
+    step(await waitForText(page, /输出 tok\/s/), '用量页出现「输出 tok/s」列');
+    step(await waitForText(page, /37\.5/), '有样本的模型显示速率');
+    // 没有样本的模型显示「—」而不是 0 / 猜的数
+    const statsText = await page.locator('body').innerText();
+    step(/deepseek-v4\.1-flash[\s\S]{0,80}—/.test(statsText) ||
+         statsText.includes('—'), '无样本的模型显示占位符');
+
+    // 横向溢出守卫（#151 的同类问题）：新加一列后整页不该出现横向滚动条
+    for (const width of [1440, 1828]) {
+      await page.setViewportSize({width, height: 900});
+      await page.waitForTimeout(300);
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      step(overflow <= 0, `${width}px 下用量页无横向溢出`, `overflow=${overflow}`);
+    }
+    await page.screenshot({path: path.join(OUT, 'stats-throughput.png'), fullPage: false});
+
+    // ── 移动端：账号卡片操作区不再溢出（2.4.0 布局守卫）───────────
+    await page.setViewportSize({width: 390, height: 844});
+    await page.goto(`${BASE}/accounts`, {waitUntil: 'domcontentloaded'});
+    await waitForText(page, /演示号/);
+    const mobileOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    step(mobileOverflow <= 0, '390px 下账号页无横向溢出', `overflow=${mobileOverflow}`);
+    // 操作区的最后一个按钮（删除）必须在卡片可视宽度内：换行生效的直接证据
+    const lastActionInCard = await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('button[title]')].pop();
+      if (!btn) return null;
+      const rect = btn.getBoundingClientRect();
+      return rect.right <= window.innerWidth + 1 && rect.left >= -1;
+    });
+    step(lastActionInCard === true, '390px 下最后一个操作按钮可见（操作区已换行）');
+    await page.setViewportSize({width: 1440, height: 900});
   } catch (e) {
     step(false, '脚本异常', String(e && e.message ? e.message : e));
   } finally {

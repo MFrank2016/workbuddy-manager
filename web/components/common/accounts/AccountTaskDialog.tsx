@@ -1,6 +1,6 @@
 'use client';
 
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {useEffect, useState} from 'react';
 import {Eye, Gift, Loader2, Play, Sparkles, Square, TriangleAlert} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {Badge} from '@/components/ui/badge';
@@ -13,13 +13,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/animate-ui/radix/dialog';
-import {accountApi, errText} from '@/lib/api';
 import {useI18n} from '@/lib/i18n/provider';
 import {RichText} from '@/lib/i18n/rich-text';
-import {notify} from '@/lib/toast';
 import {translateRunLine} from '@/lib/i18n/taskrun';
 import {taskName} from '@/lib/i18n/taskname';
-import type {Account, TaskRunStatus} from '@/lib/types';
+import {useTaskRun, type TaskRunMode} from '@/lib/use-task-run';
+import type {Account} from '@/lib/types';
 
 /**
  * 单账号「活动任务」弹窗（账号页）。
@@ -91,79 +90,29 @@ export function AccountTaskDialog({
   /** 一次任务跑完时通知外部（积分/状态可能变了，账号列表要重拉） */
   onFinished?: () => void;
 }) {
-  const {t, tp} = useI18n();
-  const [status, setStatus] = useState<TaskRunStatus | null>(null);
-  const [busy, setBusy] = useState(false);
+  const {t} = useI18n();
   const [confirmFull, setConfirmFull] = useState(false);
   /** 输出视图：按任务（默认）/ 原文。切换只影响展示，不重新拉数据。 */
   const [view, setView] = useState<'tasks' | 'raw'>('tasks');
-  // 轮询定时器：跑的时候高频，闲着的时候低频（与 TaskRunnerPanel 同一策略）
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** 上一次是否在跑 —— 用来识别「刚刚跑完」这一刻，通知外部刷新一次 */
-  const wasRunning = useRef(false);
-
-  const load = useCallback(async () => {
-    try {
-      const s = await accountApi.taskRunStatus();
-      setStatus(s);
-      return s;
-    } catch {
-      return null; // 拉状态失败不打扰用户（弹窗里的按钮会自然处于不可点状态）
-    }
-  }, []);
+  const uid = account?.uid ?? '';
+  const {status, busy, run: runTask, stop} = useTaskRun({
+    target: uid,
+    enabled: open,
+    onFinished,
+  });
 
   useEffect(() => {
-    if (!open) return;
-    let alive = true;
-    wasRunning.current = false;
-    setConfirmFull(false);
-    const tick = async () => {
-      const s = await load();
-      if (!alive) return;
-      const nowRunning = s?.running === true;
-      // 由「跑着」变成「不跑」：跑完了。积分可能变了，让外层重拉一次账号列表。
-      if (wasRunning.current && !nowRunning) onFinished?.();
-      wasRunning.current = nowRunning;
-      timer.current = setTimeout(tick, nowRunning ? 2000 : 15000);
-    };
-    tick();
-    return () => {
-      alive = false;
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [open, load, onFinished]);
+    if (open) setConfirmFull(false);
+  }, [open]);
 
-  async function run(mode: 'preview' | 'claim' | 'full', confirm = false) {
+  /** 弹窗关闭时 target 为空，任何按钮都不该发请求。 */
+  async function run(mode: TaskRunMode, confirm = false) {
     if (!account) return;
-    setBusy(true);
-    try {
-      // target 传完整 uid：上游脚本按「uid 前缀」匹配 auths 文件，完整 uid 必然
-      // 唯一命中该账号（传前 8 位在极端情况下才需要担心碰撞）。
-      await accountApi.taskRunStart(mode, account.uid, confirm);
-      notify.ok(t('tasks.runStarted'), t(`tasks.runMode_${mode}`));
-      await load();
-    } catch (e) {
-      notify.err(errText(e));
-    } finally {
-      setBusy(false);
-    }
+    // target 传完整 uid：上游脚本按「uid 前缀」匹配 auths 文件，完整 uid
+    // 必然唯一命中该账号（传前 8 位在极端情况下才需要担心碰撞）。
+    await runTask(mode, confirm);
   }
 
-  async function stop() {
-    setBusy(true);
-    try {
-      const r = await accountApi.taskRunStop();
-      // 后端只回两种固定文案（已停止 / 当前没有正在执行的任务），走短语表
-      (r.ok ? notify.ok : notify.info)(tp(r.message));
-      await load();
-    } catch (e) {
-      notify.err(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const uid = account?.uid ?? '';
   const running = status?.running === true;
   /** 正在跑的**就是本账号**（全局单例，所以必须逐字比 target） */
   const runningThis = running && status?.target === uid;
