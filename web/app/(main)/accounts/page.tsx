@@ -945,11 +945,11 @@ export default function AccountsPage() {
     // manual_disabled（越弄越糟），而真正需要的「启用」根本没有入口。
     const stopped = paused || viaBit || autoDisabled;
     const hasClearableState = a.cooling === true || rateLimitedModels(a).length > 0;
-    // flex-wrap：管理员 + 国内版 + 多分组时这一行最多 10–11 个图标（≈320px），
-    // 手机卡片内容宽度只有 260–300px，不换行会把最右侧的「停用 / 删除」裁掉，
-    // 而且外层 overflow-hidden 让它无法横向滚动。
+    // 手机卡片宽度只有 260–300px，必须换行（否则最右侧的停用/删除被裁掉）；
+    // 桌面表格空间足够，固定一行 —— 否则窄的「操作」列会把图标挤成两行
+    // （issue #151 的后续反馈）。表格容器自身可横向滚动，md 以上不再换行。
     return (
-      <div className="flex flex-wrap justify-end gap-1">
+      <div className="flex flex-wrap justify-end gap-1 md:flex-nowrap">
         {/* 备注（issue #67）：只动本端库里的一行文本，不碰上游、不重启容器，
             所以放在最前——它是最轻的动作。任何状态下的账号都能写备注：
             停用的号恰恰更容易忘了它是谁。 */}
@@ -1473,7 +1473,7 @@ export default function AccountsPage() {
               <TableHead className="text-[11px] text-muted-foreground">{t('metric.credits')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colExpiry')}</TableHead>
               {hasProxyUi && <TableHead className="text-[11px] text-muted-foreground">{t('accounts.proxyLine')}</TableHead>}
-              {isAdmin && <TableHead className="pr-4 text-right text-[11px] text-muted-foreground">{t('accounts.colActions')}</TableHead>}
+              {isAdmin && <TableHead className="whitespace-nowrap pr-4 text-right text-[11px] text-muted-foreground">{t('accounts.colActions')}</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1515,7 +1515,7 @@ export default function AccountsPage() {
                 <TableCell>{renderCredits(a)}</TableCell>
                 <TableCell>{renderExpiry(a)}</TableCell>
                 {hasProxyUi && <TableCell>{renderProxy(a)}</TableCell>}
-                {isAdmin && <TableCell className="pr-4">{renderActions(a)}</TableCell>}
+                {isAdmin && <TableCell className="whitespace-nowrap pr-4">{renderActions(a)}</TableCell>}
               </TableRow>
             ))}
           </TableBody>
