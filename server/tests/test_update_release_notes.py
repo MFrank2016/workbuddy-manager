@@ -38,6 +38,17 @@ class ReleaseNotesTest(unittest.TestCase):
         with mock.patch.object(updater, '_upstream_dir', return_value=Path(tmp) / 'missing'):
             self.assertEqual(updater._local_upstream_id(), '')
 
+    def test_missing_local_upstream_is_marked_changed(self) -> None:
+        """老部署没有 .upstream-id：Release 带上游时必须提示需要同步。"""
+        cache = {'checked_at': int(updater.time.time()),
+                 'manager': {'latest': 'v1.0.0', 'upstream_id': 'a' * 64}}
+        with mock.patch.object(updater, '_read_cache', return_value=dict(cache)), \
+             mock.patch.object(updater, 'current_version', return_value='v1.0.0'), \
+             mock.patch.object(updater, '_local_upstream_id', return_value=''):
+            out = updater.check_updates()
+        self.assertTrue(out['manager']['upstream_changed'])
+        self.assertFalse(out['has_any'])
+
 
 if __name__ == '__main__':
     unittest.main()
