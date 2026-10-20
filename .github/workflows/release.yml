@@ -135,8 +135,8 @@ jobs:
           # 标为 pre-release 以免影响 releases/latest）取回来塞进包里：
           #   · 新装：install.sh 见到 upstream/ 直接用（离线可装）
           #   · 升级：update.py 把它同步进上游目录（保留 config/auths/data）
-          # 取不到**不致命**（网络抖动、载体未建）：记一条醒目日志继续打包，
-          # 用户仍可用 UPSTREAM_SRC 自己指定源码。
+          # 上游已由本项目维护，管理端 Release 是唯一更新源：取不到源码或缺少
+          # `.upstream-id` 时必须让发布失败，不能发出一个用户无法更新上游的包。
           UPSTREAM_SRC_URL="${UPSTREAM_SRC_URL:-https://github.com/${{ github.repository }}/releases/download/upstream-src/workbuddy2api-src.tar.gz}"
           mkdir -p "$STAGE/upstream"
           if curl -fsSL --retry 3 --retry-delay 2 --max-time 120 \
@@ -146,9 +146,12 @@ jobs:
             echo "已内嵌上游源码：$(find "$STAGE/upstream" -type f | wc -l) 个文件"
             echo "has_upstream=1" >> $GITHUB_OUTPUT
           else
-            echo "::warning::取不到上游源码包（$UPSTREAM_SRC_URL）——本次发布包不含 upstream/，新装用户需自备源码（UPSTREAM_SRC）"
-            rmdir "$STAGE/upstream" 2>/dev/null || true
-            echo "has_upstream=0" >> $GITHUB_OUTPUT
+            echo "::error::取不到上游源码包（$UPSTREAM_SRC_URL）。上游已由本项目维护，不能再发布不含 upstream/ 的包。"
+            exit 1
+          fi
+          if [ ! -s "$STAGE/upstream/.upstream-id" ]; then
+            echo "::error::包内 upstream/.upstream-id 缺失或为空；更新器无法判断是否需要同步上游。"
+            exit 1
           fi
           # 写入版本标记：管理端「系统更新」页与安装流程据此显示当前版本
           echo "${TAG}" > "$STAGE/.version"
