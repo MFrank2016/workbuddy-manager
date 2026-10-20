@@ -388,6 +388,11 @@ def _sticky_pick(auth: dict, candidates: list[str]) -> str:
 # 悄悄换掉出口 IP），没有就按昵称 / uid 现算。
 SESSION_PLACEHOLDER = '{account}'
 
+# 账号级「强制直连」的保留线路名（2.6.0+，上游 0013）。写入账号文件的 `proxy`
+# 后表示「这个号绝不走代理」：绕过代理池与全局出口代理。上游侧同名的
+# `upstream.DirectRouteName` 与它逐字一致，两边改一处必须同步改另一处。
+DIRECT_ROUTE_NAME = '__direct__'
+
 
 def route_session_name(auth: dict) -> str:
     """这个账号在会话模板里用的会话名。"""
@@ -427,6 +432,10 @@ def resolve_account_proxy(auth: dict) -> str | None:
       4. 直连。
     """
     bound = str(auth.get('proxy') or '').strip()
+    if bound == DIRECT_ROUTE_NAME:
+        # 账号级「强制直连」（2.6.0+ / 上游 0013）：显式绕过池与全局出口代理。
+        # 必须在这里短路，否则会被当成「不存在的线路名」而报错。
+        return None
     if bound:
         # 走公开访问器（而不是自己重读文件）：既有调用点/测试按这两个函数打桩，
         # 绕过它们会出现「线路表长什么样」的第二个真相来源。
