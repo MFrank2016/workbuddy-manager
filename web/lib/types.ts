@@ -844,6 +844,11 @@ export interface UpstreamConfig {
    * 有值时界面用醒目提示转达，而不是显示「正在自动应用」。
    */
   reload_hint?: string;
+  /**
+   * 本次保存是否已由上游热生效（`POST /panel/api/config`）。
+   * true 且无 reload_hint = 已生效、无需重启；界面应给成功反馈而不是警告。
+   */
+  hot_applied?: boolean;
   /** 上游配置文件路径 */
   config_path?: string;
   /** 读取失败原因 */

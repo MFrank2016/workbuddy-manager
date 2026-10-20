@@ -1416,6 +1416,7 @@
     "savedManualStep": "設定已儲存，但需要你手動一步",
     "saved": "設定已儲存",
     "applying": "正在自動套用到上游…",
+    "hotApplied": "已由上游熱生效，無需重啟容器。",
     "applyRunning": "正在套用設定…",
     "applyRunningHint": "上游容器正在重啟，期間帳號相關的資料可能暫時讀不到。",
     "applyOk": "設定已生效",

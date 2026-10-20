@@ -1199,10 +1199,15 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
       // 段内有改动时才带该段：只改顶层键时不要顺手回写整段
       if (Object.keys(patch).length) body[def?.section ?? group] = patch;
       const saved = await settingsApi.saveUpstream(body);
-      // 容器部署下无法自动重载上游（需 docker 命令，而容器刻意不挂 docker 套接字），
-      // 后端会带回 reload_hint —— 如实转达，不让人以为改完就生效了
+      // 三级反馈：
+      //   · reload_hint  —— 需要人手动一步（上游拒绝 / 有字段必须重启 / 无法操作 docker），
+      //                     用警告如实转达，不让人以为改完就生效了；
+      //   · hot_applied  —— 上游已热生效（/panel/api/config），给明确成功反馈；
+      //   · 其余         —— 已提交后台重启，说「正在应用」。
       if (saved?.reload_hint) {
         notify.warn(t('settings.savedManualStep'), saved.reload_hint);
+      } else if (saved?.hot_applied) {
+        notify.ok(t('settings.saved'), t('settings.hotApplied'));
       } else {
         notify.ok(t('settings.saved'), t('settings.applying'));
       }

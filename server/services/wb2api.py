@@ -520,6 +520,77 @@ async def get_status(*, base_url: str | None = None, api_key: str | None = None)
         return data
     except Exception as exc:  # noqa: BLE001
         return {'connected': False, 'error': _err_text(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {'connected': False, 'error': _err_text(exc)}
+
+
+# ── 配置热生效（上游内嵌面板接口）──────────────────────────────
+#
+# 面板保存上游设置时直接写 config.json，而上游**只在启动时**读它 —— 所以
+# 每次改设置都得重启容器。但上游自己带了一个热生效接口（`POST /panel/api/config`）：
+# 它深合并提交的键 → 校验 → 写盘 → 立即应用能热改的字段，并返回
+# `restart_required`（仍需重启才生效的字段名）。
+#
+# 面板先走这条路径：成功则完全不用碰 docker；只有上游不支持（旧版 / 未内嵌面板）
+# 或调用失败时，才回退到「重启容器」的老路。
+HOT_CONFIG_PATH = '/panel/api/config'
+# `write=0`：只让上游**校验 + 热应用**，不要它写盘。
+#
+# 为什么必须这样：上游写盘用 `tmp + rename`，而它的 config.json 是**单文件
+# bind mount** —— `rename` 覆盖会返回 EBUSY（device or resource busy）。
+# 面板自己已经在宿主文件系统上原子写好了这份配置，所以写盘权归面板，
+# 上游只负责校验与热生效。
+HOT_CONFIG_QUERY = '?write=0'
+
+
+async def apply_config_hot(body: dict) -> dict:
+    """把配置提交给上游内嵌面板，让它热生效。
+
+    返回四元信息（dict）：
+      · `ok`        —— 上游确认已保存并应用；
+      · `unsupported` —— 上游没有这个接口（旧版 / 未内嵌面板），调用方应回退到重启；
+      · `rejected`  —— 上游**校验拒绝**（400）。此时**绝不能**去重启容器：配置
+                       写不进去，重启只会让旧配置重新加载一遍，甚至起不来；
+      · `restart_required` —— 已热生效但仍需重启才生效的字段名；
+      · `message`   —— 给用户看的原因（失败时）。
+    """
+    base = config.WB2API_BASE.rstrip('/')
+    try:
+        async with config.http_client(20, connect=5) as client:
+            resp = await client.post(f'{base}{HOT_CONFIG_PATH}{HOT_CONFIG_QUERY}',
+                                     json=body, headers=_auth_headers())
+    except Exception as exc:  # noqa: BLE001
+        return {'ok': False, 'unsupported': False, 'rejected': False,
+                'restart_required': [], 'message': _err_text(exc)}
+
+    if resp.status_code in (404, 405, 501):
+        # 接口不存在：旧版上游 / 未内嵌面板的构建。
+        return {'ok': False, 'unsupported': True, 'rejected': False,
+                'restart_required': [], 'message': '上游不支持配置热生效接口'}
+    if resp.status_code == 400:
+        detail = ''
+        try:
+            detail = str((resp.json() or {}).get('error') or '')
+        except Exception:  # noqa: BLE001
+            detail = (resp.text or '')[:200]
+        return {'ok': False, 'unsupported': False, 'rejected': True,
+                'restart_required': [],
+                'message': detail or '上游拒绝了这份配置（400）'}
+    if resp.status_code >= 400:
+        return {'ok': False, 'unsupported': False, 'rejected': False,
+                'restart_required': [],
+                'message': f'上游返回 {resp.status_code}: {(resp.text or "")[:200]}'}
+    try:
+        data = resp.json() or {}
+    except Exception:  # noqa: BLE001
+        return {'ok': False, 'unsupported': False, 'rejected': False,
+                'restart_required': [], 'message': '上游返回非 JSON'}
+    if not data.get('ok'):
+        return {'ok': False, 'unsupported': False, 'rejected': False,
+                'restart_required': [], 'message': '上游未确认保存'}
+    required = [str(x) for x in (data.get('restart_required') or []) if str(x).strip()]
+    return {'ok': True, 'unsupported': False, 'rejected': False,
+            'restart_required': required, 'message': '配置已热生效'}
 
 
 def _admin_route_missing(resp: object) -> bool:

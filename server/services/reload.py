@@ -52,6 +52,20 @@ def state() -> dict:
     return dict(_state)
 
 
+def record_hot_apply(message: str = '配置已热生效') -> None:
+    """记一次「配置已热生效」的结果（没有重启容器）。
+
+    为什么必须写状态：前端用 `last_ok` 判定是否展示「重载失败」常驻提示，
+    而失败是**要人处理**的状态，不会自己消失（见 web/lib/reload-state.ts 的
+    不对称说明）。如果热生效不写状态，一次历史失败会永远挂在页面上，哪怕
+    之后的每一次保存都已经成功。
+    """
+    _state['restart_count'] += 1
+    _state['last_at'] = time.time()
+    _state['last_ok'] = True
+    _state['last_message'] = message
+
+
 async def _worker_loop() -> None:
     global _pending
     async with _lock:

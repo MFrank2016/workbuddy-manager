@@ -1,17 +1,66 @@
 """上游配置、模型映射与管理端用户。"""
 from __future__ import annotations
 
+import json
 import os
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import db, security
+from .. import config, db, security
 from ..iputil import client_ip
 from ..services import modelmap, reload, updater, wb2api
 
 router = APIRouter(prefix='/api', tags=['settings'])
+
+
+# ── 配置文件读写的三个小助手（热生效 / 回滚用）─────────────
+def _read_config_raw() -> str | None:
+    """保存前的原文；读不到返回 None（此时回滚视为失败）。"""
+    try:
+        return config.UPSTREAM_CONFIG.read_text(encoding='utf-8')
+    except OSError:
+        return None
+
+
+def _read_written_config() -> dict | None:
+    """刚写入磁盘的配置对象。
+
+    热生效提交的就是它（而不是原始 patch）：保证「提交给上游的」与
+    「面板实际写进 config.json 的」是同一份，不会被 _sanitize_section 过滤出
+    两套语义。
+    """
+    raw = _read_config_raw()
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_config_raw(raw: str | None) -> bool:
+    """原子写回原文。raw 为 None（保存前就没有配置文件）时返回 False。"""
+    if raw is None:
+        return False
+    try:
+        path = config.UPSTREAM_CONFIG
+        tmp = path.with_name(path.name + '.rollback')
+        tmp.write_text(raw, encoding='utf-8')
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
+def _restart_hint(fields: list[str]) -> str:
+    """「必须重启上游」的提示；fields 非空时列出具体字段名。"""
+    lead = '配置已写入'
+    if fields:
+        lead += '；以下字段需重启上游容器才会生效：' + '、'.join(fields)
+    return lead + '。请在宿主机执行 docker compose restart wb2api（上游目录下）使其生效。'
 
 
 # ── 上游配置 ─────────────────────────────────────────────
@@ -25,6 +74,9 @@ async def save_upstream(body: dict, request: Request,
                         user: dict = Depends(security.require_session_admin)) -> dict:
     # 必须是 async：同步路由会被 FastAPI 放进线程池执行，那里没有事件循环，
     # 无法调度后台重载任务（request_restart 将拿不到 running loop）。
+    # 保存前先留一份原文：上游若拒绝新配置，用它回滚（否则盘上会留下非法配置，
+    # 下一次重启直接起不来）。
+    previous_raw = _read_config_raw()
     try:
         result = wb2api.save_upstream_config(body)
     except FileNotFoundError as exc:
@@ -42,19 +94,52 @@ async def save_upstream(body: dict, request: Request,
     security.audit(user, 'update_upstream', '',
                    f'段={sections}' + (f'；顶层={top_keys}' if top_keys else '')
                    + f'；来源 {client_ip(request)}')
-    # 上游只在启动时读 config.json，保存后自动重载使其生效
-    result['reload_scheduled'] = reload.request_restart()
-    # 无法自动重载上游时（没装 docker / 容器没挂 docker.sock），要如实告诉
-    # 用户去宿主机重启，而不是让他以为改完就生效了。
-    #
-    # 判据是**实际能力**而非"是否容器"：容器挂了 docker.sock 就能自动重载
-    # （与宿主部署等价），宿主没装 docker 反而不能。
-    if not updater.can_control_docker():
+    # 上游只在启动时读 config.json，保存后让它生效。分三级：
+    #   ① 热生效（上游内嵌面板 /panel/api/config）—— 绝大多数字段无需重启；
+    #   ② 上游拒绝（400）—— 回滚磁盘上的配置，**绝不**重启（重启只会重载旧配置，
+    #      甚至因为盘上已是非法配置而起不来）；
+    #   ③ 上游不支持热生效（旧版 / 未内嵌面板）或调用失败 —— 回退到重启容器。
+    written = _read_written_config()
+    hot = await wb2api.apply_config_hot(written) if written else {
+        'ok': False, 'unsupported': False, 'rejected': False,
+        'restart_required': [], 'message': '读取已写入的配置失败',
+    }
+    result['hot_applied'] = bool(hot['ok'])
+
+    if hot['ok']:
+        required = hot['restart_required']
+        reload.record_hot_apply(
+            '配置已热生效' if not required else '配置已热生效（部分字段需重启）')
+        if not required:
+            result['reload_scheduled'] = False
+            return result
+        # 有字段必须重启才生效：能控制 docker 就顺手重启，否则如实提示
+        if updater.can_control_docker() and reload.request_restart():
+            result['reload_scheduled'] = True
+            result['reload_hint'] = _restart_hint(required)
+        else:
+            result['reload_scheduled'] = False
+            result['reload_hint'] = _restart_hint(required)
+        return result
+
+    if hot['rejected']:
+        # 上游认为这份配置非法：把旧配置放回磁盘，避免下次重启起不来。
+        restored = _write_config_raw(previous_raw)
         result['reload_scheduled'] = False
         result['reload_hint'] = (
-            '配置已写入，但当前环境无法操作 docker，不会自动重启上游容器。'
-            '请在宿主机执行 docker compose restart wb2api（上游目录下）使其生效。'
+            f'上游拒绝了这份配置（{hot["message"]}），已恢复原配置，未重启容器。'
+            if restored else
+            f'上游拒绝了这份配置（{hot["message"]}）；回滚失败，请手动检查 config.json。'
         )
+        return result
+
+    # 不支持 / 调用失败：回到老路（重启容器）
+    result['hot_error'] = hot['message']
+    if updater.can_control_docker() and reload.request_restart():
+        result['reload_scheduled'] = True
+    else:
+        result['reload_scheduled'] = False
+        result['reload_hint'] = _restart_hint([])
     return result
 
 

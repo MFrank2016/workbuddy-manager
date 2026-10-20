@@ -1443,6 +1443,7 @@
     "savedManualStep": "Settings saved, but one manual step is required",
     "saved": "Settings saved",
     "applying": "Applying to upstream…",
+    "hotApplied": "Applied live by the upstream — no container restart needed.",
     "applyRunning": "Applying configuration…",
     "applyRunningHint": "The upstream container is restarting; account data may be temporarily unavailable.",
     "applyOk": "Configuration is in effect",
