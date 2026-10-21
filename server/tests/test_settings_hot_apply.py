@@ -172,3 +172,42 @@ class HotApplyStateTest(unittest.TestCase):
         after = R.state()
         self.assertEqual(after['restart_count'], before, '热生效不是重启，不该递增 restart_count')
         self.assertTrue(after['last_ok'])
+
+
+class ChangedRestartFieldsTest(unittest.TestCase):
+    """面板侧的「哪些字段变了且必须重启」判定。
+
+    背景：管理端先写盘、再让上游热生效，上游读到的已是新配置 —— 它按文件差异
+    算出的 restart_required 恒为空。所以必须由面板用**保存前的快照**做对比，
+    否则「改了 listen」永远不会提示重启。
+    """
+
+    def setUp(self) -> None:
+        from server.routers import settings as S
+        self.S = S
+
+    def test_detects_only_changed_restart_paths(self) -> None:
+        prev = json.dumps({'listen': ':7863', 'server': {'read_timeout': '300s'},
+                           'schedule': {'checkin_hours': [9]}})
+        cur = {'listen': ':7863', 'server': {'read_timeout': '301s'},
+               'schedule': {'checkin_hours': [9, 21]}}
+        got = self.S._changed_restart_fields(
+            prev, cur, ['listen', 'server.read_timeout', 'upstash'])
+        self.assertEqual(got, ['server.read_timeout'],
+                         '只改了 read_timeout，且 schedule 是热生效字段')
+
+    def test_hot_only_change_yields_nothing(self) -> None:
+        prev = json.dumps({'listen': ':7863', 'schedule': {'checkin_hours': [9]}})
+        cur = {'listen': ':7863', 'schedule': {'checkin_hours': [9, 21]}}
+        self.assertEqual(self.S._changed_restart_fields(
+            prev, cur, ['listen', 'server.read_timeout']), [])
+
+    def test_unreadable_previous_is_conservative(self) -> None:
+        cur = {'listen': ':7863'}
+        self.assertEqual(self.S._changed_restart_fields(None, cur, ['listen']),
+                         ['listen'], '旧配置读不到时应保守地提示全部')
+
+    def test_malformed_previous_is_conservative(self) -> None:
+        self.assertEqual(
+            self.S._changed_restart_fields('{not json', {'listen': ':7863'}, ['listen']),
+            ['listen'])

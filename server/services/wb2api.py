@@ -576,12 +576,12 @@ async def apply_config_hot(body: dict) -> dict:
                                      json=body, headers=_auth_headers())
     except Exception as exc:  # noqa: BLE001
         return {'ok': False, 'unsupported': False, 'rejected': False,
-                'restart_required': [], 'message': _err_text(exc)}
+                'restart_required': [], 'restart_paths': [], 'message': _err_text(exc)}
 
     if resp.status_code in (404, 405, 501):
         # 接口不存在：旧版上游 / 未内嵌面板的构建。
         return {'ok': False, 'unsupported': True, 'rejected': False,
-                'restart_required': [], 'message': '上游不支持配置热生效接口'}
+                'restart_required': [], 'restart_paths': [], 'message': '上游不支持配置热生效接口'}
     if resp.status_code == 400:
         detail = ''
         try:
@@ -599,18 +599,23 @@ async def apply_config_hot(body: dict) -> dict:
         data = resp.json()
     except Exception:  # noqa: BLE001
         return {'ok': False, 'unsupported': False, 'rejected': False,
-                'restart_required': [], 'message': '上游返回非 JSON'}
+                'restart_required': [], 'restart_paths': [], 'message': '上游返回非 JSON'}
     # JSON 合法但不一定是对象（列表/标量）：200 也可能来自代理或 captive portal。
     # 不挡的话下面 `data.get` 会抛 AttributeError，把一次「可降级」的失败变成 500。
     if not isinstance(data, dict):
         return {'ok': False, 'unsupported': False, 'rejected': False,
-                'restart_required': [], 'message': '上游返回的 JSON 不是对象'}
+                'restart_required': [], 'restart_paths': [], 'message': '上游返回的 JSON 不是对象'}
     if not data.get('ok'):
         return {'ok': False, 'unsupported': False, 'rejected': False,
-                'restart_required': [], 'message': '上游未确认保存'}
+                'restart_required': [], 'restart_paths': [], 'message': '上游未确认保存'}
     required = [str(x) for x in (data.get('restart_required') or []) if str(x).strip()]
+    # restart_paths 是「所有必须重启才生效的字段」的全量清单（上游提供）。
+    # 外部管理端自己写盘时，上游读到的已是新文件、自己算不出差异，所以由调用方
+    # 用保存前的快照 + 这份清单做 diff。
+    paths = [str(x) for x in (data.get('restart_paths') or []) if str(x).strip()]
     return {'ok': True, 'unsupported': False, 'rejected': False,
-            'restart_required': required, 'message': '配置已热生效'}
+            'restart_required': required, 'restart_paths': paths,
+            'message': '配置已热生效'}
 
 
 def _admin_route_missing(resp: object) -> bool:

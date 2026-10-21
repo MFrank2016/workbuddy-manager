@@ -64,6 +64,40 @@ def _write_config_raw(raw: str | None) -> bool:
         return False
 
 
+def _lookup_path(data: dict, path: str):
+    """按 "a.b.c" 取值；中间不是对象时返回 None。"""
+    cur: object = data
+    for key in path.split('.'):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _changed_restart_fields(previous_raw: str | None, current: dict | None,
+                            paths: list[str]) -> list[str]:
+    """本次保存里「确实变了、且必须重启才生效」的字段。
+
+    为什么在面板侧算：管理端**先写盘、再让上游热生效**，上游读到的已经是新配置，
+    按文件差异算必然为空 —— 于是「改了 listen」永远不会提示重启。面板手里有保存前
+    的快照，只有它知道变了什么。
+
+    旧配置读不到（文件损坏/不存在）时保守返回全量清单：宁可多提示一次重启，也不要
+    让「改了启动期字段却没生效」被静默吞掉。
+    """
+    if not paths or current is None:
+        return []
+    if previous_raw is None:
+        return list(paths)
+    try:
+        previous = json.loads(previous_raw)
+    except ValueError:
+        return list(paths)
+    if not isinstance(previous, dict):
+        return list(paths)
+    return [p for p in paths if _lookup_path(previous, p) != _lookup_path(current, p)]
+
+
 def _restart_hint(fields: list[str]) -> str:
     """「必须重启上游」的提示；fields 非空时列出具体字段名。"""
     lead = '配置已写入'
@@ -116,7 +150,10 @@ async def save_upstream(body: dict, request: Request,
     result['hot_applied'] = bool(hot['ok'])
 
     if hot['ok']:
-        required = hot['restart_required']
+        # 优先用面板自己的前后对比（上游读到的已是新文件，它的差异恒为空）。
+        paths = hot.get('restart_paths') or []
+        required = (_changed_restart_fields(previous_raw, written, paths)
+                    if paths else hot['restart_required'])
         reload.record_hot_apply(
             '配置已热生效' if not required else '配置已热生效（部分字段需重启）')
         if not required:
