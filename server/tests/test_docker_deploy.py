@@ -373,6 +373,51 @@ class ComposeLocalCustomizationTest(unittest.TestCase):
         self.assertIn('1panel-network', out, '用户的网络配置被改了')
         self.assertIn('external: true', out, '用户的 external 声明被改了')
 
+    def test_container_gateway_bind_for_host_docker_internal(self) -> None:
+        """issue #243：容器经 host.docker.internal 连上游时不能绑宿主回环。
+
+        Linux 上容器访问不到宿主的 127.0.0.1；收敛到回环会让更新后上游
+        永远「不可用」。应绑定宿主网桥地址（容器可达、非公网）。
+        """
+        sample = 'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n'
+        env = {'WB2API_BASE': 'http://host.docker.internal:7863',
+               'WB_UPSTREAM_BIND': ''}
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(self.mod.socket, 'gethostbyname',
+                                  return_value='172.17.0.1'):
+            out = self.mod._port_converged(sample)
+        self.assertIn('"172.17.0.1:7863:7863"', out,
+                      '容器部署应绑宿主网桥地址，否则容器连不上上游')
+
+    def test_docker_desktop_gateway_stays_loopback(self) -> None:
+        """Docker Desktop 的 192.168.65.0/24 是虚拟机内部地址，宿主不拥有。"""
+        sample = 'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n'
+        env = {'WB2API_BASE': 'http://host.docker.internal:7863',
+               'WB_UPSTREAM_BIND': ''}
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(self.mod.socket, 'gethostbyname',
+                                  return_value='192.168.65.254'):
+            out = self.mod._port_converged(sample)
+        self.assertIn('"127.0.0.1:7863:7863"', out,
+                      'Desktop 会转发宿主回环，不应绑虚拟机内部地址')
+
+    def test_service_name_keeps_loopback(self) -> None:
+        """同网络用服务名直连时，端口只留给宿主调试，回环即可。"""
+        sample = 'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n'
+        env = {'WB2API_BASE': 'http://workbuddy2api:7863',
+               'WB_UPSTREAM_BIND': ''}
+        with mock.patch.dict(os.environ, env, clear=False):
+            out = self.mod._port_converged(sample)
+        self.assertIn('"127.0.0.1:7863:7863"', out)
+
+    def test_explicit_bind_override(self) -> None:
+        sample = 'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n'
+        with mock.patch.dict(os.environ, {'WB_UPSTREAM_BIND': '192.168.1.10'},
+                             clear=False):
+            out = self.mod._port_converged(sample)
+        self.assertIn('"192.168.1.10:7863:7863"', out,
+                      'WB_UPSTREAM_BIND 应能覆盖自动判定')
+
     def test_bundled_sync_preserves_custom_compose(self) -> None:
         """随包同步只更新源码，用户对 compose 的网络/卷定制要原样保留。"""
         m = self.mod

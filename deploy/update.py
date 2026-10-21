@@ -14,7 +14,8 @@
 2. **状态外置**：进度写入 JSON 文件，管理端读取该文件展示实时日志。
    （更新会重启管理端，若用 HTTP 流式返回会被中断）
 3. **幂等与安全**：上游更新会保留账号文件与配置；并**强制把端口绑定收敛为
-   127.0.0.1**，避免 upstream 仓库里的 `7863:7863` 覆盖我们的安全加固。
+   仅本机/容器网桥**，避免 upstream 仓库里的 `7863:7863` 覆盖我们的安全加固。
+   容器经 `host.docker.internal` 连上游时绑宿主网桥地址（issue #243）。
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ import re
 import shutil
 import signal
 import site
+import socket
 import stat
 import subprocess
 import sys
@@ -568,20 +570,63 @@ def _compose_wide_bind() -> str:
     return f'"{UPSTREAM_PORT}:{UPSTREAM_PORT}"'
 
 
-def _compose_bound_bind() -> str:
-    return f'"127.0.0.1:{UPSTREAM_PORT}:{UPSTREAM_PORT}"'
+def _upstream_bind_host() -> str:
+    """宿主机上发布上游端口时使用的地址（issue #243）。
+
+    默认 `127.0.0.1`（仅本机）。但管理端跑在容器里、通过
+    `WB2API_BASE=http://host.docker.internal:7863` 连上游时，宿主机回环对
+    容器**不可达**（Linux 上尤其明确）；把端口收敛到 127.0.0.1 会让更新后
+    面板一直提示「上游不可用」。
+
+    这种部署下改为绑定 `host.docker.internal` 解析出的宿主机网桥地址
+    （如 172.17.0.1 / 172.18.0.1）：容器可达，且不是公网地址。
+    Docker Desktop 的 192.168.65.0/24 是虚拟机内部地址，宿主并不拥有，
+    仍用 127.0.0.1（Desktop 会把它转发给宿主回环）。
+
+    `WB_UPSTREAM_BIND` 可显式覆盖（如只绑内网网卡 `192.168.1.10`）。
+    """
+    explicit = (os.environ.get('WB_UPSTREAM_BIND') or '').strip()
+    if explicit:
+        return explicit
+    base = (os.environ.get('WB2API_BASE') or '').strip()
+    if not base:
+        return '127.0.0.1'
+    try:
+        parts = urllib.parse.urlsplit(base if '//' in base else f'http://{base}')
+        host = (parts.hostname or '').lower()
+    except ValueError:
+        return '127.0.0.1'
+    if host != 'host.docker.internal':
+        return '127.0.0.1'
+    try:
+        ip = socket.gethostbyname(host)
+    except OSError:
+        return '127.0.0.1'
+    if not ip or ip.startswith('127.') or ip.startswith('192.168.65.'):
+        return '127.0.0.1'
+    return ip
+
+
+def _compose_bound_bind(host: str | None = None) -> str:
+    return f'"{host or _upstream_bind_host()}:{UPSTREAM_PORT}:{UPSTREAM_PORT}"'
 
 
 def _port_converged(text: str) -> str:
-    """把 compose 文本里的公网端口绑定收敛为仅本机（纯文本替换，不落盘）。"""
-    return text.replace(_compose_wide_bind(), _compose_bound_bind())
+    """把 compose 文本里的公网端口绑定收敛为仅本机/容器网桥（纯文本替换）。"""
+    new = _compose_bound_bind()
+    for old in (_compose_wide_bind(),
+                f'"0.0.0.0:{UPSTREAM_PORT}:{UPSTREAM_PORT}"',
+                f'"127.0.0.1:{UPSTREAM_PORT}:{UPSTREAM_PORT}"'):
+        text = text.replace(old, new)
+    return text
 
 
 def enforce_local_bind(rep: Reporter) -> None:
-    """把 compose 的端口绑定收敛为仅本机。
+    """把 compose 的端口绑定收敛到安全地址。
 
-    upstream 仓库里是 `7863:7863`（公网可达）；我们的安全基线要求
-    `127.0.0.1:7863:7863`。每次更新后都要重新施加，否则会悄悄回退。
+    upstream 仓库里是 `7863:7863`（公网可达）；我们的基线要求只绑本机。
+    容器经 host.docker.internal 访问时，绑宿主网桥地址（issue #243），
+    否则容器连不上；每次更新后都要重新施加，否则会悄悄回退。
     """
     compose = UPSTREAM_DIR / 'docker-compose.yml'
     if not compose.is_file():
@@ -590,9 +635,11 @@ def enforce_local_bind(rep: Reporter) -> None:
     text = compose.read_text(encoding='utf-8')
     bound = _compose_bound_bind()
     if bound in text:
-        rep.log('端口绑定已是仅本机（127.0.0.1）')
+        rep.log(f'端口绑定已是 {_upstream_bind_host()}（安全基线）')
         return
-    if _compose_wide_bind() in text:
+    if any(old in text for old in (_compose_wide_bind(),
+                                   f'"0.0.0.0:{UPSTREAM_PORT}:{UPSTREAM_PORT}"',
+                                   f'"127.0.0.1:{UPSTREAM_PORT}:{UPSTREAM_PORT}"')):
         compose.write_text(_port_converged(text), encoding='utf-8')
         rep.log(f'已将端口绑定收敛为 {bound}（安全基线）')
     else:
