@@ -19,7 +19,8 @@ from .routers import (
     pgsync as pgsync_router, redpackets, responses, security as security_router,
     proxies, settings, stats, system, tokens, upstreams,
 )
-from .services import accountlog, cooling, dailyplan, pgsync, renew, tasklog, taskrun
+from .services import (accountlog, cooling, dailyplan, modelroutes, pgsync, renew,
+                       tasklog, taskrun)
 
 # 最早时刻把标准输出/错误钉成 UTF-8：Windows 中文区域默认按 cp936 编码，日志里
 # 一旦出现 emoji（账号昵称就可能带）就会抛 UnicodeEncodeError —— 与「成长任务」
@@ -41,6 +42,11 @@ async def lifespan(app: FastAPI):
                      '中修改；本次生产事故的入口就是 admin123。',
                      '、'.join(weak_admins))
     _warn_if_exposed()
+    # 旧 `model_map` 搬进 `model_routes`（契约 §2，幂等）：升级不能要求用户
+    # 重填路由。旧表**原样保留**，所以回退只需清空新表（见 modelroutes.rollback）。
+    moved = modelroutes.backfill_model_routes()
+    if moved:
+        logger.info('已把 %d 条旧模型映射迁移到 model_routes', moved)
     # 给「抽奖码」这一列上线之前建的红包补码（幂等）：没有码就拼不出抽奖链接，
     # 等于那些红包只能自己发 key、没法让大家抽。
     filled = redpacket.backfill_codes()

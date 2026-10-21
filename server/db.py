@@ -390,6 +390,44 @@ CREATE TABLE IF NOT EXISTS upstreams (
 """
 
 
+MODEL_ROUTES_DDL = """
+-- 模型路由表（迁移契约 §2）：比旧 `model_map` 多出 realm / 上游分组 /
+-- keep_original 这些维度。**升级不能要求用户重填配置**，所以旧映射由
+-- `services/modelroutes` 一次性搬进来（幂等，见那里的说明）。
+--
+-- 唯一索引必须把 `upstream_group_id` 的 NULL 折成 0：SQLite 的 UNIQUE 认为
+-- NULL 互不相等，不折的话同一 (public_id, realm) 能插无数条「任意分组」的行，
+-- 「每步至多一行」的解析前提就没了。
+CREATE TABLE IF NOT EXISTS model_routes (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  public_id         TEXT    NOT NULL,
+  target_model      TEXT    NOT NULL,
+  -- '' | 'cn' | 'global'；空串 = 两个版本都适用
+  realm             TEXT    NOT NULL DEFAULT '',
+  -- NULL = 任意分组
+  upstream_group_id INTEGER,
+  -- NULL = 不覆盖；仅影响 /v1/models 的展示与排序，**绝不影响计费**
+  credits_override  REAL,
+  keep_original     INTEGER NOT NULL DEFAULT 1,
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_model_routes
+  ON model_routes(public_id, realm, COALESCE(upstream_group_id, 0));
+"""
+
+# 建表语句挂在 SCHEMA 末尾：新库与存量库（经 _migrate）都走这同一段 DDL。
+SCHEMA += MODEL_ROUTES_DDL
+
+# 表级迁移（与 `_MIGRATIONS` 并列）：后者只能表达「给已有表 ADD COLUMN」，
+# 整表新建 + 唯一索引这类 DDL 放这里。存量库升级时由 `_migrate` 执行；新库已由
+# SCHEMA 建好，`IF NOT EXISTS` 使其成为空操作 —— 两条路径共用同一段 DDL。
+_TABLE_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ('model_routes', MODEL_ROUTES_DDL),
+)
+
+
 def _restrict_db_permissions() -> None:
     """把数据库文件（含 WAL/SHM 伴生文件）收紧到仅属主可读写。
 
@@ -688,6 +726,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {decl}')
         except sqlite3.Error:
             # 并发启动时可能已被另一进程加过，忽略即可
+            pass
+    for _table, ddl in _TABLE_MIGRATIONS:
+        try:
+            conn.executescript(ddl)
+        except sqlite3.Error:
+            # 并发启动时另一进程可能正在建/已建好；DDL 是幂等的，重试没有意义
             pass
     _rebuild_usage_daily_pk(conn)
 
