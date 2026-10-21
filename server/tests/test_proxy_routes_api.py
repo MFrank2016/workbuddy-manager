@@ -284,11 +284,18 @@ class UpdaterEnvInjectionTest(_Base):
             seen.update(kwargs.get('env') or {})
             return _FakeProc()
 
+        # 锁文件也必须指向临时目录：`start_update` 的 `_claim_lock()` 会在
+        # `config.DATA_DIR` 下 O_CREAT|O_EXCL 建真锁，末尾还会把 `proc.pid`
+        # （这里假进程是 pid=1，永远存活）写进去。旧写法只 patch 了 STATUS/LOG，
+        # 于是**本用例自己**在真实 data/ 里留下一把「活着的」update.lock：
+        # 下一次运行（或同轮其它用例）走到 `_lock_active()` 就报
+        # 「已有更新任务正在执行」。这不是环境问题，是用例的副作用。
         with mock.patch.object(updater, '_updater_script', return_value=script), \
                 mock.patch.object(updater, '_lock_active', return_value=False), \
                 mock.patch.object(updater.subprocess, 'Popen', fake_popen), \
                 mock.patch.object(updater, '_write_initial_status'), \
                 mock.patch.object(updater, 'STATUS_FILE', self.root / 'status.json'), \
+                mock.patch.object(updater, 'LOCK_FILE', self.root / 'update.lock'), \
                 mock.patch.object(updater, 'LOG_FILE', self.root / 'update.log'):
             ok, message = updater.start_update('manager')
         self.assertTrue(ok, message)

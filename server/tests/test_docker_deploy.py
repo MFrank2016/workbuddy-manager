@@ -627,18 +627,55 @@ class DockerAssetsTest(unittest.TestCase):
                         '未挂载上游目录 —— 容器版将无法更新上游')
 
     def test_docker_socket_mounted_for_full_capability(self) -> None:
-        """默认挂载 docker.sock，使容器版与宿主部署能力对齐。
+        """默认**不**挂 docker.sock —— 安全决策，依赖 docker 的功能如实降级。
 
-        这是**判断修正**：初版刻意不挂，理由写成"挂了等于把宿主 root 交给容器"。
-        但宿主部署本来就是 root（systemd 无 User=），而 root 进程本来就能
-        `docker run -v /:/host` —— 两者权限等价，不挂只是让功能残缺。
-        若不想要，注释掉即可（功能会自动降级并如实提示）。
+        这是对旧判断的**修正**：旧版默认挂 socket，理由是「让容器版与宿主部署
+        能力对齐」。但「挂 docker.sock 等于把宿主 root 权限交给本容器」——
+        容器里任何一处逃逸都能直接拿到宿主 root，代价远大于少一个功能。
+        产品因此改为最小权限默认：不挂 socket；容器形态下重载上游 / 读上游
+        日志 / 更新上游这几项降级为「请到宿主机操作」，界面与提示如实说明。
+
+        本用例钉住两件事，缺一不可：
+          1. compose 的**活动**配置里没有 docker.sock（也不补 docker 组）；
+          2. 降级链路是通的 —— 能力标志按**实际** docker 能力判定（不是按是否
+             容器），界面据此禁用上游目标，用户不会被引到点了才失败的路径。
+        想恢复完整能力的用户仍可按 compose 注释里保留的那行手动打开 —— 那是
+        显式选择，不是默认，故这里同时断言 opt-in 说明没有丢失。
         """
         import yaml
         dc = yaml.safe_load((_ROOT / 'docker-compose.yml').read_text(encoding='utf-8'))
-        vols = [str(v) for v in (dc['services']['workbuddy-manager'].get('volumes') or [])]
-        self.assertTrue(any('docker.sock' in v for v in vols),
-                        '未挂 docker.sock —— 容器版将无法重载/更新上游')
+        svc = dc['services']['workbuddy-manager']
+        vols = [str(v) for v in (svc.get('volumes') or [])]
+        self.assertFalse(any('docker.sock' in v for v in vols),
+                         f'默认不应挂 docker.sock（最小权限），实际 volumes={vols}')
+        groups = [str(g) for g in (svc.get('group_add') or [])]
+        self.assertFalse(any('DOCKER_GID' in g or 'docker' in g.lower() for g in groups),
+                         f'不挂 socket 时不应补 docker 组，实际 group_add={groups}')
+
+        compose_src = (_ROOT / 'docker-compose.yml').read_text(encoding='utf-8')
+        self.assertIn('# - /var/run/docker.sock:/var/run/docker.sock', compose_src,
+                      '手动恢复 socket 的 opt-in 那行被删了 —— 用户无从恢复完整能力')
+        self.assertIn('已移除挂载', compose_src,
+                      'compose 里没有说明这是有意的安全决策（会被当成漏配）')
+
+        # 降级链路：容器 + 没有 docker 能力 → 上游目标不可用；判据是实际能力，
+        # 不是「在不在容器里」。
+        from server.services import updater
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(updater, 'STATUS_FILE', Path(tmp) / 's.json'), \
+                    mock.patch.object(updater, 'in_container', return_value=True), \
+                    mock.patch.object(updater, 'can_control_docker', return_value=False):
+                degraded = updater.read_status()
+        self.assertTrue(degraded['in_container'], '前提：这轮按容器形态判定')
+        self.assertFalse(degraded['can_update_upstream'],
+                         '容器没挂 socket 时应如实报告无法更新上游')
+
+        panel = (_ROOT / 'web' / 'components' / 'common' / 'settings'
+                 / 'UpdatePanel.tsx').read_text(encoding='utf-8')
+        self.assertIn('can_update_upstream === false', panel,
+                      '界面没用能力标志 —— 降级后用户仍能点到不可用的上游更新')
+        self.assertIn('dockerBlocked', panel,
+                      '界面没给出降级说明（应指到宿主机执行 docker compose）')
 
     def test_env_file_actually_reaches_both_deployments(self) -> None:
         """`.env` 里的可选项（出口代理等）必须真能到达进程。
@@ -683,23 +720,40 @@ class DockerAssetsTest(unittest.TestCase):
 class DockerSocketPreflightTest(unittest.TestCase):
     """容器里用不了 docker.sock 时，必须给出**可照做**的修法。
 
-    挂上 /var/run/docker.sock 只是必要条件：socket 在宿主上通常归 root:docker
-    （gid 998/999），而容器里的进程是 uid 10001 —— 不在那个组里就是 EACCES。
-    默认 compose 里一个 group_add 都没有，所以这条路径在真机上必失败，
-    而原来只会得到一句「权限不足，请确认以 root 或具备 docker 权限的用户执行」，
-    容器里没有 root 可变，用户无从下手。
+    默认 compose **不挂** /var/run/docker.sock（最小权限，见 DockerAssetsTest 里
+    那条用例）：于是容器内的 docker 能力默认就是不可用，依赖它的功能降级为
+    「请到宿主机操作」。但用户也可能自己把 socket 挂回来 —— 那时 socket 在宿主上
+    通常归 root:docker（gid 998/999），而容器里的进程是 uid 10001，不在那个组里
+    就是 EACCES。
+    原来这条路径只会得到一句「权限不足，请确认以 root 或具备 docker 权限的用户
+    执行」，容器里没有 root 可变，用户无从下手。所以 compose 注释与 .env.example
+    里都要留下 opt-in 的 group_add 配方，诊断提示也要指向它。
     """
 
     def test_compose_group_add_uses_env_gid(self) -> None:
-        """compose 要能用宿主**真实的** docker 组 GID 给容器补组。"""
+        """默认不补 docker 组；恢复 socket 的 opt-in 配方必须写清楚。
+
+        旧版这里断言「compose 已配 group_add」。产品后来改为**默认不挂 socket**
+        （最小权限），group_add 也随之停用 —— 不挂 socket 还补组只是多给权限。
+        所以断言方向反过来了，但**覆盖面不能丢**：真正要锁的是「想恢复完整能力
+        的人照着注释就能配对」—— 宿主 docker 组 GID 因机器而异（998/999/…），
+        写死必错，必须给取值命令 + 变量接线。
+        """
         import yaml
         dc = yaml.safe_load((_ROOT / 'docker-compose.yml').read_text(encoding='utf-8'))
         svc = dc['services']['workbuddy-manager']
         groups = [str(g) for g in (svc.get('group_add') or [])]
-        self.assertTrue(groups,
-                        '没配 group_add —— 容器内 uid 10001 用不了挂进来的 docker.sock')
-        self.assertTrue(any('DOCKER_GID' in g for g in groups),
-                        f'group_add 没用 DOCKER_GID 变量：{groups}（宿主 GID 因机器而异，写死必错）')
+        self.assertFalse(groups,
+                         f'不挂 docker.sock 时默认不应补 docker 组（最小权限），实际 {groups}')
+
+        compose_src = (_ROOT / 'docker-compose.yml').read_text(encoding='utf-8')
+        self.assertIn('group_add:', compose_src,
+                      'compose 里连 opt-in 的 group_add 模板都没了 —— 恢复 socket 时无从下手')
+        self.assertIn('DOCKER_GID', compose_src,
+                      'opt-in 模板没用 DOCKER_GID 变量（宿主 GID 因机器而异，写死必错）')
+        self.assertIn('stat -c', compose_src,
+                      '要给出取 GID 的命令：stat -c %g /var/run/docker.sock')
+
         env = (_ROOT / '.env.example').read_text(encoding='utf-8')
         self.assertIn('DOCKER_GID', env, '.env.example 没说明 DOCKER_GID 怎么取')
         self.assertIn('stat -c', env,

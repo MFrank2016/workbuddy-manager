@@ -586,10 +586,18 @@ class EventLoopResponsivenessTest(unittest.TestCase):
 
         若哪天有人在事件循环里误用同步版，心跳会掉到接近 0；本用例把这个
         差异钉住，免得「都改成 async」这个结论被无意改回去。
+
+        基线必须跑一段**真实时长**再数心跳。旧写法用
+        `asyncio.to_thread(lambda: None)` 当基线（几乎立即返回），心跳任务
+        create_task 后要等循环调度才会首次执行 —— 采样窗口太短就可能一次都
+        没跳（实测 0 次），那是**测量方式**的缺陷，不是「循环被冻住」。
+        现在基线用与阻塞侧**相同的 1.0s 时长**空闲运行，既保证能采到心跳，
+        又让两边的对比是同口径的（相对比较，不靠绝对魔法数）。
         """
-        ticks = self._heartbeat_during(
-            lambda: asyncio.to_thread(lambda: None), 0.0)  # 占位：正常情况
-        self.assertGreater(ticks, 0)
+        ticks_idle = self._heartbeat_during(lambda: asyncio.sleep(1.0), 0.0)
+        self.assertGreaterEqual(
+            ticks_idle, 5,
+            f'空闲基线只跳了 {ticks_idle} 次 —— 基线本身没采到心跳，比较无意义')
 
         async def call_sync() -> None:
             taskrun.available()   # 同步调用，直接在事件循环里跑
@@ -597,6 +605,8 @@ class EventLoopResponsivenessTest(unittest.TestCase):
         ticks_blocked = self._heartbeat_during(call_sync, 1.0)
         self.assertLessEqual(ticks_blocked, 2,
                              '同步调用居然没阻塞循环？那这条测试的前提就不成立了，需重新审视')
+        self.assertLess(ticks_blocked, ticks_idle,
+                        f'阻塞侧（{ticks_blocked}）没有少于空闲基线（{ticks_idle}）—— 同步调用不再阻塞')
 
     def test_image_id_is_cached(self) -> None:
         """镜像 ID 要缓存：它是被 15 秒轮询的路径，不缓存等于每轮 fork 一次 docker。"""
