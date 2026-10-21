@@ -122,9 +122,16 @@ class HourlyRebuildTest(_Case):
         self.assertEqual(sum(int(r['prompt_tokens']) for r in rows), 11)
 
     def test_ensure_hourly_today_backfills_upgrade_gap(self) -> None:
-        """存量库升级场景：小时表空着，但今天有请求日志 → 自动补上。"""
+        """存量库升级场景：小时表空着，但今天有请求日志 → 自动补上。
+
+        时间戳要**夹进今天**再写：`ensure_hourly_today()` 只认 `ts >= 今天零点`
+        的日志。若直接写 `now - 300`，在本地时间凌晨 00:00-00:05 跑这套测试时
+        它会落进**昨天**，兜底正确地返回 False —— 断言就会在每天的头五分钟
+        偶发失败一次（不是产品 bug，是测试的时钟假设）。
+        """
         now = int(time.time())
-        self._log(now - 300, pt=42, ct=8)
+        ts = max(self.db.day_start_ts(self.db.day_of()) + 1, now - 300)
+        self._log(ts, pt=42, ct=8)
         self.db.execute('DELETE FROM usage_hourly')      # 模拟「升级后这张表是空的」
         self.assertTrue(self.db.ensure_hourly_today(), '升级兜底没有回填')
         rows = self.db.query('SELECT * FROM usage_hourly')
