@@ -21,9 +21,30 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from .. import config, db, security
 from ..iputil import client_ip
 from ..services import proxyroutes as routesvc
+from ..services import reload, updater, wb2api
 from . import accounts as accounts_router
 
 router = APIRouter(prefix='/api', tags=['proxies'])
+
+
+async def _hot_apply_routes() -> dict:
+    """线路表变更后让上游热生效（不重启容器）。
+
+    上游不监听 config.json（只在自己面板保存时应用），所以面板改完线路必须主动
+    提交一次 —— 否则新增/改名的线路只落在磁盘上，上游内存里的路由表仍是旧的，
+    账号绑上去会报「未知的出口线路」。
+    """
+    written = wb2api.load_config_file()
+    if not written:
+        return {'hot_applied': False}
+    hot = await wb2api.apply_config_hot(written)
+    if hot['ok']:
+        reload.record_hot_apply('出口线路已热生效')
+        return {'hot_applied': True}
+    # 上游不支持热生效 / 调用失败：退回重启请求（与设置页同一套降级）
+    if updater.can_control_docker():
+        reload.request_restart()
+    return {'hot_applied': False}
 
 
 def _auth_dir(upstream_id: int | None):
@@ -71,7 +92,7 @@ def list_proxy_routes(upstream_id: int | None = Query(None),
 
 
 @router.post('/proxy-routes')
-def create_proxy_route(request: Request, body: dict = Body(...),
+async def create_proxy_route(request: Request, body: dict = Body(...),
                        user: dict = Depends(security.require_session_admin)) -> dict:
     try:
         item = routesvc.upsert(body.get('name'), body.get('url'), allow_overwrite=False)
@@ -79,11 +100,11 @@ def create_proxy_route(request: Request, body: dict = Body(...),
         raise _wrap(exc) from exc
     security.audit(user, 'create_proxy_route', item['name'],
                    f'地址 {item["masked"]}；来源 {client_ip(request)}')
-    return item
+    return {**item, **await _hot_apply_routes()}
 
 
 @router.put('/proxy-routes/{name}')
-def update_proxy_route(name: str, request: Request, body: dict = Body(...),
+async def update_proxy_route(name: str, request: Request, body: dict = Body(...),
                        upstream_id: int | None = Query(None),
                        user: dict = Depends(security.require_session_admin)) -> dict:
     """改地址，或改名（改名会把绑定它的账号一起改过去）。"""
@@ -96,18 +117,18 @@ def update_proxy_route(name: str, request: Request, body: dict = Body(...),
             security.audit(user, 'rename_proxy_route', f'{name} → {result["name"]}',
                            f'同步 {result["bound_updated"]} 台账号的绑定；'
                            f'来源 {client_ip(request)}')
-            return {**item, 'bound_updated': result['bound_updated']}
+            return {**item, 'bound_updated': result['bound_updated'], **await _hot_apply_routes()}
         item = routesvc.upsert(name, body.get('url'), weight=body.get('weight'),
                                enabled=body.get('enabled'))
     except routesvc.RouteError as exc:
         raise _wrap(exc) from exc
     security.audit(user, 'update_proxy_route', item['name'],
                    f'地址 {item["masked"]}；来源 {client_ip(request)}')
-    return item
+    return {**item, **await _hot_apply_routes()}
 
 
 @router.delete('/proxy-routes/{name}')
-def delete_proxy_route(name: str, request: Request, force: bool = Query(False),
+async def delete_proxy_route(name: str, request: Request, force: bool = Query(False),
                        upstream_id: int | None = Query(None),
                        user: dict = Depends(security.require_session_admin)) -> dict:
     """删除线路。仍被账号绑着时要带 force（界面会先把账号数摆出来让人确认）。"""
@@ -118,11 +139,11 @@ def delete_proxy_route(name: str, request: Request, force: bool = Query(False),
         raise _wrap(exc) from exc
     security.audit(user, 'delete_proxy_route', name,
                    f'清掉 {result["bound_cleared"]} 台账号的绑定；来源 {client_ip(request)}')
-    return result
+    return {**result, **await _hot_apply_routes()}
 
 
 @router.post('/proxy-routes/import')
-def import_proxy_routes(request: Request, body: dict = Body(...),
+async def import_proxy_routes(request: Request, body: dict = Body(...),
                         user: dict = Depends(security.require_session_admin)) -> dict:
     """批量导入：每行 `名字=地址`；逐行报问题，能导的先导进去。"""
     text = str(body.get('text') or '')
@@ -135,7 +156,7 @@ def import_proxy_routes(request: Request, body: dict = Body(...),
     security.audit(user, 'import_proxy_routes', '',
                    f'导入 {result["imported"]} 条，问题 {len(result["problems"])} 条；'
                    f'来源 {client_ip(request)}')
-    return result
+    return {**result, **await _hot_apply_routes()}
 
 
 @router.post('/proxy-routes/probe')
