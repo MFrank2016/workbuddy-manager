@@ -82,6 +82,11 @@ def validate_name(name: object) -> str:
     value = str(name or '').strip()
     if not NAME_RE.match(value):
         raise RouteError('线路名只能是字母、数字与 . _ -（1~32 位）')
+    # `__direct__` 是「强制直连」的保留名（上游 0013 / 面板 config.DIRECT_ROUTE_NAME）。
+    # 它同时满足 NAME_RE，所以必须显式拒绝：否则建一条同名真线路后，绑定它的账号
+    # 会被 resolve_account_proxy 静默当成直连，而界面显示的是那条线路。
+    if value == config.DIRECT_ROUTE_NAME:
+        raise RouteError(f'「{value}」是保留名（表示强制直连），不能用作线路名')
     return value
 
 
