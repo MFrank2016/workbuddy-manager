@@ -1592,9 +1592,9 @@ async def _handle(request: Request) -> JSONResponse | StreamingResponse:
         return _failed('model 必须是字符串', 400, 'invalid_request_error', 'invalid_model')
 
     # 鉴权：与 gateway._authorize 同一套检查、同一顺序（含版本隔离与配额）
-    # 映射先算：版本归属判的是**映射后**的实际模型名（issue #47）
-    mapped = gateway._map_model(model)
-    key, ip, auth_err = gateway._authorize(request, model, mapped=mapped)
+    # **先鉴权后映射**（契约 §2）：路由按密钥绑定的分组做租户隔离，`_authorize`
+    # 解析出密钥后一并返回映射后的名字（版本归属也判它，issue #47）。
+    key, ip, mapped, auth_err = gateway._authorize(request, model)
     if auth_err:
         return auth_err
 
@@ -1637,7 +1637,7 @@ async def _handle(request: Request) -> JSONResponse | StreamingResponse:
         try:
             async with config.http_client(config.UPSTREAM_TIMEOUT, connect=5) as client:
                 resp = await client.post(url, json=payload,
-                                         headers=gateway._upstream_headers(upstream))
+                                         headers=gateway._upstream_headers(upstream, key))
             latency = int((time.time() - started) * 1000)
             usage: dict = {}
             try:
@@ -1684,7 +1684,7 @@ async def _handle(request: Request) -> JSONResponse | StreamingResponse:
     client = config.http_client(config.UPSTREAM_TIMEOUT, connect=5)
     try:
         req = client.build_request('POST', url, json=payload,
-                                   headers=gateway._upstream_headers(upstream))
+                                   headers=gateway._upstream_headers(upstream, key))
         resp = await client.send(req, stream=True)
     except Exception as exc:  # noqa: BLE001
         await client.aclose()

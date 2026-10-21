@@ -175,12 +175,15 @@ def _resolve_key(request: Request):
     return None, (max(candidates, key=len) if candidates else '')
 
 
-def _authorize(request: Request, model: str | None, *,
-               mapped: str | None = None) -> tuple[dict | None, str, JSONResponse | None]:
-    """完整鉴权：密钥 → 全局 IP 管控 → 密钥约束 → 限流。返回 `(key, ip, error)`。
+def _authorize(
+    request: Request, model: str | None,
+) -> tuple[dict | None, str, str | None, JSONResponse | None]:
+    """完整鉴权：密钥 → 全局 IP 管控 → 密钥约束 → 限流。返回 `(key, ip, mapped, error)`。
 
-    mapped：`model` 经「模型映射」后的名字，版本归属判它（issue #47，
-    见 `keysvc.validate` 的说明）。与 `gateway._authorize` 同名同义。
+    **先解析密钥，再映射模型**（契约 §2）：路由按 `key.upstream_id` 做租户隔离，
+    分组只有解析出密钥之后才知道。`mapped` 由本函数算出并返回 —— 调用方不再
+    自己预先映射（旧写法 `gateway._map_model(model)` 只能按 NULL 分组查表）。
+    版本归属判映射后的名字（issue #47，见 `keysvc.validate`）。
 
     ⚠️ 这套检查与 `gateway._authorize` **必须保持同序同项**——同一把密钥在两个
     协议下得出不同结论是最难查的一类问题。之所以没直接复用：本层要遍历**多个
@@ -197,7 +200,7 @@ def _authorize(request: Request, model: str | None, *,
     key, token = _resolve_key(request)
     if not token:
         logger.warning('未取到令牌，收到的请求头: %s', _header_names(request))
-        return None, ip, _err('缺少 API Key：请在 x-api-key 或 Authorization: Bearer 中提供', 401, 'authentication_error')
+        return None, ip, None, _err('缺少 API Key：请在 x-api-key 或 Authorization: Bearer 中提供', 401, 'authentication_error')
     if key is None:
         # 「配了却 401」几乎只能靠这行定位：候选个数/长度说明客户端发了什么，
         # 前缀是密钥的**公开部分**（面板列表里就显示它），便于比对是哪一把；
@@ -212,10 +215,11 @@ def _authorize(request: Request, model: str | None, *,
             len(request.headers.get('authorization', '')),
             _header_names(request),
         )
-        return None, ip, _err('API Key 无效', 401, 'authentication_error')
+        return None, ip, None, _err('API Key 无效', 401, 'authentication_error')
 
-    # 供记账用（IP 拦截早于下面的映射归一化，这里先算一份）
-    _mapped_for_log = gateway._map_model(model) if mapped is None else mapped
+    # 密钥已解析 → 映射可以带上分组做租户隔离；拒绝路径也要用它记账
+    # （日志的 realm 按实际要用的那个名字归档，别名不带前缀，按请求名记会归错栏）。
+    mapped = gateway._map_model(model, key)
 
     sec = get_security_config()
     if sec.get('enabled'):
@@ -225,17 +229,13 @@ def _authorize(request: Request, model: str | None, *,
         ]
         if not iputil.evaluate(ip, rules, sec.get('mode', 'blacklist')):
             gateway._log_ip(ip, path, True, ua, 'ip_blocked')
-            gateway._record(key, ip, model or '', _mapped_for_log or '', 403, 0, 0, 0, ua, 'IP 被拦截', False)
-            return None, ip, _err(f'来源 IP {ip} 被安全策略拦截', 403, 'permission_error')
+            gateway._record(key, ip, model or '', mapped or '', 403, 0, 0, 0, ua, 'IP 被拦截', False)
+            return None, ip, mapped, _err(f'来源 IP {ip} 被安全策略拦截', 403, 'permission_error')
 
     # 注意：`blocked=False` 的这一行现在默认**不写库**（审计日志只留拦截，
     # 见 gateway._log_ip 的说明）——保留调用是为了 WB_AUDIT_ALL_ACCESS=1 时
     # 与 gateway 行为一致，不多一条分叉。
     gateway._log_ip(ip, path, False, ua)
-
-    # 映射只算一次：拒绝路径也要用它记账（口径见 gateway._authorize 的说明——
-    # 日志的 realm 按实际要用的那个名字归档，别名不带前缀，按请求名记会归错栏）。
-    mapped = gateway._map_model(model) if mapped is None else mapped
 
     # model 为 None 时按「模型发现类请求」处理：跳过版本与模型白名单
     # （没有 model 就无从判定版本），但停用/过期/配额/IP 这些照常校验。
@@ -250,16 +250,16 @@ def _authorize(request: Request, model: str | None, *,
         # 「IP 访问日志」里**完全看不到**（只有 gateway 那条路记），两套协议
         # 的审计口径不一致。原因码复用 gateway 的归类，避免两处写法漂移。
         gateway._log_ip(ip, path, True, ua, gateway._key_reject_code(reason, model is None))
-        return None, ip, _err(reason, status, getattr(reason, 'err_type', 'permission_error'))
+        return None, ip, mapped, _err(reason, status, getattr(reason, 'err_type', 'permission_error'))
 
     limited, _count = gateway._rate_limited(key)
     if limited:
         msg = f'请求过于频繁（{gateway.RATE_WINDOW}s 内超过 {gateway.RATE_MAX_PER_MIN} 次）'
         gateway._record(key, ip, model or '', mapped or '', 429, 0, 0, 0, ua, msg, False)
         gateway._log_ip(ip, path, True, ua, 'rate_limited')
-        return None, ip, _err(msg, 429, 'rate_limit_error')
+        return None, ip, mapped, _err(msg, 429, 'rate_limit_error')
 
-    return key, ip, None
+    return key, ip, mapped, None
 
 
 def _header_names(request: Request) -> list[str]:
@@ -982,9 +982,9 @@ async def messages(request: Request):
     gateway.clamp_max_tokens(body)
 
     # 鉴权：与 gateway._authorize 同一套检查、同一顺序（见该函数说明）
-    # 映射先算：版本归属判的是**映射后**的实际模型名（issue #47）
-    mapped = gateway._map_model(model)
-    key, ip, auth_err = _authorize(request, model, mapped=mapped)
+    # **先鉴权后映射**（契约 §2）：`_authorize` 解析出密钥后按 `key.upstream_id`
+    # 做租户隔离解析，并返回映射后的名字（版本归属也判它，issue #47）。
+    key, ip, mapped, auth_err = _authorize(request, model)
     if auth_err:
         return auth_err
 
@@ -1022,7 +1022,7 @@ async def messages(request: Request):
         try:
             async with config.http_client(config.UPSTREAM_TIMEOUT, connect=5) as client:
                 resp = await client.post(url, json=payload,
-                                         headers=gateway._upstream_headers(upstream))
+                                         headers=gateway._upstream_headers(upstream, key))
             latency = int((time.time() - started) * 1000)
             usage: dict = {}
             try:
@@ -1058,7 +1058,7 @@ async def messages(request: Request):
     client = config.http_client(config.UPSTREAM_TIMEOUT, connect=5)
     try:
         req = client.build_request('POST', url, json=payload,
-                                   headers=gateway._upstream_headers(upstream))
+                                   headers=gateway._upstream_headers(upstream, key))
         resp = await client.send(req, stream=True)
     except Exception as exc:  # noqa: BLE001
         await client.aclose()
@@ -1219,11 +1219,12 @@ async def count_tokens(request: Request):
     # count_tokens 允许不带 model（那是常态），故 model 为 None 时按「模型发现
     # 类请求」处理：跳过版本与模型白名单，其余约束照常生效。
     model = body.get('model') if isinstance(body.get('model'), str) else None
-    # 同样是「映射先于鉴权」：客户端在发消息前先数 token，用的还是别名——
-    # 若这里按请求名判版本，配了别名映射的密钥会在这一步就被打回（issue #47）
-    _mapped = gateway._map_model(model)
-    _key, _ip, auth_err = _authorize(request, model, mapped=_mapped)
+    # 同样是「先鉴权后映射」：客户端在发消息前先数 token，用的还是别名——
+    # 若这里按请求名判版本，配了别名映射的密钥会在这一步就被打回（issue #47）。
+    # 映射在 `_authorize` 内部按密钥分组算好（契约 §2 的租户隔离）。
+    _key, _ip, _mapped, auth_err = _authorize(request, model)
     if auth_err:
+        return auth_err
         return auth_err
 
     total = 0

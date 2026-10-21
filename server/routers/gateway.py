@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import config, db, iputil, keysvc, upstreamsvc
-from ..services import modelmap, proxyroutes
+from ..services import modellisting, modelmap, modelroutes, proxyroutes
 from ..config import _env_int
 from ..routers.security import get_config as get_security_config
 
@@ -497,15 +497,17 @@ def _record(key: dict | None, ip: str, model: str, mapped: str, status: int, pt:
             logger.warning('累计用量失败（不影响请求）: %s', exc)
 
 
-def _authorize(request: Request, model: str | None,
-               *, is_model_list: bool = False,
-               mapped: str | None = None) -> tuple[dict | None, str, JSONResponse | None]:
-    """返回 (key, ip, error_response)。
+def _authorize(
+    request: Request, model: str | None, *, is_model_list: bool = False,
+) -> tuple[dict | None, str, str | None, JSONResponse | None]:
+    """返回 `(key, ip, mapped, error_response)`。
 
-    mapped：`model` 经「模型映射」后的名字。**默认在这里算**，因为版本归属判的
-    是映射后的名字（issue #47，见 `keysvc.validate`）——调用方算好了可以传进来
-    省一次设置读取，但漏传不会退回旧行为。调用方仍要自己再算一次用于改写 body
-    （或把这里的算法抽出去共用）。
+    **先解析密钥，再映射模型**（契约 §2 的租户隔离）：路由按 `key_group` 匹配，
+    而分组只有解析出密钥之后才知道。旧写法「先 `_map_model` 再鉴权」只能按 NULL
+    分组查表，绑定分组的密钥会看到本不属于它的路由。
+
+    `mapped` 在这里算并返回给调用方改写 body —— 调用方不再自己预先映射。
+    版本归属判的是映射后的名字（issue #47，见 `keysvc.validate`）。
     """
     ip = iputil.client_ip(request)
     ua = request.headers.get('user-agent')
@@ -516,19 +518,21 @@ def _authorize(request: Request, model: str | None,
     token = _bearer(request)
     if not token:
         _log_ip(ip, path, True, ua, 'missing_key')
-        return None, ip, _oai_error('缺少 API Key，请在 Authorization 头中提供 Bearer 令牌', 401, 'authentication_error', 'missing_api_key')
+        return None, ip, None, _oai_error('缺少 API Key，请在 Authorization 头中提供 Bearer 令牌', 401, 'authentication_error', 'missing_api_key')
 
     key = keysvc.resolve(token)
     if not key:
         _log_ip(ip, path, True, ua, 'invalid_key')
-        return None, ip, _oai_error('API Key 无效', 401, 'authentication_error', 'invalid_api_key')
+        return None, ip, None, _oai_error('API Key 无效', 401, 'authentication_error', 'invalid_api_key')
 
     # 映射只算一次，后面三处拒绝路径都要用它记账（见下）。
     # 为什么拒绝路径也要传：日志的 `realm` 按**实际要用的那个名字**归档（issue #47
     # 的统一口径）。别名不带 `global:` 前缀，若拒绝路径按请求名归档，一次「别名指向
     # 国际版、却被国内版密钥拒绝」的记录会落在国内版栏目里——按版本筛日志的人会看到
     # 一条本不该在那儿的记录，且看不出它原本指向国际版。
-    mapped = _map_model(model) if mapped is None else mapped
+    #
+    # **密钥已解析**，所以这里能带上 `key.upstream_id` 做租户隔离（契约 §2）。
+    mapped = _map_model(model, key)
 
     # 全局入站 IP 规则
     sec = get_security_config()
@@ -555,7 +559,7 @@ def _authorize(request: Request, model: str | None,
         _record(key, ip, model or '', mapped or '',
                 getattr(reason, 'status', 403), 0, 0, 0, ua, reason, False)
         _log_ip(ip, path, True, ua, _key_reject_code(reason, is_model_list))
-        return None, ip, _oai_error(
+        return None, ip, mapped, _oai_error(
             reason,
             getattr(reason, 'status', 403),
             getattr(reason, 'err_type', 'permission_error'),
@@ -567,10 +571,10 @@ def _authorize(request: Request, model: str | None,
         msg = f'请求过于频繁（{RATE_WINDOW}s 内超过 {RATE_MAX_PER_MIN} 次）'
         _record(key, ip, model or '', mapped or '', 429, 0, 0, 0, ua, msg, False)
         _log_ip(ip, path, True, ua, 'rate_limited')
-        return None, ip, _oai_error(msg, 429, 'rate_limit_error', 'rate_limit_exceeded')
+        return None, ip, mapped, _oai_error(msg, 429, 'rate_limit_error', 'rate_limit_exceeded')
 
     _log_ip(ip, path, False, ua)
-    return key, ip, None
+    return key, ip, mapped, None
 
 
 def _key_reject_code(reason: object, is_model_list: bool) -> str:
@@ -586,27 +590,73 @@ def _key_reject_code(reason: object, is_model_list: bool) -> str:
     return code if isinstance(code, str) and code else 'key_rejected'
 
 
-def _map_model(model: str | None) -> str | None:
+def _routes_enabled() -> bool:
+    """路由表总开关（契约 §5，默认关）。关掉时**完全**走旧 `model_map`。"""
+    return modellisting.routes_enabled()
+
+
+def _key_group(key: dict | None) -> int | None:
+    """本次请求的租户分组（薄包装，判据在 `services.modellisting`）。"""
+    return modellisting.key_group(key)
+
+
+def _map_model(model: str | None, key: dict | None = None) -> str | None:
     """「模型映射」查表：别名 → 真名；没命中就落到**兜底模型**（issue #173），
     两者都没有时原样返回。
+
+    **必须先有 `key`**：路由按 `key_group` 做租户隔离，而分组只有解析出密钥之后
+    才知道（`_authorize` 先解析再调本函数）。`key=None`（playground / 管理端调试）
+    按 NULL 分组解析 —— 它没有绑定，本来就不该看到任何分组的专属路由。
+
+    两条路径由 `model_routes_enabled` 决定（契约 §5）：
+
+      · **关**：逐字走旧 `modelmap.target_for`，行为与迁移前完全一致；
+      · **开**：交给 `modelroutes.resolve` 的 6 级链（表为空时它自己回落旧表，
+        所以升级窗口也不会丢映射）。
 
     设置坏掉（存成了非对象）时按「没有映射」处理，**不能让整个网关 5xx**：
     映射是可选的便利功能，坏数据只该影响它自己那一项，不连坐（与
     `db._json_list` 对非法 JSON 列的处理同一原则）。
-
-    语义集中在 `services/modelmap`，这里只取结果：白名单补条目与别名校验走同一份
-    实现 —— 三处各写一遍必然漂移，而漂移出来的错位（能调用、但客户端的模型清单里
-    没有它）只有用户能发现。
     """
-    return modelmap.target_for(db.get_setting('model_map', {}) or {}, model)
+    if not _routes_enabled():
+        return modelmap.target_for(db.get_setting('model_map', {}) or {}, model)
+    # realm 判定依据是**真正发往上游的那个名字**（issue #47）：先按旧表试出
+    # 候选名（没有旧映射时就是原名），再用它算 realm，交给路由表解析。
+    legacy = modelmap.target_for(db.get_setting('model_map', {}) or {}, model)
+    realm = db.realm_of_model(legacy or model)
+    return modelroutes.resolve(model, realm, _key_group(key))
 
 
-def _upstream_headers(upstream: dict | None = None) -> dict:
+def _profile_realm(profile: object) -> str:
+    """由 profile 推导 realm（契约 §1：`intl-*` → global，`cn-*` → cn）。
+
+    只认契约里的 4 个 profile；认不出返回空串（**不编造** realm —— 猜错会让
+    core 按错误的版本选号，比不带头更糟）。
+    """
+    name = str(profile or '').strip().lower()
+    if name.startswith('intl-'):
+        return 'global'
+    if name.startswith('cn-'):
+        return 'cn'
+    return ''
+
+
+def _upstream_headers(upstream: dict | None = None, key: dict | None = None) -> dict:
     """转发时用的请求头；`upstream` 为空 = 默认上游。
 
     多上游（密钥绑定上游）之后，请求头**必须按密钥解析出来的上游来构造** ——
     拿错上游的 api_key 会打到别的账号池上，而这正是本功能要隔离的东西。
     默认参数只为兼容「没有密钥」的调用方（探活 / 管理端调试台）。
+
+    **`X-WB2A-Profile` / `X-WB2A-Realm` 的唯一写入点**（契约 §1 Header write site）：
+
+      · 值为空 → **不写这个头**（core 侧缺失即回落 `key.realm`/profile 推导，
+        写空串反而会被当成「显式指定了空值」）；
+      · `key=None`（playground / 管理端调试）→ **两个头都不写**：它没有下游密钥，
+        也就没有可声明的租户身份。
+
+    `profile` 列要到 Todo 20 才加到 `api_keys`，所以这里用 `getattr`/`.get` 探测
+    非空值 —— 今天恒为空（不写头），Todo 20 落列后自动生效，无需再动本函数。
     """
     up = upstream if upstream is not None else upstreamsvc.default_upstream()
     headers = {'Content-Type': 'application/json'}
@@ -616,6 +666,13 @@ def _upstream_headers(upstream: dict | None = None) -> dict:
     api_key = upstreamsvc.forward_api_key(up)
     if api_key:
         headers['Authorization'] = f'Bearer {api_key}'
+    if key is not None:
+        profile = str(getattr(key, 'profile', '') or key.get('profile', '') or '').strip()
+        realm = str(key.get('realm') or '').strip().lower() or _profile_realm(profile)
+        if profile:
+            headers['X-WB2A-Profile'] = profile
+        if realm:
+            headers['X-WB2A-Realm'] = realm
     return headers
 
 
@@ -772,7 +829,7 @@ def key_usage(request: Request):
 # 未限定版本的密钥（存量）照旧看到全部——它们本来就两版都能调。
 @router.get('/v1/models')
 async def list_models(request: Request):
-    key, ip, err = _authorize(request, None, is_model_list=True)
+    key, ip, _mapped, err = _authorize(request, None, is_model_list=True)
     if err:
         return err
     # 模型列表也按密钥的上游取：不同上游的模型清单未必一致（版本 / 部署差异），
@@ -785,7 +842,7 @@ async def list_models(request: Request):
     try:
         async with config.http_client(30, connect=3) as client:
             resp = await client.get(f'{upstream["base_url"]}/v1/models',
-                                    headers=_upstream_headers(upstream))
+                                    headers=_upstream_headers(upstream, key))
         latency = int((time.time() - started) * 1000)
         _record(key, ip, '', '', resp.status_code, 0, 0, latency, request.headers.get('user-agent'), None, False)
         payload = _scope_models(resp.json(), key)
@@ -835,83 +892,18 @@ def _as_anthropic_models(payload: object) -> object:
     }
 
 
-def _model_realm_of(m: object) -> str:
-    """清单条目的版本：`global:` 前缀 = 国际版，其余 = 国内版。"""
-    return 'global' if str((m or {}).get('id') or '').lower().startswith('global:') else 'cn'
-
-
 def _alias_entries(items: list, allow: list[str]) -> list[dict]:
-    """白名单里写的是**别名**时，补一条以别名为 id 的模型条目（issue #46）。
-
-    别名（设置页「模型映射」）是给下游用的名字，它**不在上游模型清单里**。
-    若只按清单字面裁剪，白名单填成别名的密钥会拿到**空列表**——而那个别名明明
-    能调用（鉴权判的是请求里的名字，模型映射发生在鉴权**之后**）。空列表比不裁
-    更糟：客户端会显示「没有可用模型」，用户看不出是自己把名字写成了别名。
-
-    条目取别名所指模型的信息，只把 `id` 换成别名——**那才是客户端要发的名字**
-    （发清单里的真名会被白名单拒掉）。
-
-    解析走 `modelmap.target_for`（含兜底，issue #173）：配了兜底模型之后，白名单里
-    任意名字**都调得通**，那就不该只在没有兜底时补条目 —— 否则客户端拿到的清单里
-    缺了那个名字，用户会以为"白名单没生效"，而其实是清单没列。
-    """
-    mapping = db.get_setting('model_map', {}) or {}
-    if not isinstance(mapping, dict) or not mapping:
-        return []
-    by_bare: dict[str, dict] = {}
-    for m in items:
-        if isinstance(m, dict) and m.get('id'):
-            by_bare.setdefault(keysvc._bare_model(m.get('id')), m)
-    out: list[dict] = []
-    seen: set[str] = set()
-    for raw in allow:
-        name = keysvc._bare_model(raw)
-        # 本身就是清单里的模型 → 上面的白名单裁剪已保留它，不重复添加
-        if not name or name in seen or name in by_bare:
-            continue
-        target = modelmap.target_for(mapping, name)
-        src = by_bare.get(keysvc._bare_model(target)) if target else None
-        if not src:
-            continue          # 别名指向的模型不在本版本清单里 → 调不通，不给
-        out.append({**src, 'id': name})
-        seen.add(name)
-    return out
+    """旧 `model_map` 的白名单别名补条目（薄包装，判据在 `services.modellisting`）。"""
+    return modellisting.alias_entries(items, allow)
 
 
 def _scope_models(payload: object, key: dict | None) -> object:
-    """按密钥的**版本**与**模型白名单**裁剪模型列表。
+    """按密钥的**版本**与**模型白名单**裁剪模型列表，并补上路由别名。
 
-    这个接口要回答的是「**你能用**什么模型」——客户端普遍拿它当模型选择器
-    （issue #46）。所以两维都得裁：只裁版本会出现「列表里有、一选就失败」
-    （白名单外的模型照旧列出来，选中就 400）。
-
-    白名单判据与调用侧**共用 `keysvc.model_allowed`**，不另写一份：两处各写一遍
-    迟早漂移，而漂移的表现正是这个函数要修的问题。白名单为空 = 不限制，这一维
-    不裁（与调用侧语义一致）。
-
-    结构不是预期的 `{data: [...]}` 时**原样透传**——配额耗尽之类的判断
-    不该因为我们认不出结构就去改动上游的响应。
+    判据全部在 `services.modellisting`：清单侧与调用侧必须同一口径（issue #46），
+    而这里只保留一层薄包装，供路由与既有测试使用。
     """
-    key = key or {}
-    want = keysvc._norm_realm(key.get('realm'))
-    allow = [str(x) for x in (key.get('models') or []) if str(x).strip()]
-    if not want and not allow:
-        return payload
-    if not isinstance(payload, dict):
-        return payload
-    items = payload.get('data')
-    if not isinstance(items, list):
-        return payload
-
-    in_realm = [m for m in items
-                if isinstance(m, dict) and (not want or _model_realm_of(m) == want)]
-    if not allow:
-        return {**payload, 'data': in_realm}
-
-    scoped = [m for m in in_realm if keysvc.model_allowed(key, m.get('id'))]
-    # 别名：白名单可能写的是下游熟悉的别名，它不在清单里，要补进来
-    scoped += _alias_entries(in_realm, allow)
-    return {**payload, 'data': scoped}
+    return modellisting.scope_models(payload, key)
 
 
 def _listing_compat_models(payload: object) -> object:
@@ -971,10 +963,10 @@ async def _chat(request: Request, upstream_path: str):
     # 这里直接拒掉，也顺带让模型白名单的判定有确定的输入。
     if requested_model is not None and not isinstance(requested_model, str):
         return _oai_error('model 必须是字符串', 400, 'invalid_request_error', 'invalid_model')
-    # 映射**先于鉴权**：版本归属判的是实际要用的名字（issue #47），配了
-    # 「别名 → 带前缀的真名」的密钥此前会被 realm 检查当成错版本打回。
-    mapped = _map_model(requested_model)
-    key, ip, err = _authorize(request, requested_model, mapped=mapped)
+    # **先鉴权后映射**（契约 §2）：路由按 `key.upstream_id` 做租户隔离，
+    # 分组只有解析出密钥之后才知道。`_authorize` 一并返回映射后的名字，
+    # 版本归属也判它（issue #47）。
+    key, ip, mapped, err = _authorize(request, requested_model)
     if err:
         return err
 
@@ -1003,7 +995,8 @@ async def _chat(request: Request, upstream_path: str):
     if not stream:
         try:
             async with config.http_client(config.UPSTREAM_TIMEOUT, connect=5) as client:
-                resp = await client.post(url, json=body, headers=_upstream_headers(upstream))
+                resp = await client.post(url, json=body,
+                                        headers=_upstream_headers(upstream, key))
             latency = int((time.time() - started) * 1000)
             usage = {}
             try:
@@ -1029,7 +1022,8 @@ async def _chat(request: Request, upstream_path: str):
     # 流式转发
     client = config.http_client(config.UPSTREAM_TIMEOUT, connect=5)
     try:
-        req = client.build_request('POST', url, json=body, headers=_upstream_headers(upstream))
+        req = client.build_request('POST', url, json=body,
+                                   headers=_upstream_headers(upstream, key))
         resp = await client.send(req, stream=True)
     except Exception as exc:  # noqa: BLE001
         await client.aclose()

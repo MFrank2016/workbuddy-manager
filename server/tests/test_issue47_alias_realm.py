@@ -234,28 +234,63 @@ class MapModelRobustnessTest(unittest.TestCase):
         self.assertEqual(G._map_model(''), '')
 
 
-class CallSitesMapBeforeAuthorizeTest(unittest.TestCase):
-    """结构守卫：按模型名鉴权的调用点必须显式传 `mapped=`。
+class AuthBeforeMapTest(unittest.TestCase):
+    """结构守卫：**先鉴权后映射**，且调用点不得自己预先映射。
 
-    见模块说明：`_authorize` 的默认值让漏传仍然正确，这条钉的是「映射先于鉴权」
-    这个约定本身——将来谁把默认值删了，漏传的调用点不会静默退回旧行为。
+    迁移契约 §2 把顺序反了过来：路由按 `key.upstream_id` 做租户隔离，而分组只有
+    解析出密钥之后才知道。所以 `_authorize` 现在返回 `(key, ip, mapped, err)`，
+    `mapped` 由它算好。这条钉住两件事：
+
+      · 调用点都按 4 元组解包（改成 3 元组就会在运行时炸，但这里更早发现）；
+      · 这三个路由文件里**没有**预先的 `_map_model(...)` 调用 —— 那会退回旧顺序，
+        让绑定分组的密钥看到本不属于它的路由（租户隔离失效）。
     """
 
     SITES = ('server/routers/gateway.py', 'server/routers/responses.py',
              'server/routers/anthropic.py')
 
-    def test_every_model_call_passes_mapped(self) -> None:
+    def test_call_sites_unpack_the_mapped_name(self) -> None:
         offenders: list[str] = []
         for rel in self.SITES:
             src = (ROOT / rel).read_text(encoding='utf-8')
             for m in re.finditer(r'_authorize\(request,[^)]*\)', src):
                 call = m.group(0)
+                if 'def _authorize' in src[max(0, m.start() - 20):m.start()]:
+                    continue
+                line_start = src.rfind('\n', 0, m.start()) + 1
+                lhs = src[line_start:m.start()]
                 if 'is_model_list=True' in call:
-                    continue          # 模型发现类请求：没有 model
-                if 'mapped=' not in call:
-                    offenders.append(f'{rel}: {call}')
+                    # 模型发现类请求：没有 model，但签名同样变了
+                    if lhs.count(',') < 3:
+                        offenders.append(f'{rel}: {lhs}{call}')
+                    continue
+                if lhs.count(',') < 3:
+                    offenders.append(f'{rel}: {lhs}{call}')
         self.assertEqual(offenders, [],
-                         '这些调用点没有把模型映射传给鉴权（版本归属会判错）：'
+                         '这些调用点没接住 `_authorize` 返回的 mapped（4 元组）：'
+                         + '; '.join(offenders))
+
+    def test_no_pre_auth_mapping_anywhere(self) -> None:
+        """`_map_model` 只能出现在两个 `_authorize` 内部与它的定义处。
+
+        只认**调用形状**（`x = ..._map_model(...)` / `return ..._map_model(...)`）：
+        注释与 docstring 里提到这个名字是正常的说明，不该算违规。
+        """
+        call = re.compile(r'^\s*(?:\w+\s*=|return)\s*[\w.]*_map_model\(')
+        # 合法的两处：gateway._authorize 与 anthropic._authorize 各算一次映射。
+        allowed = ('mapped = _map_model(model, key)',
+                   'mapped = gateway._map_model(model, key)')
+        offenders: list[str] = []
+        for rel in self.SITES:
+            src = (ROOT / rel).read_text(encoding='utf-8')
+            for i, line in enumerate(src.splitlines(), 1):
+                if not call.match(line):
+                    continue
+                if any(ok in line for ok in allowed):
+                    continue
+                offenders.append(f'{rel}:{i}: {line.strip()}')
+        self.assertEqual(offenders, [],
+                         '这些地方在鉴权之前/之外预先映射了模型 —— 租户隔离会失效：'
                          + '; '.join(offenders))
 
     def test_guard_actually_scans_something(self) -> None:
