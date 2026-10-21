@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import threading
@@ -30,6 +31,7 @@ import time
 from pathlib import Path
 
 from . import tencent
+from .filelock import file_lock
 from .realm import resolve_realm
 
 # 上限与预算。**刻意做成模块级常量**：它们是协议的一部分（前端按这个上限做
@@ -242,14 +244,38 @@ async def _one(raw: object, *, realm: str, auth_dir: Path, overwrite: bool,
                   overwrite=overwrite)
 
 
+def _expires_at_for_write(fields: dict, auth_dir: Path, uid: str) -> int:
+    """决定本次落盘的 `expiresAt`。
+
+    优先级：**刷新响应** → **旧文件里的已知正数**（覆盖导入时保留）→ **0**
+    （未知）。0 绝不能覆盖已知正数：那会让 `renew._needs_renew` 从此返回
+    False，自动续期永久跳过这个账号。旧值读不出来一律当「未知」，不抛。
+    """
+    fresh = fields.get('expires_at')
+    if isinstance(fresh, (int, float)) and not isinstance(fresh, bool):
+        return int(fresh)
+    try:
+        raw = json.loads(target_path(auth_dir, uid).read_text(encoding='utf-8'))
+        old = (raw.get('auth') or {}).get('expiresAt')
+    except (OSError, ValueError, AttributeError):
+        return 0
+    if isinstance(old, (int, float)) and not isinstance(old, bool) and old > 0:
+        return int(old)
+    return 0
+
+
 def _write(entry: dict, fields: dict, *, uid: str, resolved: str,
            auth_dir: Path, overwrite: bool) -> dict:
-    """把刷新结果落盘。`expires_at` **只认刷新响应**，缺省记 0（未知）。"""
+    """把刷新结果落盘。
+
+    `expires_at` 取值：**刷新响应优先**；响应没给时保留旧文件里的已知到期
+    时间，不能把正数盖成 0 —— 否则自动续期会永久跳过这个账号。
+    """
     account = {
         'uid': uid,
         'access_token': fields['access_token'],
         'refresh_token': str(fields.get('refresh_token') or entry['refresh_token']),
-        'expires_at': int(fields.get('expires_at') or 0),
+        'expires_at': 0,          # 下面按「响应 → 旧文件 → 未知(0)」填入
         'domain': str(fields.get('domain') or entry['domain'] or ''),
         'realm': resolved,
         'nickname': entry['nickname'],
@@ -258,8 +284,12 @@ def _write(entry: dict, fields: dict, *, uid: str, resolved: str,
         'device_token': entry['device_token'],
     }
     try:
-        _name, existed = tencent.write_auth_file(
-            account, auth_dir, allow_overwrite=overwrite)
+        # 读旧值 + 落盘在同一把文件锁里（RLock，可重入）：否则并发的续期/重登
+        # 刚写好的到期时间可能被这里的旧快照盖回去（见 filelock.py）。
+        with file_lock(target_path(auth_dir, uid)):
+            account['expires_at'] = _expires_at_for_write(fields, auth_dir, uid)
+            _name, existed = tencent.write_auth_file(
+                account, auth_dir, allow_overwrite=overwrite)
     except tencent.AccountExistsError:
         return _result(uid, 'skipped', 'exists', '账号已存在，未覆盖')
     except ValueError:

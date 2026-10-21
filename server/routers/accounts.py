@@ -289,8 +289,12 @@ def _import_upstream(upstream_id: object) -> dict:
 @router.post('/accounts/import-tokens')
 async def import_tokens(request: Request,
                         body: dict = Body(...),
-                        user: dict = Depends(security.require_admin)) -> dict:
-    """从 refresh token 批量导入账号（**admin only**）。
+                        user: dict = Depends(security.require_session_admin)) -> dict:
+    """从 refresh token 批量导入账号（**会话 admin only**）。
+
+    **不接受 API Token**（`require_session_admin`）：这个接口会把新签发的
+    上游凭据写进号池，与 `/api/accounts/upload` 同一条边界——即便 token 的
+    scope 是 admin，泄露后也不该能拿它往里塞凭据。
 
     与 `/api/accounts/upload` 的分工：那个把客户端给的 accessToken 直接落盘（离线
     拷贝即可用）；这个**只信 refreshToken**——每条都当场找腾讯换一次，落盘的一定
@@ -300,8 +304,8 @@ async def import_tokens(request: Request,
     可以是完整 auth JSON 的 `{account, auth}` 嵌套形，也可以是扁平对象；嵌套同名
     键优先。
 
-    错误码：viewer → 403；已有导入在跑 → 409；realm 非法 / 条目超限 / 分组停用 /
-    分组没有账号目录 → 400；分组不存在 → 404。
+    错误码：viewer → 403；API Token（含 admin scope）→ 403；已有导入在跑 → 409；
+    realm 非法 / 条目超限 / 分组停用 / 分组没有账号目录 → 400；分组不存在 → 404。
     """
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail='请求体必须是对象')

@@ -319,6 +319,9 @@ class WriteEndpointScopeMatrixTest(unittest.TestCase):
         # 面板前做」的动作，令牌（哪怕是管理员令牌）不行。导出虽然也是只对会话
         # 开放，但它是**读**接口，本清扫只看写接口，另见 ExportRequiresSessionTest。
         'POST /api/accounts/upload',
+        # refresh token 批量导入（与 upload 同一条边界）：它会**当场刷新并落盘
+        # 新签发的上游凭据**，等于往号池里塞凭据——admin scope 的令牌也不行。
+        'POST /api/accounts/import-tokens',
         # PostgreSQL 异地备份：配置里带着能写整库的数据库凭据；导出会把全部数据
         # （含密钥哈希、请求日志）复制出去，恢复会**覆盖本地库**。三条都远超
         # 只读令牌该有的权限，与 /api/system/update 同级，只对会话开放。

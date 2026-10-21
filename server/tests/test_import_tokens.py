@@ -19,6 +19,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -304,6 +305,89 @@ class ImportDuplicateTest(_ImportCase):
             _entry('u1', 'rt-1', profile='intl-work')])
         self.assertEqual(self._saved('u1')['profile'], 'intl-work')
 
+    def _write_existing(self, expires_at: int) -> Path:
+        path = self.auth_dir / 'workbuddy-u1.json'
+        path.write_text(json.dumps({
+            'account': {'uid': 'u1', 'nickname': '旧号'},
+            'auth': {'accessToken': 'OLD', 'refreshToken': 'old-rt',
+                     'expiresAt': expires_at, 'domain': 'copilot.tencent.com',
+                     'realm': 'cn'},
+        }), encoding='utf-8')
+        return path
+
+    def test_overwrite_without_expires_in_preserves_known_expiry(self) -> None:
+        """刷新响应没带 expiresIn 时，**保留**旧的到期时间。
+
+        `tencent.refresh_token` 在缺省 expiresIn 时故意不返回 `expires_at`
+        （拿不到就不要乱写）。落盘如果把它当 0，就会把一个已知的有效期改成
+        「未知」，`renew._needs_renew` 随即永久跳过这个账号。
+        """
+        path = self._write_existing(1900000000)
+
+        async def refresh(auth: dict):
+            self.refresh_calls.append(dict(auth))
+            return True, '刷新成功（上游未返回有效期，沿用原值）', {
+                'access_token': 'AT-rt-new'}
+
+        with mock.patch.object(tencent, 'refresh_token', side_effect=refresh):
+            body = self._post(realm='cn', overwrite=True,
+                              entries=[_entry('u1', 'rt-new')])
+        self.assertEqual(body['results'][0]['status'], 'updated')
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(saved['auth']['accessToken'], 'AT-rt-new')
+        self.assertEqual(saved['auth']['expiresAt'], 1900000000,
+                         '已知到期时间被 0 覆盖了（数据丢失）')
+
+    def test_overwrite_with_expires_in_takes_the_new_value(self) -> None:
+        """上游给了 expiresIn → 用新值（保留语义不能挡住正常更新）。"""
+        path = self._write_existing(1900000000)
+
+        async def refresh(auth: dict):
+            self.refresh_calls.append(dict(auth))
+            return True, '刷新成功', {'access_token': 'AT-rt-new',
+                                      'expires_at': 2000000000}
+
+        with mock.patch.object(tencent, 'refresh_token', side_effect=refresh):
+            self._post(realm='cn', overwrite=True,
+                       entries=[_entry('u1', 'rt-new')])
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(saved['auth']['expiresAt'], 2000000000)
+
+    def test_new_account_without_expires_in_stays_unknown_zero(self) -> None:
+        """新账号 + 上游没给有效期 → 记 0（未知），与 `_needs_renew` 同口径。"""
+        async def refresh(auth: dict):
+            return True, '刷新成功（上游未返回有效期）', {'access_token': 'AT'}
+
+        with mock.patch.object(tencent, 'refresh_token', side_effect=refresh):
+            body = self._post(realm='cn', entries=[_entry('new-1', 'rt')])
+        self.assertEqual(body['results'][0]['status'], 'added')
+        saved = self._saved('new-1')
+        # 0 = 「未知」的既定表示：上游没给有效期，不臆测（`renew._needs_renew`
+        # 对 <=0 返回 False，把「未知」交给上游/人工处理）。
+        self.assertEqual(saved['auth']['expiresAt'], 0)
+        self.assertEqual(saved['auth']['accessToken'], 'AT')
+
+    def test_preserved_expiry_still_enters_the_renew_window(self) -> None:
+        """保留的正数到期时间仍能被 `renew._needs_renew` 认出来。
+
+        这是 B2 的真实后果：0 会让 `_needs_renew` 返回 False，账号从此被
+        自动续期永久跳过；保留后应当照常进入续期窗口。
+        """
+        from server.services import renew
+        soon = int(time.time()) + 3600          # 1 小时后到期 → 在续期窗口内
+        path = self._write_existing(soon)
+
+        async def refresh(auth: dict):
+            return True, '刷新成功（上游未返回有效期）', {'access_token': 'AT'}
+
+        with mock.patch.object(tencent, 'refresh_token', side_effect=refresh):
+            self._post(realm='cn', overwrite=True,
+                       entries=[_entry('u1', 'rt-new')])
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(saved['auth']['expiresAt'], soon)
+        self.assertTrue(renew._needs_renew(saved['auth']['expiresAt']),
+                        '保留后的到期时间没被续期调度认出来')
+
 
 # ── 分组 / 目录 ────────────────────────────────────────────
 class ImportUpstreamTest(_ImportCase):
@@ -376,6 +460,31 @@ class ImportGuardTest(_ImportCase):
                                     json={'realm': 'cn', 'entries': [_entry('u1', 'rt')]})
         self.assertEqual(response.status_code, 403)
         self.assertEqual(list(self.auth_dir.glob('*')), [])
+
+    def test_admin_api_token_gets_403_and_writes_no_file(self) -> None:
+        """管理员 API Token 也不行：这个接口会落盘上游凭据。
+
+        与 `/api/accounts/upload` 同一条边界（`require_session_admin`）：即便
+        token 的 scope 是 admin，泄露后也不该能往号池里塞凭据。
+        """
+        from server import tokensvc
+        created = tokensvc.create_token('probe-admin', 'admin')
+        # 走真实的 current_user（会话 Cookie 优先、Bearer token 次之）。
+        del self.app.dependency_overrides[security.current_user]
+        self.addCleanup(lambda: self.app.dependency_overrides.__setitem__(
+            security.current_user, self._admin))
+        response = self.client.post('/api/accounts/import-tokens',
+            json={'realm': 'cn', 'entries': [_entry('u1', 'rt')]},
+            headers={'Authorization': f"Bearer {created['token']}"},
+        )
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(self.refresh_calls, [], '被拒绝的请求不该打腾讯')
+        self.assertEqual(list(self.auth_dir.glob('*')), [], '403 路径不得落盘凭据')
+
+    def test_session_admin_is_allowed(self) -> None:
+        """会话管理员照旧可用（收紧不能误伤真人操作）。"""
+        body = self._post(realm='cn', entries=[_entry('u1', 'rt')])
+        self.assertEqual(body['counts']['added'], 1)
 
     def test_concurrent_import_returns_409(self) -> None:
         started = threading.Event()
