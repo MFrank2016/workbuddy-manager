@@ -1445,3 +1445,26 @@ export interface PgSyncTestResult {
   message: string;
   server_version?: string;
 }
+
+/** 五个保留项的键（与后端 `server/retention.py` 的 SPECS 一致） */
+export type RetentionKey =
+  | 'request_days'
+  | 'hourly_days'
+  | 'task_days'
+  | 'audit_max_rows'
+  | 'ip_max_rows';
+
+/**
+ * 日志保留策略（`GET/POST /api/settings/log-retention`，迁移 C2）。
+ *
+ * `overrides` 是**稀疏**的：只含用户真正改过的键，缺的键回落到 `defaults`。
+ * `effective` 是「默认值 + override」的结果，界面上应当显示它而不是 `defaults`
+ * ——否则用户改过的值在输入框里看起来没保存。
+ */
+export interface LogRetention {
+  overrides: Partial<Record<RetentionKey, number>>;
+  defaults: Record<RetentionKey, number>;
+  effective: Record<RetentionKey, number>;
+  /** 每项的合法范围（天数为 1–3650，行数为 1–1000000） */
+  bounds: Record<RetentionKey, {min: number; max: number}>;
+}

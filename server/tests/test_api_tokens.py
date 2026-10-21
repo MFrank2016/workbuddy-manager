@@ -295,6 +295,9 @@ class WriteEndpointScopeMatrixTest(unittest.TestCase):
         'PUT /api/settings/proxy-pool',
         'POST /api/proxy-routes/probe',
         # Upstash 连通性测试：会拿**已保存的 Token** 向外部发请求（审计 2026-10-18），
+        # 日志保留期（迁移 C2）：缩短保留期 = 能**提前抹掉**请求日志与审计痕迹，
+        # 与 /api/logs/clear 同级。读（GET）不限，写只对会话开放。
+        'POST /api/settings/log-retention',
         # 泄露的 token 不该能借它探测 / 外带凭据。
         'POST /api/settings/upstash/test',
         'PUT /api/settings/proxy',

@@ -33,6 +33,7 @@ import type {
   KeyImportDetectResult,
   KeyImportResult,
   KeyImportStatus,
+  LogRetention,
   Me,
   ModelCatalog,
   ModelListResponse,
@@ -48,6 +49,7 @@ import type {
   RedPacketMode,
   ReloadState,
   RequestLog,
+  RetentionKey,
   SecurityConfig,
   StatsSummary,
   TaskLogResponse,
@@ -687,6 +689,10 @@ export const settingsApi = {
   modelMap: () => get<Record<string, string>>('/api/settings/model-map'),
   saveModelMap: (body: Record<string, string>) =>
     post<Record<string, string>>('/api/settings/model-map', body),
+  /** 日志保留策略（迁移 C2）：GET 不限角色，POST 仅会话管理员 */
+  logRetention: () => get<LogRetention>('/api/settings/log-retention'),
+  saveLogRetention: (body: Partial<Record<RetentionKey, number>>) =>
+    post<LogRetention>('/api/settings/log-retention', body),
   users: () => get<UserItem[]>('/api/users'),
   /** 管理端审计日志（登录/改密码/增删用户等，仅管理员可读） */
   auditLogs: (limit = 200) => get<AuditLogPage>('/api/audit-logs', {limit}),

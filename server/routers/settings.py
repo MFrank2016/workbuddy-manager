@@ -9,7 +9,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import config, db, security
+from .. import config, db, retention, security
 from ..services.filelock import file_lock
 from ..iputil import client_ip
 from ..services import modelmap, reload, updater, wb2api
@@ -248,6 +248,46 @@ def save_model_map(body: dict[str, str], user: dict = Depends(security.require_a
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.set_setting('model_map', clean)
     return clean
+
+# ── 日志保留策略（迁移 C2：`log_retention_overrides`）───────
+@router.get('/settings/log-retention')
+def get_log_retention(user: dict = Depends(security.current_user)) -> dict:
+    """读当前保留策略：稀疏 override + 完整默认集 + 生效值 + 校验边界。
+
+    **任何已登录用户都能读**（只读角色也要能看见“日志会留多久”）。写入口
+    在下面，只对会话管理员开放。
+    """
+    return retention.view(db.get_setting(retention.SETTING_KEY, {}))
+
+
+@router.post('/settings/log-retention')
+def save_log_retention(body: dict, request: Request,
+                       user: dict = Depends(security.require_session_admin)) -> dict:
+    """保存保留策略（**仅会话管理员**，API Token 一律 403）。
+
+    为什么只对会话开放：改保留期等于能**提前抹掉**请求日志与审计痕迹——
+    与「清日志」同级，泄露的管理令牌不该能缩短保留期。
+
+    三件事依次做（顺序有意义）：
+      1. 校验并合并成**稀疏**对象（只存用户改过的键；非法值 400 且不改库）；
+      2. 落库；
+      3. 立即按新上限精确裁剪一次 `ip_access_logs` —— 否则用户把上限从 2 万
+         改成 100 后，要等 500 次写入才看到效果，界面上会一直显示旧行数。
+    审计只记「改了哪几项 → 新值」，不含任何凭据。
+    """
+    current = db.get_setting(retention.SETTING_KEY, {})
+    current = current if isinstance(current, dict) else {}
+    try:
+        merged = retention.merge(current, body)
+    except retention.InvalidRetention as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.set_setting(retention.SETTING_KEY, merged)
+    db.prune_ip_access_logs(exact=True)
+    changed = ','.join(f'{k}={v}' for k, v in sorted(merged.items()))
+    security.audit(user, 'update_log_retention', '',
+                   f'保留项：{changed or "（全部恢复默认）"}；来源 {client_ip(request)}')
+    return retention.view(merged)
+
 
 # ── GitHub Token（版本检测 / 一键更新）────────────────────
 @router.get('/settings/github-token')

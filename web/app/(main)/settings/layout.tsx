@@ -51,6 +51,7 @@ import {ResetPasswordDialog} from '@/components/common/settings/ResetPasswordDia
 import {useAuth} from '@/lib/auth-context';
 import {UpdatePanel} from '@/components/common/settings/UpdatePanel';
 import {PgSyncPanel} from '@/components/common/settings/PgSyncPanel';
+import {RetentionPanel} from '@/components/common/settings/RetentionPanel';
 import {ProxyPanel} from '@/components/common/settings/ProxyPanel';
 import {TokensPanel} from '@/components/common/settings/TokensPanel';
 import {ChangelogPanel} from '@/components/common/settings/ChangelogPanel';
@@ -2194,6 +2195,8 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
         {/* ═══ 系统更新 ═══ */}
         <TabsContent value="system" className="mt-4 space-y-4">
           <UpdatePanel />
+          {/* 日志保留策略：与「系统更新」同属运维面（都回答「这台机器怎么运转」）。 */}
+          <RetentionPanel />
         </TabsContent>
 
         {/* ═══ 数据备份 ═══ */}

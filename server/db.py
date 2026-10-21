@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import config
+from . import config, retention
 
 logger = logging.getLogger('workbuddy.db')
 
@@ -518,6 +518,9 @@ def connect() -> sqlite3.Connection:
                 _conn = None
             raise RuntimeError(_explain_db_open_failure(exc)) from exc
         _conn.commit()
+        # 新建连接 = 可能换了库（测试换 DB_PATH、恢复备份、重启）：缓存的保留项
+        # 属于上一个库，必须先丢掉。
+        _reset_retention_cache()
         # 建表之后再收紧权限：库文件此刻才确定存在，WAL 伴生文件也在初始化后出现
         _restrict_db_permissions()
         # 升级兜底：usage_hourly 是后加的表，存量库升级后它是空的 —— 用户点开
@@ -537,6 +540,9 @@ def _close_connection_locked() -> None:
     """
     global _conn
     conn, _conn = _conn, None
+    # 换库/关连接后缓存的 override 属于旧库，必须丢弃（否则恢复备份后仍按旧库
+    # 的保留期裁剪，且永远不会自己纠正）。
+    _reset_retention_cache()
     if conn is None:
         return
     try:
@@ -892,6 +898,10 @@ def set_setting(key: str, value: Any) -> None:
         'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
         (key, json.dumps(value, ensure_ascii=False)),
     )
+    # 保留项有内存缓存（`_retention_overrides`）：写入后必须失效，否则改了设置
+    # 也要等进程重启才生效。
+    if key == retention.SETTING_KEY:
+        _reset_retention_cache()
 
 
 # ── 用量累计 ─────────────────────────────────────────────
@@ -1169,19 +1179,62 @@ _TASK_LOG_RETAIN_DAYS = 90
 _AUDIT_LOG_MAX_ROWS = 20000
 
 
+# `log_retention_overrides` 的内存缓存。
+#
+# `add_ip_access_log` 在**每次写入**前都要知道「有没有设 ip_max_rows」，每次都
+# 查一遍 settings 表会把网关鉴权路径（含未鉴权分支）上的常数成本放大成一
+# 次索引查询。本进程是唯一写入方（路由），所以 `set_setting` 失效即可。
+_retention_cache: dict[str, Any] | None = None
+
+
+def _reset_retention_cache() -> None:
+    """丢掉缓存（换库 / 关闭连接时调用，避免拿到旧库的值）。"""
+    global _retention_cache
+    _retention_cache = None
+
+
+def _retention_overrides() -> dict[str, Any]:
+    """用户改过的保留项。读失败 → 空（走常量，行为等同升级前）。"""
+    global _retention_cache
+    if _retention_cache is not None:
+        return _retention_cache
+    try:
+        value = get_setting(retention.SETTING_KEY, {})
+    except Exception:  # noqa: BLE001
+        return {}
+    _retention_cache = value if isinstance(value, dict) else {}
+    return _retention_cache
+
+
+def _retention_limit(key: str, fallback: int) -> int:
+    """某个保留项生效的值：有 override 用 override，否则用 `fallback` 常量。
+
+    为什么把常量当参数传：现有测试会 `mock.patch.object(db, '_AUDIT_LOG_MAX_ROWS', 3)`。
+    若这里直接读 `retention.DEFAULTS`，那些 patch 就静默失效——测试会「通过」
+    但断言的是另一条路径。
+    """
+    return retention.limit(_retention_overrides(), key, fallback)
+
+
 def _prune_side_tables() -> None:
-    """给只增不减的侧表加保留期 / 条数上限。旁路操作，失败绝不影响主流程。"""
+    """给只增不减的侧表加保留期 / 条数上限。旁路操作，失败绝不影响主流程。
+
+    各阈值优先读 `log_retention_overrides`（迁移 C2），缺键回落到模块常量。
+    """
     now = int(time.time())
+    hourly_days = _retention_limit('hourly_days', _HOURLY_RETAIN_DAYS)
+    task_days = _retention_limit('task_days', _TASK_LOG_RETAIN_DAYS)
+    audit_max = _retention_limit('audit_max_rows', _AUDIT_LOG_MAX_ROWS)
     hourly_cutoff = time.strftime('%Y-%m-%d',
-                                  time.localtime(now - _HOURLY_RETAIN_DAYS * 86400))
-    task_cutoff = now - _TASK_LOG_RETAIN_DAYS * 86400
+                                  time.localtime(now - hourly_days * 86400))
+    task_cutoff = now - task_days * 86400
     for sql, args in (
         ('DELETE FROM usage_hourly WHERE day < ?', (hourly_cutoff,)),
         ('DELETE FROM task_logs WHERE ts < ?', (task_cutoff,)),
         # 保留最新 N 行：删除 id <= 第 N+1 新那行的 id；不足 N 行时子查询为 NULL，
         # `id <= NULL` 不成立，什么都不会删。
         ('DELETE FROM audit_logs WHERE id <= (SELECT id FROM audit_logs '
-         'ORDER BY id DESC LIMIT 1 OFFSET ?)', (_AUDIT_LOG_MAX_ROWS,)),
+         'ORDER BY id DESC LIMIT 1 OFFSET ?)', (audit_max,)),
     ):
         try:
             execute(sql, args)
@@ -1193,8 +1246,10 @@ def _prune_request_logs() -> None:
     """按保留期清理请求日志（滚动删除最旧的），顺手清理侧表。
 
     旁路操作：任何失败都不能影响写入本身（更不能影响转发）。
+    保留期优先读 `request_days` override，缺键回落 `_REQUEST_LOG_RETAIN_DAYS`。
     """
-    cutoff = int(time.time()) - _REQUEST_LOG_RETAIN_DAYS * 86400
+    days = _retention_limit('request_days', _REQUEST_LOG_RETAIN_DAYS)
+    cutoff = int(time.time()) - days * 86400
     try:
         execute('DELETE FROM request_logs WHERE ts < ?', (cutoff,))
     except Exception:  # noqa: BLE001
@@ -1288,6 +1343,48 @@ def attach_request_accounts(entries: Iterable[dict]) -> int:
     return filled
 
 
+def _ip_max_override() -> int | None:
+    """显式设置的 `ip_max_rows` override（无/非法 → None，走旧的触发式路径）。"""
+    value = _retention_overrides().get('ip_max_rows')
+    if value is None:
+        return None
+    try:
+        return retention.validate_value('ip_max_rows', value)
+    except retention.InvalidRetention:
+        return None
+
+
+def prune_ip_access_logs(exact: bool = False) -> None:
+    """把 `ip_access_logs` 裁到上限内（保留最新的）。
+
+    `exact=False`（默认）：旧的触发式语义 —— 删到上限**以下并留 10% 余量**，
+    避免下一次写入又立刻触发清理。存量部署的磁盘增长曲线因此逐字不变。
+
+    `exact=True`：删到**恰好** max 行。两个调用点：
+      · `ip_max_rows` 有 override 时，`add_ip_access_log` 每次写入后调用；
+      · 保存设置时调用一次，让新上限立即生效（不必等 500 次写入）。
+
+    上限取 `ip_max_rows` override，缺键回落到 `_IP_ACCESS_LOG_MAX` 常量。
+    旁路操作：任何失败都不能影响写入本身（更不能影响转发）。
+    """
+    try:
+        max_rows = _retention_limit('ip_max_rows', _IP_ACCESS_LOG_MAX)
+        row = query_one('SELECT COUNT(*) AS n FROM ip_access_logs')
+        n = int(row['n']) if row else 0
+        if n <= max_rows:
+            return
+        # 非精确模式留出余量：一次多删一点，下一次写入不会又立刻触发 COUNT。
+        drop = n - max_rows if exact else n - max_rows + max_rows // 10
+        execute(
+            'DELETE FROM ip_access_logs WHERE id IN ('
+            '  SELECT id FROM ip_access_logs ORDER BY id LIMIT ?'
+            ')',
+            (drop,),
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def add_ip_access_log(ip: object, path: object, blocked: bool, ua: object,
                       reason: object = None) -> None:
     """写入一条入站访问日志：清洗 + 截断 + 行数上限。
@@ -1300,6 +1397,10 @@ def add_ip_access_log(ip: object, path: object, blocked: bool, ua: object,
     reason 是**被拦的原因**（issue #33）：只有 blocked 布尔时，界面上的
     「已拦截」无法区分「没带密钥」「密钥不认识」「IP 规则拦的」——三者的处置
     方式完全不同，用户只能靠猜或来提 issue。
+
+    裁剪策略（迁移 C2）：
+      · `ip_max_rows` 有 override → **每次写入**都精确裁剪到恰好 N 行；
+      · 没有 override → 旧的每 `_IP_ACCESS_LOG_CHECK_EVERY` 次、留 10% 余量。
     """
     global _ip_log_writes
     # 空原因存 NULL 而不是空串：读的那一侧要区分「没记原因」（升级前的历史
@@ -1311,24 +1412,16 @@ def add_ip_access_log(ip: object, path: object, blocked: bool, ua: object,
         (int(time.time()), _clean(ip, 64), _clean(path, 256),
          1 if blocked else 0, _clean(ua, 512), cleaned_reason),
     )
+    # 用户明确设了上限就每次写入都对齐：界面上写着「只留 N 行」，实际行数
+    # 就不能多出 10% 来。未设置时逐字保持旧路径（常量仍可被测试 patch）。
+    if _ip_max_override() is not None:
+        prune_ip_access_logs(exact=True)
+        return
     _ip_log_writes += 1
     if _ip_log_writes < _IP_ACCESS_LOG_CHECK_EVERY:
         return
     _ip_log_writes = 0
-    try:
-        row = query_one('SELECT COUNT(*) AS n FROM ip_access_logs')
-        n = int(row['n']) if row else 0
-        if n > _IP_ACCESS_LOG_MAX:
-            # 删掉最旧的一批，留出余量（避免下一次写入又立刻触发清理）
-            execute(
-                'DELETE FROM ip_access_logs WHERE id IN ('
-                '  SELECT id FROM ip_access_logs ORDER BY id LIMIT ?'
-                ')',
-                (n - _IP_ACCESS_LOG_MAX + _IP_ACCESS_LOG_MAX // 10,),
-            )
-    except Exception:  # noqa: BLE001
-        # 清理是旁路，失败不能影响写入本身（更不能影响转发）
-        pass
+    prune_ip_access_logs(exact=False)
 
 
 def count_audit_logs() -> int:
