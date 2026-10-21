@@ -1127,6 +1127,28 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
   /** 配置文件中是否已保存 Upstash 地址 */
   const upstashConfigured = !!cfg?.upstash?.url;
 
+  /**
+   * 保存上游配置后的统一反馈 —— 所有保存路径共用。
+   *
+   * 三态由后端契约决定：
+   *   · `reload_hint`  → 需要人手动一步（上游拒绝并回滚 / 有字段必须重启 / 无法操作 docker）
+   *   · `hot_applied`  → 上游已热生效，无需重启容器
+   *   · 其余           → 已提交后台重启，正在应用
+   *
+   * 抽出来是因为此前只有 `saveGroup` 用了新契约：`saveJson`（高级 JSON）与
+   * `saveUpstash` 仍无条件报「正在应用」—— 配置被上游拒绝并回滚时，用户看到的
+   * 却是「已保存」，正是这次改动要消除的误导。
+   */
+  function notifySaveResult(saved: UpstreamConfig | undefined, okTitle = t('settings.saved')) {
+    if (saved?.reload_hint) {
+      notify.warn(t('settings.savedManualStep'), saved.reload_hint);
+    } else if (saved?.hot_applied) {
+      notify.ok(okTitle, t('settings.hotApplied'));
+    } else {
+      notify.ok(okTitle, t('settings.applying'));
+    }
+  }
+
   /** 保存 Upstash 配置（token 留空表示保持原值） */
   async function saveUpstash() {
     if (!upstashForm.url.trim()) {
@@ -1135,13 +1157,13 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
     }
     setUpstashBusy(true);
     try {
-      await settingsApi.saveUpstream({
+      const saved = await settingsApi.saveUpstream({
         upstash: {
           url: upstashForm.url.trim(),
           ...(upstashForm.token.trim() ? {token: upstashForm.token.trim()} : {}),
         },
       });
-      notify.ok(t('settings.upstashSaved'), t('settings.applying'));
+      notifySaveResult(saved, t('settings.upstashSaved'));
       // （Upstash 属于上游外部依赖，改完无需重启上游容器）
       setUpstashForm((f) => ({...f, token: ''}));
       await reload();
@@ -1199,18 +1221,7 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
       // 段内有改动时才带该段：只改顶层键时不要顺手回写整段
       if (Object.keys(patch).length) body[def?.section ?? group] = patch;
       const saved = await settingsApi.saveUpstream(body);
-      // 三级反馈：
-      //   · reload_hint  —— 需要人手动一步（上游拒绝 / 有字段必须重启 / 无法操作 docker），
-      //                     用警告如实转达，不让人以为改完就生效了；
-      //   · hot_applied  —— 上游已热生效（/panel/api/config），给明确成功反馈；
-      //   · 其余         —— 已提交后台重启，说「正在应用」。
-      if (saved?.reload_hint) {
-        notify.warn(t('settings.savedManualStep'), saved.reload_hint);
-      } else if (saved?.hot_applied) {
-        notify.ok(t('settings.saved'), t('settings.hotApplied'));
-      } else {
-        notify.ok(t('settings.saved'), t('settings.applying'));
-      }
+      notifySaveResult(saved);
       await reload();
     } catch (e) {
       notify.err(errText(e));
@@ -1238,8 +1249,8 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
     }
     setBusy(true);
     try {
-      await settingsApi.saveUpstream({[field]: parsed});
-      notify.ok(t('settings.saved'), t('settings.applying'));
+      const saved = await settingsApi.saveUpstream({[field]: parsed});
+      notifySaveResult(saved);
       await reload();
     } catch (e) {
       notify.err(errText(e));
@@ -1751,9 +1762,9 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
                   onConfirm={async () => {
                     setUpstashBusy(true);
                     try {
-                      await settingsApi.saveUpstream({upstash: {clear: true}});
+                      const saved = await settingsApi.saveUpstream({upstash: {clear: true}});
                       setUpstashForm({url: '', token: ''});
-                      notify.ok(t('settings.upstashCleared'), t('settings.applyingShort'));
+                      notifySaveResult(saved, t('settings.upstashCleared'));
                       await reload();
                     } catch (e) {
                       notify.err(errText(e));
