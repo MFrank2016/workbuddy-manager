@@ -435,7 +435,11 @@ def resolve_account_proxy(auth: dict) -> str | None:
     if bound == DIRECT_ROUTE_NAME:
         # 账号级「强制直连」（2.6.0+ / 上游 0013）：显式绕过池与全局出口代理。
         # 必须在这里短路，否则会被当成「不存在的线路名」而报错。
-        return None
+        #
+        # **必须返回空串，不能返回 None**：`http_client(proxy=None)` 的真实语义是
+        # 「用 effective_http_proxy()（全局出口代理）」，并不是直连；返回 '' 才会落到
+        # `_build_client` 里「不挂 transport」的分支。
+        return ''
     if bound:
         # 走公开访问器（而不是自己重读文件）：既有调用点/测试按这两个函数打桩，
         # 绕过它们会出现「线路表长什么样」的第二个真相来源。
