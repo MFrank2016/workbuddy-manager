@@ -1,0 +1,60 @@
+{
+  "data": [
+    {
+      "created": 1753600000,
+      "credits": "x0.05",
+      "description": "通用对话模型",
+      "id": "glm-5.2",
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      "name": "GLM-5.2",
+      "object": "model",
+      "owned_by": "workbuddy",
+      "reasoning_default_effort": "high",
+      "reasoning_supported_efforts": [
+        "low",
+        "high"
+      ],
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "high"
+        }
+      ],
+      "supports_images": true,
+      "supports_reasoning": true,
+      "supports_tool_call": true
+    },
+    {
+      "created": 1753600000,
+      "credits": "x0.02",
+      "id": "deepseek-v4.1-flash",
+      "modalities": {
+        "input": [
+          "text"
+        ]
+      },
+      "name": "DeepSeek V4.1 Flash",
+      "object": "model",
+      "owned_by": "workbuddy",
+      "reasoning_default_effort": "high",
+      "reasoning_supported_efforts": [
+        "high"
+      ],
+      "supported_reasoning_levels": [
+        {
+          "effort": "high"
+        }
+      ],
+      "supports_reasoning": true,
+      "supports_tool_call": true
+    }
+  ],
+  "object": "list"
+}

@@ -1,0 +1,8 @@
+{
+  "_AUDIT_LOG_MAX_ROWS": 20000,
+  "_HOURLY_RETAIN_DAYS": 90,
+  "_REQUEST_LOG_CHECK_EVERY": 2000,
+  "_REQUEST_LOG_RETAIN_DAYS": 90,
+  "_TASK_LOG_RETAIN_DAYS": 90,
+  "log_retention_overrides": {}
+}

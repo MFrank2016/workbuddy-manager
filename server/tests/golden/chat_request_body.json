@@ -1,0 +1,15 @@
+{
+  "max_tokens": 256,
+  "messages": [
+    {
+      "content": "You are a careful assistant.",
+      "role": "system"
+    },
+    {
+      "content": "Summarize the migration plan in one line.",
+      "role": "user"
+    }
+  ],
+  "model": "glm-5.2",
+  "temperature": 0.2
+}
