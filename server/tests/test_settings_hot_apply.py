@@ -92,13 +92,22 @@ class _Case(unittest.TestCase):
         S.reload.record_hot_apply.assert_called_once()
         self.assertEqual(self._on_disk()['schedule']['checkin_hours'], [9, 21])
 
-    # ② 热生效成功，但部分字段必须重启
+    # ② 热生效成功，但部分字段必须重启（docker 不可用 → 如实提示手动重启）
     def test_hot_apply_with_restart_required(self) -> None:
         out = self._run(_hot(ok=True, restart_required=['listen', 'auth_dir']))
         self.assertTrue(out['hot_applied'])
         self.assertIn('listen', out['reload_hint'])
         self.assertIn('auth_dir', out['reload_hint'])
         self.assertEqual(self.restarts, [], 'docker 不可用时不应尝试重启')
+
+    # ②b 热生效成功 + 重启已排队 → **不能**再提示手动重启（否则自相矛盾）
+    def test_hot_apply_with_scheduled_restart_has_no_hint(self) -> None:
+        out = self._run(_hot(ok=True, restart_required=['listen']), docker=True)
+        self.assertTrue(out['hot_applied'])
+        self.assertTrue(out['reload_scheduled'], 'docker 可用时应排上重启')
+        self.assertNotIn('reload_hint', out,
+                         '重启已排队时再提示「请到宿主机手动重启」是自相矛盾的')
+        self.assertEqual(self.restarts, [1])
 
     # ③ 上游拒绝：回滚磁盘，且不重启
     def test_rejected_rolls_back_and_does_not_restart(self) -> None:
@@ -130,3 +139,36 @@ class _Case(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DirectSentinelTest(unittest.TestCase):
+    """`__direct__` 的语义与保留名约束。
+
+    `http_client(proxy=None)` 的真实语义是「用全局出口代理」，不是直连 —— 所以
+    resolve_account_proxy 必须返回空串。返回 None 会让「直连」账号在配了全局
+    代理时仍然走代理，与用户意图完全相反。
+    """
+
+    def test_direct_returns_empty_string_not_none(self) -> None:
+        from server import config
+        with mock.patch.object(config, 'proxy_routes', lambda: {'resin': 'http://x:1'}), \
+             mock.patch.object(config, 'proxy_route_enabled', lambda: {}):
+            got = config.account_proxy({'proxy': config.DIRECT_ROUTE_NAME, 'uid': 'u', 'nickname': 'n'})
+        self.assertEqual(got, '', '直连必须返回空串（None 会被 http_client 当成「用全局代理」）')
+
+    def test_direct_name_cannot_be_used_as_route(self) -> None:
+        from server.services import proxyroutes
+        with self.assertRaises(proxyroutes.RouteError):
+            proxyroutes.validate_name('__direct__')
+
+
+class HotApplyStateTest(unittest.TestCase):
+    """热生效不应计入 restart_count（那个计数器的语义是「重启了几次容器」）。"""
+
+    def test_record_hot_apply_does_not_count_as_restart(self) -> None:
+        from server.services import reload as R
+        before = R.state()['restart_count']
+        R.record_hot_apply('配置已热生效')
+        after = R.state()
+        self.assertEqual(after['restart_count'], before, '热生效不是重启，不该递增 restart_count')
+        self.assertTrue(after['last_ok'])

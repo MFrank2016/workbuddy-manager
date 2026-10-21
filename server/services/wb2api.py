@@ -520,8 +520,23 @@ async def get_status(*, base_url: str | None = None, api_key: str | None = None)
         return data
     except Exception as exc:  # noqa: BLE001
         return {'connected': False, 'error': _err_text(exc)}
-    except Exception as exc:  # noqa: BLE001
-        return {'connected': False, 'error': _err_text(exc)}
+
+
+def load_config_file() -> dict | None:
+    """读取当前上游 config.json 的对象形态（供热生效提交用）；读不到返回 None。
+
+    为什么单独抽出来：设置页与「线路 CRUD」两条路径都要把**磁盘上刚写好的那份**
+    提交给上游热生效，而不是各自拼一份 —— 两份真相迟早不一致。
+    """
+    try:
+        raw = config.UPSTREAM_CONFIG.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError):
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 # ── 配置热生效（上游内嵌面板接口）──────────────────────────────
@@ -581,10 +596,15 @@ async def apply_config_hot(body: dict) -> dict:
                 'restart_required': [],
                 'message': f'上游返回 {resp.status_code}: {(resp.text or "")[:200]}'}
     try:
-        data = resp.json() or {}
+        data = resp.json()
     except Exception:  # noqa: BLE001
         return {'ok': False, 'unsupported': False, 'rejected': False,
                 'restart_required': [], 'message': '上游返回非 JSON'}
+    # JSON 合法但不一定是对象（列表/标量）：200 也可能来自代理或 captive portal。
+    # 不挡的话下面 `data.get` 会抛 AttributeError，把一次「可降级」的失败变成 500。
+    if not isinstance(data, dict):
+        return {'ok': False, 'unsupported': False, 'rejected': False,
+                'restart_required': [], 'message': '上游返回的 JSON 不是对象'}
     if not data.get('ok'):
         return {'ok': False, 'unsupported': False, 'rejected': False,
                 'restart_required': [], 'message': '上游未确认保存'}

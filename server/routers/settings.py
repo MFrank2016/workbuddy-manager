@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import config, db, security
+from ..services.filelock import file_lock
 from ..iputil import client_ip
 from ..services import modelmap, reload, updater, wb2api
 
@@ -20,36 +22,43 @@ def _read_config_raw() -> str | None:
     """保存前的原文；读不到返回 None（此时回滚视为失败）。"""
     try:
         return config.UPSTREAM_CONFIG.read_text(encoding='utf-8')
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # 非 UTF-8 的 config.json：read_text 抛 UnicodeDecodeError（ValueError 子类，
+        # 不是 OSError）。不接住的话它会从 save_upstream 的 try 之前逃出去变成 500。
         return None
 
 
 def _read_written_config() -> dict | None:
-    """刚写入磁盘的配置对象。
-
-    热生效提交的就是它（而不是原始 patch）：保证「提交给上游的」与
-    「面板实际写进 config.json 的」是同一份，不会被 _sanitize_section 过滤出
-    两套语义。
-    """
-    raw = _read_config_raw()
-    if raw is None:
-        return None
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
+    """刚写入磁盘的配置对象（与线路 CRUD 共用同一份读取逻辑）。"""
+    return wb2api.load_config_file()
 
 
 def _write_config_raw(raw: str | None) -> bool:
-    """原子写回原文。raw 为 None（保存前就没有配置文件）时返回 False。"""
+    """原子写回原文。raw 为 None（保存前就没有配置文件）时返回 False。
+
+    两个细节都必须照顾到：
+
+    · **持同一把文件锁**：`save_upstream_config` 写盘时持 `file_lock(path)`。回滚若
+      不持锁，两个管理员并发时会出现「A 读旧 → B 写新 → A 热生效 → A 回滚把 B 的
+      新配置盖掉」，而 B 那边已经报过成功了。
+    · **保留 mode/owner**：`write_text` + `replace` 建的新文件按 umask（通常 0644）
+      与当前进程 uid 落地，会把上游文件的权限/属主悄悄改掉。
+    """
     if raw is None:
         return False
+    path = config.UPSTREAM_CONFIG
     try:
-        path = config.UPSTREAM_CONFIG
-        tmp = path.with_name(path.name + '.rollback')
-        tmp.write_text(raw, encoding='utf-8')
-        os.replace(tmp, path)
+        with file_lock(path):
+            st = path.stat()
+            tmp = path.with_name(path.name + '.rollback')
+            tmp.write_text(raw, encoding='utf-8')
+            try:
+                os.chmod(tmp, stat.S_IMODE(st.st_mode))
+                os.chown(tmp, st.st_uid, st.st_gid)
+            except OSError:
+                # 权限/属主恢复失败不影响内容正确性（非 root 改属主本来就可能失败）。
+                pass
+            os.replace(tmp, path)
         return True
     except OSError:
         return False
@@ -113,10 +122,13 @@ async def save_upstream(body: dict, request: Request,
         if not required:
             result['reload_scheduled'] = False
             return result
-        # 有字段必须重启才生效：能控制 docker 就顺手重启，否则如实提示
+        # 有字段必须重启才生效：能控制 docker 就顺手重启，否则如实提示。
+        #
+        # **重启已排队时不要设 reload_hint**：前端优先看 reload_hint 并弹「请到宿主机
+        # 手动重启」，而那一步面板已经替你做了 —— 两条信息互相矛盾，用户会去做多余的
+        # 操作。排上重启时只置 reload_scheduled，让界面显示「正在应用」。
         if updater.can_control_docker() and reload.request_restart():
             result['reload_scheduled'] = True
-            result['reload_hint'] = _restart_hint(required)
         else:
             result['reload_scheduled'] = False
             result['reload_hint'] = _restart_hint(required)

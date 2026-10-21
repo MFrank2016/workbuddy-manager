@@ -60,7 +60,8 @@ def record_hot_apply(message: str = '配置已热生效') -> None:
     不对称说明）。如果热生效不写状态，一次历史失败会永远挂在页面上，哪怕
     之后的每一次保存都已经成功。
     """
-    _state['restart_count'] += 1
+    # 不递增 restart_count：这个计数器的语义是「重启了几次容器」，而热生效并没有
+    # 重启容器。把它算进去会让任何按该字段展示「重启次数」的地方虚高。
     _state['last_at'] = time.time()
     _state['last_ok'] = True
     _state['last_message'] = message
