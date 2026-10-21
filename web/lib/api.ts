@@ -27,6 +27,7 @@ import type {
   CreditsMeta,
   DrawResult,
   GithubMirror,
+  ImportTokensRequest,
   IpAccessLog,
   IpRule,
   KeyExportResult,
@@ -54,6 +55,7 @@ import type {
   StatsSummary,
   TaskLogResponse,
   TaskRunStatus,
+  TokenImportResponse,
   UpdateCheck,
   UpdatePackageMeta,
   UpdateStatus,
@@ -209,6 +211,22 @@ export const accountApi = {
     }>('/api/accounts/upload' + group + separator + `overwrite=${overwrite ? 'true' : 'false'}`, body)
       .then((r) => r.data);
   },
+  /**
+   * 从 refresh token 批量导入账号（`POST /api/accounts/import-tokens`）。
+   *
+   * 与 `upload` 的分工：那个把客户端给的 accessToken 直接落盘（离线拷贝即可用）；
+   * 这个**只信 refreshToken**——后端每条都当场找腾讯换一次，落盘的一定是刚签发
+   * 的凭据。所以这里**没有文件**，只有一组条目（`entries` 原样透传：扁平对象与
+   * `{account, auth}` 嵌套形后端都认，前端再拆一遍会丢掉昵称 / 域名 / device_token）。
+   *
+   * `upstream_id` 省略 = 默认分组。**不要**传 0 来代替「默认」：那是「移动到分组」
+   * 的约定，两个端点各有各的语义，混用会让账号落到错误的分组。
+   *
+   * 403 的两种含义（角色不够 / 该接口只收会话）都由 `errText` 原样透出后端文案——
+   * 那是用户唯一能照着做的一句话，不能改写成笼统的「权限不足」。
+   */
+  importTokens: (body: ImportTokensRequest) =>
+    post<TokenImportResponse>('/api/accounts/import-tokens', body),
   /**
    * 发起扫码登录；realm 决定国内版 / 国际版端点。
    *

@@ -147,6 +147,54 @@ export interface AccountsResponse {
 }
 
 /**
+ * 批量 refresh token 导入的逐条结果（`POST /api/accounts/import-tokens`）。
+ *
+ * 五类状态是**互斥**的，界面必须各给一种视觉（不是「成功 / 其他」两堆）：
+ *   · added    — 新账号落盘
+ *   · updated  — 已有账号被覆盖
+ *   · skipped  — 已存在且没开 overwrite（不是失败，用户主动选择的结果）
+ *   · rejected — 条目本身不合法（缺 uid / uid 形态非法 / 缺 refreshToken）
+ *   · failed   — 合法但刷新或落盘失败（腾讯侧 / 磁盘）
+ *
+ * `reason` 是**固定短码**（`refresh_failed` / `timeout` / `write_failed` / …），
+ * 后端刻意不透传异常文本——那里可能带 URL 或凭据。所以界面只按码翻译，
+ * 不把 `message` 当主文案（它是后端的中文原文，仅作为兜底）。
+ */
+export type TokenImportStatus =
+  | 'added'
+  | 'updated'
+  | 'skipped'
+  | 'rejected'
+  | 'failed';
+
+export interface TokenImportResult {
+  uid: string;
+  status: TokenImportStatus;
+  /** 固定短码；added / updated 为空串 */
+  reason: string;
+  /** 后端的中文原文，仅在 reason 未收录时兜底显示 */
+  message: string;
+}
+
+export interface TokenImportResponse {
+  total: number;
+  counts: Record<TokenImportStatus, number>;
+  /** 与请求里的 entries **同序**（后端保证），便于按行对照 */
+  results: TokenImportResult[];
+}
+
+/** `POST /api/accounts/import-tokens` 的请求体。 */
+export interface ImportTokensRequest {
+  /** 空串 = 由后端按条目自己的 realm / 域名推导（优先级：body > auth.realm > domain） */
+  realm: '' | 'cn' | 'global';
+  /** 原样透传：扁平条目或 `{account, auth}` 嵌套形 */
+  entries: unknown[];
+  overwrite: boolean;
+  /** 省略 = 默认分组；**不要**用 0 代替 */
+  upstream_id?: number;
+}
+
+/**
  * 令牌刷新计划（计划任务）：每 `interval_days` 天的 `hour` 整点，全量刷新一次
  * 所有账号的 accessToken。与「快过期才续期」的自动续期是并列的两条路径。
  *

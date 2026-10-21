@@ -66,6 +66,7 @@ import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
 import {AddAccountDialog} from '@/components/common/accounts/AddAccountDialog';
 import {UploadAccountsButton} from '@/components/common/accounts/UploadAccountsButton';
+import {ImportTokensButton} from '@/components/common/accounts/ImportTokensButton';
 import {CreditCountdown} from '@/components/common/accounts/CreditCountdown';
 import {AccountNoteDialog} from '@/components/common/accounts/AccountNoteDialog';
 import {AccountWeightDialog} from '@/components/common/accounts/AccountWeightDialog';
@@ -1244,6 +1245,12 @@ export default function AccountsPage() {
             )}
             {isAdmin && (
               <UploadAccountsButton upstreamId={groupId} groups={groups} onSuccess={reloadAll} />
+            )}
+            {/* 批量导入令牌：用户手里常常只有一张 uid,refresh_token 的表，没有可上传的
+                文件。与上面的「导入/导出账号」并列，不是替代 —— 那个吃文件（accessToken
+                直接落盘），这个只信 refreshToken（后端逐条当场换新）。 */}
+            {isAdmin && (
+              <ImportTokensButton upstreamId={groupId} groups={groups} onSuccess={reloadAll} />
             )}
             {isAdmin && (
               <Button size="sm" className="rounded-full" onClick={() => setAddOpen(true)}>
