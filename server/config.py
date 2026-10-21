@@ -88,6 +88,25 @@ REFRESH_CONCURRENCY = max(1, _env_int('WB_REFRESH_CONCURRENCY', 3))
 # 「测活失败」先报到用户面前（真凶是这批批量请求）。8 与页面节奏匹配：缓存
 # 命中时不发请求，冷启动也够快。
 CREDITS_CONCURRENCY = max(1, _env_int('WB_CREDITS_CONCURRENCY', 8))
+
+# 账号文件写入后的权限位（`WB_AUTH_FILE_MODE`）。空 = 保持现状（新文件 0644）。
+#
+# 为什么要可配：文件要给**上游**读，宿主部署下本面板以 root 写、上游容器以
+# uid 10001 读，0644 是能跑通的前提（见 `tencent._atomic_write_json`）。但有些
+# 部署把 auths 目录放在更严格的边界里，希望收成 0640（同组读）或 0600（仅自己）——
+# 那只在「上游同 uid」时才安全，所以只允许这三档，别的一律回落到 0644。
+# 已有文件仍保留自己的 mode：这个值只作用于**新建**文件。
+def _auth_file_mode() -> int:
+    raw = os.environ.get('WB_AUTH_FILE_MODE', '').strip()
+    try:
+        value = int(raw, 8) if raw else 0
+    except ValueError:
+        return 0o644
+    return value if value in (0o644, 0o640, 0o600) else 0o644
+
+
+AUTH_FILE_MODE = _auth_file_mode()
+
 TRUST_PROXY = _env('WB_TRUST_PROXY', '1') == '1'
 # 可信反向代理跳数：用于从 X-Forwarded-For 右侧取真实客户端 IP。
 # 前面直接是 1Panel/OpenResty 时保持 1；若还挂了 CDN 则设为 CDN+反代的层数。

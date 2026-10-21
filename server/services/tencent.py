@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import copy
 import json
 import os
 import re
@@ -315,6 +316,10 @@ def _atomic_write_json(target: Path, payload: dict) -> None:
 
     为什么不照抄上游 SaveAtomic 的 0o600：上游是「同一个进程既写又读」，
     0600 自洽；我们是跨 uid 写读，前提不同。
+
+    **新文件的 mode 可被 `WB_AUTH_FILE_MODE` 覆盖**（0644|0640|0600，见
+    `config.AUTH_FILE_MODE`）：只作用于新建文件；已有文件仍保留自己的 mode/uid/gid。
+    默认仍是 0644，所以不设该变量时行为逐字不变。
     """
     original = target.stat() if target.exists() else None
     fd, tmp_name = tempfile.mkstemp(prefix=f'.{target.name}.', suffix='.tmp',
@@ -326,7 +331,8 @@ def _atomic_write_json(target: Path, payload: dict) -> None:
             os.fsync(fh.fileno())
         if original is not None and hasattr(os, 'chown'):
             os.chown(tmp_name, original.st_uid, original.st_gid)
-        os.chmod(tmp_name, (original.st_mode & 0o777) if original is not None else 0o644)
+        new_mode = getattr(config, 'AUTH_FILE_MODE', 0) or 0o644
+        os.chmod(tmp_name, (original.st_mode & 0o777) if original is not None else new_mode)
         os.replace(tmp_name, target)
     except Exception:
         # 失败时清掉临时文件，避免在 auths 目录里留垃圾（它不会被加载，但会让人困惑）
@@ -411,6 +417,13 @@ def write_auth_file(account: dict, auth_dir: Path | None = None,
     device_token 是顶层键（与上游 auth 解析位置一致）。**重新登录不能把它冲掉**：
     它是设备风控凭据，用户手动写入后若因换 token 重登而丢失，会静默降级风控
     形态——所以这里读旧文件保留，而不是当作字段缺失。
+
+    从 2026-10 的 profile 迁移起，写入是**以旧文件为底稿的合并**（而不是整份重建）：
+    只覆盖已知字段，`profile` / `profile_derived` / 任意未知顶层键一律保留。理由：
+    auth 文件是**双方共写**的（上游会写 device_token、面板会写 proxy/weight、
+    core 侧将来会写 profile_derived），整份重建就会把别人刚写的字段静默抹掉。
+    传入 `profile` 时覆盖它；不传（空串）时保留旧值——「没提就不动」与
+    device_token/proxy/weight 同一条口径。
     """
     uid = str(account['uid'])
     # uid 会被拼进文件名，写入 auths 目录，所以必须先校验字符集。
@@ -440,6 +453,7 @@ def write_auth_file(account: dict, auth_dir: Path | None = None,
         old_device_token = ''
         old_proxy = ''
         old_weight = None
+        base_payload: dict = {}
         if existed:
             try:
                 old = json.loads(target.read_text(encoding='utf-8'))
@@ -447,25 +461,43 @@ def write_auth_file(account: dict, auth_dir: Path | None = None,
                     old_device_token = str(old.get('device_token') or '')
                     old_proxy = str(old.get('proxy') or '')
                     old_weight = old.get('weight')
+                    # 未知顶层键 / profile_derived 的载体：合并时以它为底稿。
+                    base_payload = old
             except Exception:  # noqa: BLE001
                 old_device_token = ''
 
-        payload = {
-            'account': {
-                'uid': uid,
-                'enterpriseId': account.get('enterprise_id', ''),
-                'nickname': account.get('nickname', ''),
-            },
-            'auth': {
-                'accessToken': account['access_token'],
-                'refreshToken': account.get('refresh_token', ''),
-                'expiresAt': account['expires_at'],
-                'domain': domain,
-                'realm': resolved,
-            },
-        }
-        if old_device_token:
-            payload['device_token'] = old_device_token
+        # 以旧文件为底稿合并：未知顶层键（含 profile_derived）自然保留。
+        payload = copy.deepcopy(base_payload)
+        account_payload = payload.get('account')
+        if not isinstance(account_payload, dict):
+            account_payload = {}
+        auth_payload = payload.get('auth')
+        if not isinstance(auth_payload, dict):
+            auth_payload = {}
+
+        # 已知字段：覆盖（这是「重登/导入」的语义，不能沿用旧 token）。
+        account_payload['uid'] = uid
+        account_payload['enterpriseId'] = account.get('enterprise_id', '')
+        account_payload['nickname'] = account.get('nickname', '')
+        auth_payload['accessToken'] = account['access_token']
+        auth_payload['refreshToken'] = account.get('refresh_token', '')
+        auth_payload['expiresAt'] = account['expires_at']
+        auth_payload['domain'] = domain
+        auth_payload['realm'] = resolved
+        payload['account'] = account_payload
+        payload['auth'] = auth_payload
+
+        # profile：传入即覆盖；未传则保留旧值（不写空串，也不删已有键）。
+        # Todo 20 会在 core 侧加白名单校验；这里先按「非空即写」处理。
+        profile = str(account.get('profile') or '').strip()
+        if profile:
+            payload['profile'] = profile
+
+        # 设备风控凭据同 device_token / proxy：传入即覆盖，未传则沿用旧值。
+        # （导入的条目里带 device_token 时，那是导出文件里的原值，必须写回去。）
+        device_token = str(account.get('device_token') or old_device_token or '').strip()
+        if device_token:
+            payload['device_token'] = device_token
 
         # 空串同样回退到旧值（`or old_proxy`，而不是只对「键缺失」生效的默认值）：
         # 登录流（account 里通常没有这个键）与**导入流**（`_uploaded_account` 恒带上

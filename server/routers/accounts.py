@@ -18,7 +18,7 @@ from .. import config, db, security, upstreamsvc
 from ..iputil import client_ip
 from ..services import (
     credits as creditsvc, dailyplan, modelcatalog, reload, renew, tasklog, taskrun,
-    tencent, wb2api,
+    tencent, tokenimport, wb2api,
 )
 from ..services.realm import realm_of, supports_checkin
 
@@ -265,6 +265,120 @@ async def upload_accounts(
         'rejected': rejected,
         'failed': failed,
     }
+
+
+def _import_upstream(upstream_id: object) -> dict:
+    """解析导入目标分组。**只在给了 upstream_id 时才查表**。
+
+    省略 upstream_id = 默认分组（回落 config.AUTH_DIR）；给了就必须是一个存在的、
+    启用的上游。这里刻意不用 `_group()`：那个把 `0`/非 int 当作默认分组，而导入
+    接口要求「指定了就必须说清楚是哪个」。
+    """
+    try:
+        uid = int(upstream_id)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail='upstream_id 必须是数字') from exc
+    row = upstreamsvc.get_upstream(uid)
+    if row is None:
+        raise HTTPException(status_code=404, detail='分组不存在（可能已被删除）')
+    if not row.get('enabled'):
+        raise HTTPException(status_code=400, detail='该分组已停用，无法导入账号')
+    return row
+
+
+@router.post('/accounts/import-tokens')
+async def import_tokens(request: Request,
+                        body: dict = Body(...),
+                        user: dict = Depends(security.require_admin)) -> dict:
+    """从 refresh token 批量导入账号（**admin only**）。
+
+    与 `/api/accounts/upload` 的分工：那个把客户端给的 accessToken 直接落盘（离线
+    拷贝即可用）；这个**只信 refreshToken**——每条都当场找腾讯换一次，落盘的一定
+    是刚签发的凭据。客户端提供的 accessToken / expires_at 一律忽略。
+
+    请求体：`{realm, upstream_id?, overwrite?, entries:[...]}`。`entries` 的条目
+    可以是完整 auth JSON 的 `{account, auth}` 嵌套形，也可以是扁平对象；嵌套同名
+    键优先。
+
+    错误码：viewer → 403；已有导入在跑 → 409；realm 非法 / 条目超限 / 分组停用 /
+    分组没有账号目录 → 400；分组不存在 → 404。
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail='请求体必须是对象')
+    try:
+        realm = tokenimport.valid_realm(body.get('realm'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    raw_entries = body.get('entries')
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise HTTPException(status_code=400, detail='entries 必须是非空数组')
+    if len(raw_entries) > tokenimport.MAX_ENTRIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f'entries 最多 {tokenimport.MAX_ENTRIES} 条',
+        )
+    overwrite = bool(body.get('overwrite'))
+
+    upstream_id = body.get('upstream_id')
+    if upstream_id in (None, ''):
+        # 只有省略 upstream_id 时才回落 config.AUTH_DIR（默认分组）。
+        group = upstreamsvc.default_upstream()
+        auth_dir = config.AUTH_DIR
+        # 默认分组不适用 `upstream_auth_dir_unset`：那是「这个分组没配账号目录」
+        # 的专有错误码，前端据此提示「去设置里填账号目录」。
+        unset_code = False
+    else:
+        group = _import_upstream(upstream_id)
+        raw_dir = str(group.get('auth_dir') or '').strip()
+        # 指定了分组却不可用 → 400 `upstream_auth_dir_unset`（空/不可写同一码：
+        # 对用户而言下一步都是「去设置里修这个分组的账号目录」）。
+        # 明确拒绝而不是落到默认目录：那会把 B 组的账号加到 A 组去，
+        # 而界面看起来「成功了」——隔离失效且无人察觉。
+        unset_code = True
+        if not raw_dir:
+            raise HTTPException(status_code=400, detail='upstream_auth_dir_unset')
+        auth_dir = Path(raw_dir)
+
+    # 目录在这里就建/校验：写盘失败要尽早报 400，而不是让 200 条各自失败一次。
+    try:
+        tokenimport.ensure_writable(auth_dir)
+    except OSError as exc:
+        logger.info('导入账号目录不可写 dir=%s reason=%s', auth_dir, exc)
+        raise HTTPException(status_code=400,
+            detail='upstream_auth_dir_unset' if unset_code else '账号目录不可写',
+        ) from exc
+
+    if not tokenimport.try_begin():
+        raise HTTPException(status_code=409, detail='已有导入任务在运行，请稍后再试')
+    try:
+        results = await tokenimport.import_entries(
+            raw_entries, realm=realm, auth_dir=auth_dir, overwrite=overwrite)
+    finally:
+        # **必须**复位：否则一次异常会让面板永久 409。
+        tokenimport.end()
+
+    for item in results:
+        if item['status'] in ('added', 'updated'):
+            reload.request_reload_or_restart(
+                item['uid'], upstream=_reload_target(group))
+
+    counts = tokenimport.summarize(results)
+    ip = client_ip(request) if request is not None else ''
+    security.audit(
+        user, 'accounts.import_tokens', str(group.get('name') or ''),
+        # 只记数量：token 绝不能进审计（它会长期留在库里、并随导出泄露）。
+        f"added={counts['added']} updated={counts['updated']} "
+        f"skipped={counts['skipped']} rejected={counts['rejected']} "
+        f"failed={counts['failed']}；来源 {ip}",
+        ip=ip,
+    )
+    return {
+        'total': len(results),
+        'counts': counts,
+        'results': results,
+    }
+
 
 # ── 服务端侧的授权轮询（用户反馈：被遮挡窗口的定时器节流）──────────────
 #
