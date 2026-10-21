@@ -5,20 +5,22 @@
 启动时把旧映射原样搬一次；搬完就靠 `settings['model_routes_backfill_v1']` 这个
 marker 记住「已经搬过」，重复启动不再动它。
 
-三条不能破的边界：
+四条不能破的边界：
 
   * **绝不修改旧 `model_map`**：搬迁期间新表与旧表同时可用，旧表是唯一回退路径；
     搬完写一份快照到 `settings['model_map_pre_routes']` 供人工核对。
-  * **marker 先决条件**：marker 缺失 **且** 表为空才搬。表里已有行（上一版残留、
-    用户手工建的）就不再搬，否则会撞唯一索引或产生重复别名。
-  * **坏数据不阻断启动**：`model_map` 存成了非对象（历史脏数据、手工改库）时
-    按「没有映射」处理，只写 marker、不写行、不抛异常 —— 与 `modelmap.load`
-    同一原则：坏数据只该影响它自己。
+  * **marker 是唯一判据**：存在就 no-op；缺失就搬，已有的行用 `INSERT OR IGNORE`
+    跳过。判据与插入必须在**同一个 `BEGIN IMMEDIATE` 事务**里，否则两处都是 TOCTOU。
+  * **原子**：快照、全部行、marker 一次提交。失败整体回滚，下次启动重试全量。
+  * **坏数据不阻断启动**：`model_map` 存成非对象（历史脏数据、手工改库）时按「没有
+    映射」处理，只写 marker、不写行、不抛异常 —— 与 `modelmap.load` 同一原则。
 
 6 级解析链（`resolve`）、清单别名（`aliases`）与保存校验（`validate`）在下面。
 """
 from __future__ import annotations
 
+import json
+import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -28,46 +30,64 @@ from . import modelmap
 
 BACKFILL_MARKER = 'model_routes_backfill_v1'
 SNAPSHOT_KEY = 'model_map_pre_routes'
+MODEL_MAP_KEY = 'model_map'
 _INSERT = (
-    'INSERT INTO model_routes(public_id, target_model, realm, upstream_group_id, '
+    'INSERT OR IGNORE INTO model_routes(public_id, target_model, realm, upstream_group_id, '
     'credits_override, keep_original, enabled, created_at, updated_at) '
     "VALUES(?, ?, '', NULL, NULL, 1, 1, ?, ?)"
 )
+_PUT_SETTING = ('INSERT INTO settings(key, value) VALUES(?, ?) '
+                'ON CONFLICT(key) DO UPDATE SET value = excluded.value')
 
 
-def _rows() -> list[dict[str, Any]]:
-    """待搬迁的行：每个非 `*` 别名一行，`*` 折成兜底行 `public_id='*'`。
-
-    目标值空/键为空的条目由 `modelmap.load` 过滤掉（等于没写），所以这里拿到的
-    一定是干净的 `{别名: 目标}`。
-    """
-    mapping = modelmap.load(db.get_setting('model_map', {}))
-    return [
-        {'public_id': name, 'target_model': target}
-        for name, target in mapping.items()
-    ]
+def _setting_on(conn: sqlite3.Connection, key: str) -> Any:
+    """在**调用方的事务里**读设置。不能用 `db.get_setting`：它顺手 commit。"""
+    row = conn.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
+    if row is None:
+        return None
+    try:
+        return json.loads(str(row['value']))
+    except ValueError:
+        return None
 
 
 def backfill_model_routes() -> int:
-    """幂等回填。返回本次写入的行数（已搬过或表非空时为 0）。
+    """幂等、原子、可续跑的回填。返回本次实际写入的行数。
 
-    调用点：启动时（`main.lifespan`）与测试。失败必须显式抛出而不是静默 ——
-    这是数据搬迁，悄悄半途而废会让用户看到「配了映射但不生效」。
+    旧实现「表非空就返回」是致命伤：中途崩溃留下 1..N-1 行且无 marker，判据让
+    它永远不再重试（`b` 与 `*` 兜底静默失效）。现在判据换成 marker，判据+快照+
+    全部行+marker 在同一个 `BEGIN IMMEDIATE` 里，要么全成、要么全无；写锁也消掉了
+    两进程同时启动的 TOCTOU。失败必须显式抛出。
     """
+    # 便宜的快速路径：已经搬过就不必去抢写锁。真判断在事务内再做一次。
     if db.get_setting(BACKFILL_MARKER) is not None:
         return 0
-    existing = db.query_one('SELECT 1 FROM model_routes LIMIT 1')
-    if existing:
-        return 0
-
-    # 快照要在写 marker 之前落库：中途崩溃时下次仍会重跑，而快照是幂等覆盖写。
-    db.set_setting(SNAPSHOT_KEY, db.get_setting('model_map', {}))
-    now = int(time.time())
-    rows = _rows()
-    for row in rows:
-        db.execute(_INSERT, (row['public_id'], row['target_model'], now, now))
-    db.set_setting(BACKFILL_MARKER, True)
-    return len(rows)
+    with db._lock:
+        conn = db.connect()
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            if _setting_on(conn, BACKFILL_MARKER) is not None:
+                conn.commit()
+                return 0
+            model_map = _setting_on(conn, MODEL_MAP_KEY)
+            snapshot = {} if model_map is None else model_map
+            rows = [{'public_id': name, 'target_model': target}
+                    for name, target in modelmap.load(snapshot).items()]
+            now = int(time.time())
+            before = conn.total_changes
+            for row in rows:
+                conn.execute(_INSERT, (row['public_id'], row['target_model'], now, now))
+            moved = conn.total_changes - before
+            conn.execute(
+                _PUT_SETTING, (SNAPSHOT_KEY, json.dumps(snapshot, ensure_ascii=False)))
+            conn.execute(_PUT_SETTING, (BACKFILL_MARKER, json.dumps(True)))
+            conn.commit()
+        except BaseException:
+            # 回滚后原样抛出：调用方要看到真实错误。BaseException 是为了
+            # KeyboardInterrupt 也先把事务收干净再往上抛。
+            conn.rollback()
+            raise
+        return moved
 
 
 def rollback_model_routes() -> int:

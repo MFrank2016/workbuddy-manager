@@ -7,9 +7,11 @@ realm、上游分组、`keep_original` 这些新维度；而**升级不能要求
 本文件钉住的是搬迁的边界条件：
   1. 表结构就是契约那 10 列，唯一索引按 `(public_id, realm, COALESCE(group,0))`；
   2. 行数 = 非 `*` 条目数 +（有 `*` ? 1 : 0），`*` 变成兜底行；
-  3. 重复启动行数不变（marker 存在就不再搬）；
+  3. 重复启动行数不变（marker 存在就不再搬）；**marker 才是唯一判据** ——
+     marker 缺失时即使表里已有行也要补齐缺的那些，半成品必须能收敛；
   4. 空 map / 非 dict 都只写 marker、不写行、**不抛异常**；
-  5. 旧 `model_map` 与快照都在，回滚只删新表与两个 marker。
+  5. 旧 `model_map` 与快照都在，回滚只删新表与两个 marker；
+  6. 搬迁是**一个事务**：任一行插入失败 -> 0 行、无 marker、无快照，下次启动重试全量。
 """
 from __future__ import annotations
 
@@ -29,6 +31,14 @@ COLUMNS = [
     'credits_override', 'keep_original', 'enabled', 'created_at', 'updated_at',
 ]
 MAP = {'gpt-4o-mini': 'deepseek-v4-flash', '*': 'glm-5.2'}
+# 三条：`a` 先插、`b` 第二（失败注入点）、`*` 最后 —— 用来证明第 2 条失败时
+# 第 1 条也被回滚。
+MAP3 = {'a': 'A', 'b': 'B', '*': 'Z'}
+INSERT = (
+    'INSERT INTO model_routes(public_id, target_model, realm, upstream_group_id, '
+    'credits_override, keep_original, enabled, created_at, updated_at) '
+    "VALUES(?, ?, '', NULL, NULL, 1, 1, 1, 1)"
+)
 
 
 class _Case(unittest.TestCase):
@@ -144,16 +154,35 @@ class BackfillTest(_Case):
 
         self.assertEqual(db.get_setting('model_map'), MAP)
 
-    def test_existing_rows_block_backfill_without_marker(self) -> None:
-        """表里已有行（用户手工建的/上一版残留）时不得再搬，避免重复行。"""
+    def test_preexisting_partial_state_converges_without_marker(self) -> None:
+        """上一版/崩溃留下的半成品（有行、无 marker）必须补齐，而不是永远跳过。
+
+        `a` 已存在且值是**错的**（`WRONG`）：收敛只补缺的行，不覆盖已有行 ——
+        已有的行可能是用户手工改过的，回填无权拿旧 `model_map` 去盖掉它。
+        """
+        db.set_setting('model_map', MAP3)
+        db.execute(INSERT, ('a', 'WRONG'))
+
+        moved = modelroutes.backfill_model_routes()
+
+        self.assertEqual(moved, 2)
+        self.assertEqual(
+            [(str(r['public_id']), str(r['target_model'])) for r in self._rows()],
+            [('a', 'WRONG'), ('b', 'B'), ('*', 'Z')])
+        self.assertTrue(self._has_setting('model_routes_backfill_v1'))
+
+    def test_marker_present_is_a_noop_even_after_rows_were_deleted(self) -> None:
+        """marker 是权威判据：搬过就不再搬，用户事后删行是他的意图。
+
+        `rollback_model_routes` 是唯一的重搬入口（它会清掉 marker）。
+        """
         db.set_setting('model_map', MAP)
-        db.execute(
-            'INSERT INTO model_routes(public_id, target_model, realm, upstream_group_id, '
-            'credits_override, keep_original, enabled, created_at, updated_at) '
-            "VALUES('hand', 'made', '', NULL, NULL, 1, 1, 1, 1)")
+        self.assertEqual(modelroutes.backfill_model_routes(), 2)
+        db.execute("DELETE FROM model_routes WHERE public_id = '*'")
 
         self.assertEqual(modelroutes.backfill_model_routes(), 0)
         self.assertEqual(self._count(), 1)
+        self.assertTrue(self._has_setting('model_routes_backfill_v1'))
 
 
 class RollbackTest(_Case):
@@ -176,6 +205,69 @@ class RollbackTest(_Case):
 
         self.assertEqual(modelroutes.backfill_model_routes(), 2)
         self.assertEqual(self._count(), 2)
+
+
+class AtomicityTest(_Case):
+    """回填必须是**一个事务**：失败不留半成品，下次启动能全量重试。
+
+    注入方式用真实 SQLite 触发器（而不是 mock 掉 db.execute）：失败发生在
+    真的 INSERT 语句里、真的 `RAISE(ABORT)`，所以它证明的是事务边界本身，
+    而不是“我们记得在异常里调了 rollback”。
+    """
+
+    def _fail_on(self, public_id: str) -> None:
+        # 触发器里不能绑变量，只能把 public_id 当字面量写进 DDL；值来自测试常量，
+        # 但依旧转义单引号，避免以后有人拿它拼外部输入。
+        literal = "'" + public_id.replace("'", "''") + "'"
+        db.execute(
+            'CREATE TRIGGER t_inject_failure BEFORE INSERT ON model_routes '
+            f'WHEN NEW.public_id = {literal} '
+            "BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
+        )
+
+    def tearDown(self) -> None:
+        try:
+            if db._conn is not None:
+                db._conn.execute('DROP TRIGGER IF EXISTS t_inject_failure')
+                db._conn.commit()
+        finally:
+            super().tearDown()
+
+    def test_failure_on_second_insert_rolls_back_everything(self) -> None:
+        db.set_setting('model_map', MAP3)
+        self._fail_on('b')
+
+        with self.assertRaises(sqlite3.Error) as caught:
+            modelroutes.backfill_model_routes()
+
+        self.assertIn('injected failure', str(caught.exception))
+        self.assertEqual(self._rows(), [], '第 1 条也必须被回滚')
+        self.assertFalse(self._has_setting('model_routes_backfill_v1'))
+        self.assertFalse(self._has_setting('model_map_pre_routes'))
+
+    def test_retry_after_failure_migrates_the_full_set(self) -> None:
+        db.set_setting('model_map', MAP3)
+        self._fail_on('b')
+        with self.assertRaises(sqlite3.Error):
+            modelroutes.backfill_model_routes()
+        db.execute('DROP TRIGGER t_inject_failure')
+
+        moved = modelroutes.backfill_model_routes()
+
+        self.assertEqual(moved, 3)
+        self.assertEqual(
+            [str(r['public_id']) for r in self._rows()], ['a', 'b', '*'])
+        self.assertTrue(self._has_setting('model_routes_backfill_v1'))
+
+    def test_failure_does_not_poison_the_connection(self) -> None:
+        """事务失败后连接必须还能用（没留下悬空的写事务）。"""
+        db.set_setting('model_map', MAP3)
+        self._fail_on('b')
+        with self.assertRaises(sqlite3.Error):
+            modelroutes.backfill_model_routes()
+
+        self.assertEqual(self._count(), 0)
+        self.assertEqual(db.get_setting('model_map'), MAP3)
 
 
 class UniqueConstraintTest(_Case):
