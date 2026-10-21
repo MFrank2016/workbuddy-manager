@@ -1446,13 +1446,11 @@ export interface PgSyncTestResult {
   server_version?: string;
 }
 
-/** 五个保留项的键（与后端 `server/retention.py` 的 SPECS 一致） */
-export type RetentionKey =
-  | 'request_days'
-  | 'hourly_days'
-  | 'task_days'
-  | 'audit_max_rows'
-  | 'ip_max_rows';
+// 保留项的键与校验边界只有一份事实来源：`retention-draft.ts`（那里有 Node
+// 行为测试，且 `server/tests/test_retention_draft.py` 会拿它跟后端 SPECS 对）。
+// 这里只做类型转发——再定义一份的话，加键时两边迟早漂移。
+export type {RetentionKey} from './retention-draft';
+import type {RetentionKey} from './retention-draft';
 
 /**
  * 日志保留策略（`GET/POST /api/settings/log-retention`，迁移 C2）。
