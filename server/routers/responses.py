@@ -40,6 +40,7 @@ import re
 import logging
 import time
 import uuid
+from collections.abc import Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -908,6 +909,8 @@ PROJECTION_DEFAULT_MAX_BYTES = 40000
 # 契约 §5：合法预算只有 0（关闭）或 >=256（再小就连标记都放不下）。
 PROJECTION_MIN_BYTES = 256
 PROJECTION_HEAD_RATIO = 0.6
+
+
 def _utf8_len(text: str) -> int:
     return len(text.encode('utf-8'))
 
@@ -999,7 +1002,7 @@ def _compress_texts(texts: list[str], budget: int) -> list[str] | None:
                 for index, (prefix, suffix) in enumerate(out)]
 
 
-def _content_texts(content: object) -> tuple[list[str], object]:
+def _content_texts(content: object) -> tuple[list[str], Callable[[list[str]], object]]:
     """取出 content 里可压缩的文本 part，并返回写回函数。
 
     `encrypted_content` 故意不算：它是客户端原样搬来搬去的不透明串，截断它
@@ -1024,41 +1027,43 @@ def _content_texts(content: object) -> tuple[list[str], object]:
     return [content[index]['text'] for index in indexes], apply
 
 
-def _project_item(item: dict, budget: int) -> bool:
-    """就地压缩一个 item；返回 False 表示无法压到预算内（调用方记日志）。"""
+def _project_item(item: dict, budget: int) -> None:
+    """就地压缩一个 item。压不下去时**不改动它**（即回退 passthrough）。
+
+    无法压缩的情况都在这里记日志：tool_call 参数超限（截断只会得到非法 JSON），
+    或预算连截断标记都放不下。
+    """
     kind = str(item.get('type') or '')
     role = str(item.get('role') or '')
     if role in ('system', 'developer'):
-        return True
+        return
     if kind in ('function_call', 'custom_tool_call'):
         raw = item.get('arguments') if kind == 'function_call' else item.get('input')
         size = _utf8_len(raw) if isinstance(raw, str) else 0
-        if size <= budget:
-            return True
-        logger.warning(
-            'Responses 投影：tool_call 参数 %d 字节超过 item 预算 %d，'
-            '截断会破坏 JSON —— 该 item 回退 passthrough', size, budget)
-        return False
+        if size > budget:
+            logger.warning(
+                'Responses 投影：tool_call 参数 %d 字节超过 item 预算 %d，'
+                '截断会破坏 JSON —— 该 item 回退 passthrough', size, budget)
+        return
     if kind in ('function_call_output', 'custom_tool_call_output'):
         key = 'output'
     elif kind in ('', 'message', 'agent_message'):
         key = 'content'
     else:
         # reasoning / tool_search 等：不在本契约的预算口径内，保持原样。
-        return True
+        return
     texts, apply = _content_texts(item.get(key))
     if not texts:
-        return True
+        return
     compressed = _compress_texts(texts, budget)
     if compressed is None:
         logger.warning(
             'Responses 投影：item 无法压到 %d 字节（文本合计 %d 字节，'
             '预算不足以容纳截断标记）—— 该 item 回退 passthrough',
             budget, sum(_utf8_len(text) for text in texts))
-        return False
+        return
     if compressed != texts:
         item[key] = apply(compressed)
-    return True
 
 
 def _projection_settings() -> tuple[str, int]:
