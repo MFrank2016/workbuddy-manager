@@ -22,6 +22,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -1278,3 +1279,80 @@ class UpstreamHealthProbeAddressTest(unittest.TestCase):
                          f'现在有 {src.count(literal)} 处')
         self.assertIn('wait_health(upstream_health_url()', src,
                       '就绪等待要传派生地址')
+
+
+class UpdaterBootstrapPackagingTest(unittest.TestCase):
+    """更新器随 server 下发（issue #240）。
+
+    旧安装的根目录 `deploy/update.py` 可能不支持随包同步；它不会替换自己，
+    只靠根目录那份会让「随包上游与本机不一致」永远消不掉。server/ 每次更新
+    都会被整体替换，因此包内 `server/deploy/update.py` 是更新器的自举入口。
+    """
+
+    def test_release_stage_copies_updater_into_server(self) -> None:
+        wf = (_ROOT / '.github' / 'workflows' / 'release.yml').read_text(encoding='utf-8')
+        self.assertIn('cp deploy/update.py "$STAGE/server/deploy/update.py"', wf,
+                      '发布包没有把更新器放进 server/，旧部署的更新器永远换不掉')
+
+    def test_install_dir_survives_being_copied_under_server(self) -> None:
+        """`server/deploy/update.py` 不能把安装目录算成 `server/`。
+
+        复制一份真实的 update.py 到临时安装目录的 `server/deploy/` 下加载：
+        `INSTALL_DIR` 必须是安装根，否则备份/替换 server/写 .version 全部错位。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            install = Path(td) / 'workbuddy-manager'
+            (install / 'server' / 'deploy').mkdir(parents=True)
+            script = install / 'server' / 'deploy' / 'update.py'
+            shutil.copyfile(_ROOT / 'deploy' / 'update.py', script)
+            # 测试入口可能设了 WB_DATA_DIR：不清掉就测不到「默认安装目录」这条分支
+            drop = {'WB_INSTALL_DIR', 'WB_DATA_DIR', 'WB_UPDATE_STATUS'}
+            env = {k: v for k, v in os.environ.items() if k not in drop}
+            with mock.patch.dict(os.environ, env, clear=True):
+                spec = importlib.util.spec_from_file_location('upd_packaged', script)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+            self.assertEqual(mod.INSTALL_DIR, install.resolve(),
+                             '随 server 下发的更新器把安装目录算到了 server/')
+            self.assertEqual(mod.DATA_DIR, install.resolve() / 'data')
+
+    def test_marker_mismatch_after_sync_is_reported(self) -> None:
+        """`.upstream-id` 没真正写进去时，同步后必须报错（不能只看文件数）。
+
+        现场：上游目录不是持久化挂载 / 容器用户不可写，源码看着同步完了，
+        界面却一直提示不一致（issue #240）。这里把本地 `.upstream-id` 换成
+        同名目录，让写入真的失败。
+        """
+        m = _load_update_mod()
+        rep = _Rep()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            src = root / 'pkg'
+            dst = root / 'upstream'
+            src.mkdir()
+            dst.mkdir()
+            (src / 'docker-compose.yml').write_text(
+                'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n', encoding='utf-8')
+            (src / '.upstream-id').write_text('a' * 64 + '\n', encoding='utf-8')
+            (dst / '.upstream-id').mkdir()  # 写入必失败
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst):
+                m._sync_bundled_upstream(src, rep)
+        self.assertTrue(any('上游标识未能更新' in e for e in rep.errors()),
+                        f'标识没写进去却没报错，日志：{rep.text()}')
+
+    def test_marker_sync_success_is_reported(self) -> None:
+        """正常同步后要有一条可核对的成功日志。"""
+        m = _load_update_mod()
+        rep = _Rep()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            src = root / 'pkg'
+            dst = root / 'upstream'
+            src.mkdir()
+            dst.mkdir()
+            (src / 'docker-compose.yml').write_text(
+                'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n', encoding='utf-8')
+            (src / '.upstream-id').write_text('a' * 64 + '\n', encoding='utf-8')
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst):
+                m._sync_bundled_upstream(src, rep)
+        self.assertIn('上游标识已同步：aaaaaaaa', rep.text())

@@ -60,7 +60,19 @@ _force_utf8_stdio()
 
 
 # ── 运行环境（与 server/config.py 保持一致的默认值）──────────
-INSTALL_DIR = Path(os.environ.get('WB_INSTALL_DIR') or Path(__file__).resolve().parent.parent)
+def _default_install_dir() -> Path:
+    """本脚本可能位于 `deploy/` 或 `server/deploy/`（随 server 替换的那份）。
+
+    复制到 `server/deploy/` 后 `parent.parent` 会指向 `server/`，安装目录就全错位了
+    （备份、替换 server、写 .version 都会落到子目录里）。这里显式多退一层。
+    """
+    here = Path(__file__).resolve()
+    if here.parent.name == 'deploy' and here.parent.parent.name == 'server':
+        return here.parent.parent.parent
+    return here.parent.parent
+
+
+INSTALL_DIR = Path(os.environ.get('WB_INSTALL_DIR') or _default_install_dir())
 UPSTREAM_DIR = Path(os.environ.get('WB_UPSTREAM_DIR') or '/opt/workbuddy2api')
 UPSTREAM_PORT = int(os.environ.get('WB_UPSTREAM_PORT') or 7863)
 MANAGER_PORT = int(os.environ.get('WB_MANAGER_PORT') or 7864)
@@ -745,6 +757,29 @@ def _sync_bundled_upstream(src: Path, rep: Reporter) -> int:
 
     if keep_compose is not None:
         local_compose.write_text(keep_compose, encoding='utf-8')
+    # 标记文件是面板判断「本机上游是否已同步」的唯一依据。它没写进去时，
+    # 上面所有文件都可能已经同步成功，但界面仍会一直提示不一致（issue #240
+    # 的现场就是这类：目录不是持久化挂载，或写权限不足）。这里把它单独验一遍。
+    src_id = src / '.upstream-id'
+    if src_id.is_file():
+        try:
+            want = src_id.read_text(encoding='utf-8').strip()
+            local_id = UPSTREAM_DIR / '.upstream-id'
+            got = local_id.read_text(encoding='utf-8').strip() if local_id.is_file() else ''
+        except OSError as exc:
+            rep.log(f'核对上游标识失败：{exc}', 'warn')
+        else:
+            if not want:
+                rep.log('包内 upstream/.upstream-id 为空，无法核对同步结果', 'warn')
+            elif got != want:
+                rep.log(
+                    f'上游标识未能更新：{local_id} '
+                    f'仍是 {got[:8] or "缺失"}，应为 {want[:8]}。'
+                    '请确认该目录已从宿主机挂载且容器用户可写；'
+                    '否则面板会一直提示「随包上游与本机不一致」。',
+                    'error')
+            else:
+                rep.log(f'上游标识已同步：{want[:8]}')
     if changed or added:
         rep.log(f'上游源码已随包更新：改写 {changed} 个、新增 {added} 个文件')
     else:
