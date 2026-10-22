@@ -208,7 +208,7 @@ class AliasesTest(_Case):
     def test_keep_original_one_keeps_upstream_id_plus_alias(self) -> None:
         self._seed([('alias', 'upstream-model', '', None, None, 1, 1)])
 
-        alias = modelroutes.aliases('cn', None)[0]
+        alias = modelroutes.aliases(None)[0]
 
         self.assertEqual(alias.public_id, 'alias')
         self.assertEqual(alias.target_model, 'upstream-model')
@@ -218,7 +218,7 @@ class AliasesTest(_Case):
     def test_keep_original_zero_keeps_only_public_id(self) -> None:
         self._seed([('alias', 'upstream-model', '', None, None, 0, 1)])
 
-        alias = modelroutes.aliases('cn', None)[0]
+        alias = modelroutes.aliases(None)[0]
 
         self.assertFalse(alias.keep_original)
         self.assertEqual(alias.ids, ('alias',))
@@ -226,7 +226,7 @@ class AliasesTest(_Case):
     def test_star_row_is_not_a_listing_alias(self) -> None:
         self._seed()
 
-        ids = [a.public_id for a in modelroutes.aliases('cn', 1)]
+        ids = [a.public_id for a in modelroutes.aliases(1)]
 
         self.assertEqual(ids, ['m'])
 
@@ -237,19 +237,24 @@ class AliasesTest(_Case):
             ('ok', 'z', '', 1, None, 1, 1),
         ])
 
-        ids = [a.public_id for a in modelroutes.aliases('cn', 1)]
+        ids = [a.public_id for a in modelroutes.aliases(1)]
 
         self.assertEqual(ids, ['ok'])
 
-    def test_other_realm_rows_are_not_listed(self) -> None:
+    def test_rows_whose_realm_disagrees_with_their_name_are_not_listed(self) -> None:
+        """历史脏行（realm 与 public_id 前缀不符）不可达 → 不列（issue #46）。
+
+        合法的两种形状（`cn` 名字 + cn 行、`global:` 名字 + global 行）都列。
+        """
         self._seed([
             ('cn-only', 'a', 'cn', None, None, 1, 1),
-            ('global-only', 'b', 'global', None, None, 1, 1),
+            ('global:only', 'global:b', 'global', None, None, 1, 1),
+            ('bad-cn', 'c', 'global', None, None, 1, 1),
+            ('global:bad', 'd', 'cn', None, None, 1, 1),
         ])
 
-        self.assertEqual([a.public_id for a in modelroutes.aliases('cn', None)], ['cn-only'])
-        self.assertEqual([a.public_id for a in modelroutes.aliases('global', None)],
-                         ['global-only'])
+        self.assertEqual([a.public_id for a in modelroutes.aliases(None)],
+                         ['cn-only', 'global:only'])
 
     def test_alias_uses_the_same_precedence_as_resolve(self) -> None:
         """同一 public_id 有多级行时，清单必须显示解析真正会命中的那条。"""
@@ -258,14 +263,14 @@ class AliasesTest(_Case):
             ('m', 'blank-null', '', None, None, 1, 1),
         ])
 
-        alias = modelroutes.aliases('cn', 1)[0]
+        alias = modelroutes.aliases(1)[0]
 
         self.assertEqual(alias.target_model, 'realm-group')
 
     def test_credits_override_is_surfaced_for_display(self) -> None:
         self._seed([('alias', 'upstream-model', '', None, 1.5, 1, 1)])
 
-        alias = modelroutes.aliases('cn', None)[0]
+        alias = modelroutes.aliases(None)[0]
 
         self.assertEqual(alias.credits_override, 1.5)
         self.assertEqual(alias.target_model, 'upstream-model')
@@ -314,12 +319,19 @@ class ValidateTest(_Case):
     def test_same_public_id_in_other_realm_or_group_is_allowed(self) -> None:
         payload = [
             {'public_id': 'm', 'target_model': 'a', 'realm': '', 'upstream_group_id': None},
-            {'public_id': 'm', 'target_model': 'b', 'realm': 'global',
+            {'public_id': 'global:m', 'target_model': 'global:b', 'realm': 'global',
              'upstream_group_id': None},
             {'public_id': 'm', 'target_model': 'c', 'realm': '', 'upstream_group_id': 2},
         ]
 
         self.assertEqual(len(modelroutes.validate(payload)), 3)
+
+    def test_same_name_in_other_realm_requires_a_matching_prefix(self) -> None:
+        """`realm='global'` 只能配 `global:` 开头的 public_id（写入口径）。"""
+        payload = [{'public_id': 'm', 'target_model': 'a', 'realm': 'global'}]
+
+        with self.assertRaises(ValueError):
+            modelroutes.validate(payload)
 
     def test_single_row_payload_is_accepted(self) -> None:
         rows = modelroutes.validate(

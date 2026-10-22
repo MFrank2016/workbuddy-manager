@@ -387,6 +387,32 @@ class GatewayRequestPathTest(unittest.TestCase):
         self.assertIn('glm-5.2', ids)
         self.assertIn('my-alias', ids)
 
+    def test_repro_every_listed_alias_is_callable_over_http(self) -> None:
+        """缺陷 1 的原始 HTTP 复现：清单里的每个 id 都必须能 POST 成功。
+
+        历史脏行 `public_id='alias' + realm='global'`（国际版密钥）：修复前清单
+        会列出 `alias`，而 POST 必然 400 `realm_mismatch`、零次出站。现在它
+        不再被列出，且清单里剩下的每一个 id 都能真的调通。
+        """
+        db.set_setting('model_routes_enabled', True)
+        _route('alias', 'global:gpt-5.6-sol', 'global')
+        token = self._token(realm='global')
+
+        with mock.patch.object(config, 'http_client', side_effect=self.rec.client):
+            listing = self.client.get(
+                '/v1/models', headers={'Authorization': f'Bearer {token}'})
+        self.assertEqual(listing.status_code, 200, listing.text)
+        ids = [m['id'] for m in listing.json()['data']]
+        self.assertNotIn('alias', ids, '列出了一个调用必然 400 的别名（issue #46）')
+
+        for mid in ids:
+            with self.subTest(model=mid):
+                r = self._post(token, mid)
+                self.assertEqual(r.status_code, 200,
+                                 f'清单给出的 {mid!r} 调用失败：{r.text}')
+        # 出站必须是用真正发往上游的名字（清单里那两条原样透传）
+        self.assertEqual(self.rec.models(), ids)
+
     def test_anthropic_flag_off_body_matches_golden(self) -> None:
         """`/v1/messages` flag-off 的上游请求体与 golden 逐字一致。"""
         golden = json.loads((GOLDEN / 'anthropic_request_body.json').read_text(encoding='utf-8'))

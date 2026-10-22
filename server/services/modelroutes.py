@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import db
-from . import modelmap
+from . import modelmap, modelroutesvalidate
 
 BACKFILL_MARKER = 'model_routes_backfill_v1'
 SNAPSHOT_KEY = 'model_map_pre_routes'
@@ -186,8 +186,34 @@ def _pick(public_id: str, realm: str, group: int | None) -> Alias | None:
     return None
 
 
+def _identity(alias: Alias) -> tuple[str, str, int | None]:
+    """一行的身份（唯一索引那三列）；`credits_override` 只是展示值，不参与比对。"""
+    return (alias.public_id, alias.realm, alias.upstream_group_id)
+
+
+def reachable(alias: Alias, realm: str, key_group: int | None = None) -> bool:
+    """这一行是否**真的**是 `resolve(alias.public_id, realm, key_group)` 会命中的那行。
+
+    清单与解析必须共用这一个判据（issue #46 的「能选、一选就失败」）：调用侧
+    实际用哪一行由 `_pick` 决定；清单若按别的口径（比如 `key.realm`）挑行，就会
+    列出一个调用时根本不会命中的目标。
+    """
+    hit = _pick(alias.public_id, realm, key_group)
+    return hit is not None and _identity(hit) == _identity(alias)
+
+
 def _table_empty() -> bool:
     return db.query_one('SELECT 1 FROM model_routes LIMIT 1') is None
+
+
+def _realm_of(model: str | None, mapping: object) -> str:
+    """某个下游模型名解析时会用的 realm —— **与调用侧同源**（issue #47）。
+
+    调用链是 `_map_model`：先按旧 `model_map` 试出候选名，再用**真正发往上游
+    的那个名字**判版本，最后交给 `resolve`。清单必须用同一判据挑行，否则
+    「按 `key.realm` 列出来的行」与「按模型名解析出来的行」会不一致。
+    """
+    return db.realm_of_model(modelmap.target_for(mapping, model) or model)
 
 
 def resolve(model: str | None, realm: str, key_group: int | None) -> str | None:
@@ -218,13 +244,23 @@ def resolve(model: str | None, realm: str, key_group: int | None) -> str | None:
     return model
 
 
-def aliases(realm: str, key_group: int | None) -> list[Alias]:
-    """`/v1/models` 要补的路由别名（不含 `*` 兜底行，按 public_id 排序）。
+def aliases(key_group: int | None) -> list[Alias]:
+    """本分组可见的路由别名（不含 `*` 兜底行，按 public_id 排序）。
 
-    每个 public_id 只出一条，且**用与 `resolve` 完全相同的优先级**挑那一行 ——
-    否则清单会展示一个调用时不会命中的目标（用户按清单选模型，结果打错版本）。
+    每个 public_id 只出一条，且**用与 `resolve` 完全相同的优先级与 realm**
+    挑那一行 —— realm 来自 `_realm_of(public_id, model_map)`（旧表优先，其次
+    模型名），而不是调用方传进来的密钥版本。
+
+    为什么不能按密钥版本挑：`resolve` 的 realm 只看模型名（issue #47），所以
+    一行 `public_id='alias' + realm='global'` 对国际版密钥是**不可达**的（`alias`
+    无前缀 → 解析用 cn）。旧实现按 `key.realm` 选行，于是把它列了出来、调用却
+    必然 400 —— 正是 issue #46 的「能选、一选就失败」。现在这种行在
+    `_pick(public_id, 'cn')` 里根本命中不了，自然不会被列出。
+
+    密钥版本的过滤（「目标是另一版本」的别名）在 `services.modellisting`
+    里做：那一维判的是**目标模型**的版本，与这里的可达性无关。
     """
-    realm = str(realm or '').strip().lower()
+    mapping = db.get_setting('model_map', {}) or {}
     sql = _SELECT + 'WHERE enabled = 1 AND public_id <> ?'
     args: list[Any] = [modelmap.FALLBACK_KEY]
     if key_group is None:
@@ -232,79 +268,19 @@ def aliases(realm: str, key_group: int | None) -> list[Alias]:
     else:
         sql += ' AND (upstream_group_id IS NULL OR upstream_group_id = ?)'
         args.append(key_group)
-    public_ids = sorted({str(r['public_id']) for r in db.query(sql, args)})
     out: list[Alias] = []
-    for public_id in public_ids:
-        hit = _pick(public_id, realm, key_group)
-        if hit:
-            out.append(hit)
+    for raw in db.query(sql, args):
+        alias = _alias(raw)
+        # 只列 `resolve` 真的会命中的那一行（同一判据 `reachable`）：
+        # 每个 public_id 至多一条 —— 唯一索引 + `_pick` 只返回一个赢家。
+        if reachable(alias, _realm_of(alias.public_id, mapping), key_group):
+            out.append(alias)
+    out.sort(key=lambda a: a.public_id)
     return out
 
 
 # ── 保存校验 ──
 
-_REALMS = ('', 'cn', 'global')
-
-
-def _norm_flag(value: object, field: str) -> int:
-    if isinstance(value, bool):
-        return 1 if value else 0
-    if isinstance(value, int) and value in (0, 1):
-        return value
-    raise ValueError(f'{field} 只能是 0 或 1')
-
-
-def _norm_row(raw: object) -> dict[str, Any]:
-    if not isinstance(raw, dict):
-        raise ValueError('每条路由必须是一个对象')
-    public_id = str(raw.get('public_id') or '').strip()
-    target = str(raw.get('target_model') or '').strip()
-    if not public_id:
-        raise ValueError('public_id 不能为空')
-    if not target:
-        raise ValueError('target_model 不能为空')
-    if target == modelmap.FALLBACK_KEY:
-        raise ValueError('target_model 不能是兜底键 *（它是键，不是模型名）')
-    realm = str(raw.get('realm') or '').strip().lower()
-    if realm not in _REALMS:
-        raise ValueError("realm 只能是 '' / 'cn' / 'global'")
-    group = raw.get('upstream_group_id')
-    if group is not None and (isinstance(group, bool) or not isinstance(group, int)
-                             or group <= 0):
-        raise ValueError('upstream_group_id 必须是正整数或留空')
-    credits = raw.get('credits_override')
-    if credits is not None:
-        if isinstance(credits, bool) or not isinstance(credits, (int, float)):
-            raise ValueError('credits_override 必须是非负数或留空')
-        if credits < 0:
-            raise ValueError('credits_override 必须是非负数或留空')
-        credits = float(credits)
-    return {
-        'public_id': public_id,
-        'target_model': target,
-        'realm': realm,
-        'upstream_group_id': group,
-        'credits_override': credits,
-        'keep_original': _norm_flag(raw.get('keep_original', 1), 'keep_original'),
-        'enabled': _norm_flag(raw.get('enabled', 1), 'enabled'),
-    }
-
-
-def validate(payload: object) -> list[dict[str, Any]]:
-    """校验并归一化要落库的路由；非法值或重复键抛 `ValueError`。
-
-    重复键的口径必须与唯一索引一致：`(public_id, realm, COALESCE(group, 0))`。
-    这里先拦一次，是为了给用户一句能读懂的报错；绕过它直接 INSERT 时由索引兜底
-    抛 `sqlite3.IntegrityError`（两道防线，口径相同）。
-    """
-    rows = payload if isinstance(payload, list) else [payload]
-    out = [_norm_row(row) for row in rows]
-    seen: set[tuple[str, str, int]] = set()
-    for row in out:
-        key = (row['public_id'], row['realm'], row['upstream_group_id'] or 0)
-        if key in seen:
-            raise ValueError(
-                f"路由重复：public_id={row['public_id']} realm={row['realm']!r} "
-                f"group={row['upstream_group_id']}")
-        seen.add(key)
-    return out
+# 校验在 `modelroutesvalidate`（写路径与读路径分开，见该模块的注释）；这里只做
+# 转出，既有调用点（`modelrouteadmin`、测试）不必改 import 路径。
+validate = modelroutesvalidate.validate

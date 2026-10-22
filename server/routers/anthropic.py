@@ -1225,7 +1225,6 @@ async def count_tokens(request: Request):
     _key, _ip, _mapped, auth_err = _authorize(request, model)
     if auth_err:
         return auth_err
-        return auth_err
 
     total = 0
     blocks = 0

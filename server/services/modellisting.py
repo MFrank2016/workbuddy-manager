@@ -61,28 +61,23 @@ def route_aliases(key: dict | None) -> list[modelroutes.Alias]:
     按 `key.upstream_id` 做租户隔离：`modelroutes.aliases` 只返回本组行与 NULL
     组行，其他分组的行对它**不可见**（契约 §2）。
 
-    版本处理：限定版本的密钥只看本版本的路由；未限定的密钥取两个版本的并集
-    （同一个 public_id 只出一条，先 cn 后 global）—— 它本来两版都能调。
-    另外**限定版本的密钥还要过滤掉「目标是另一版本」的别名**：空 realm 的行对两
-    个版本都适用，但把指向 `global:` 的别名列给国内版密钥，就成了 issue #46 的
-    「能选、一选就失败」。
+    版本处理只剩**目标版本**一维：限定版本的密钥看不到指向另一版本的别名
+    （空 realm 的行对两版都适用，但把指向 `global:` 的别名列给国内版密钥就是
+    issue #46 的「能选、一选就失败」）。行本身是否可达、取哪一行，全部由
+    `modelroutes.aliases` 用与 `resolve` 相同的判据决定 —— 这里不能再用
+    `key.realm` 重挑一遍：解析的 realm 只看模型名，不看密钥版本。
     """
     if not routes_enabled():
         return []
     key = key or {}
     want = keysvc._norm_realm(key.get('realm'))
     group = key_group(key)
-    out: list[modelroutes.Alias] = []
-    seen: set[str] = set()
-    for realm in ((want,) if want else ('cn', 'global')):
-        for alias in modelroutes.aliases(realm, group):
-            if alias.public_id in seen:
-                continue
-            if want and realm_of(alias.target_model) != want:
-                continue
-            seen.add(alias.public_id)
-            out.append(alias)
-    return out
+    # `modelroutes.aliases` 已用**与解析同一判据**（`reachable` + 模型名 realm）
+    # 挑行，这里不再按 `key.realm` 重挑一遍 —— 那样正是把「不可达的行」
+    # 列出来的根源（issue #46）。剩下的只有**目标版本**这一维：限定版本的
+    # 密钥不能看到指向另一版本的别名（否则调用的版本检查必 400）。
+    return [alias for alias in modelroutes.aliases(group)
+            if not want or realm_of(alias.target_model) == want]
 
 
 def _by_bare(items: list) -> dict[str, dict]:
