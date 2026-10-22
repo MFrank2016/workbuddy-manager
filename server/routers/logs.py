@@ -106,6 +106,9 @@ def list_logs(
             # 输入侧命中缓存的 token 数。NULL 与 0 含义不同：
             # NULL = 上游没给这个字段，0 = 这次确实没命中（见 db 的列说明）。
             'cache_hit_tokens': r['cache_hit_tokens'],
+            # 工具参数修复结果（契约 §5）：none / fixed / failed / recalled。
+            # 旧记录与未开修复的请求都是 none。
+            'tool_repair': r['tool_repair'],
         }
         for r in rows
     ]

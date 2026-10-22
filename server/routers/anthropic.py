@@ -35,7 +35,7 @@ import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import config, db, iputil, keysvc, upstreamsvc
+from .. import config, db, iputil, keysvc, toolrepair, upstreamsvc
 from ..routers.security import get_config as get_security_config
 # responses 只为复用推理凭据的编解码（`_encode_credential` / `_decode_credential`）：
 # Anthropic 的 `signature` 与 Responses 的 `encrypted_content` 语义完全相同——
@@ -1019,25 +1019,56 @@ async def messages(request: Request):
     started = time.time()
 
     if not stream:
-        try:
+        # 取数回调：打一次上游并解析。日志由调用方在修复 / recall 之后再写——
+        # 那时才知道 `tool_repair` 该记什么。
+        async def fetch(req_payload: dict) -> tuple[object, object, dict, int]:
             async with config.http_client(config.UPSTREAM_TIMEOUT, connect=5) as client:
-                resp = await client.post(url, json=payload,
-                                         headers=gateway._upstream_headers(upstream, key))
-            latency = int((time.time() - started) * 1000)
-            usage: dict = {}
+                got_resp = await client.post(
+                    url, json=req_payload,
+                    headers=gateway._upstream_headers(upstream, key))
+            used = int((time.time() - started) * 1000)
+            got_usage: dict = {}
             try:
-                data = resp.json()
-                usage = data.get('usage') or {}
+                got_data = got_resp.json()
+                got_usage = got_data.get('usage') or {}
             except Exception:  # noqa: BLE001
-                data = None
-            # 整份 usage 交过去（而不是只取 credit）：扣费与提示词缓存三段
-            # 都在这一份里，分开取就会出现「某条协议缓存永远是空的」（issue #69）。
+                got_data = None
+            return got_resp, got_data, got_usage, used
+
+        def record(resp_obj, usage_obj: dict, used: int, repair: str,
+                   error: str | None = None) -> None:
             gateway._record(
-                key, ip, model, mapped or '', resp.status_code,
-                _as_int(usage.get('prompt_tokens')), _as_int(usage.get('completion_tokens')),
-                latency, ua, None if resp.status_code < 400 else str(data)[:500], False,
-                usage=usage,
+                key, ip, model, mapped or '', resp_obj.status_code,
+                _as_int(usage_obj.get('prompt_tokens')),
+                _as_int(usage_obj.get('completion_tokens')),
+                used, ua, error, False,
+                usage=usage_obj, tool_repair=repair,
             )
+
+        try:
+            resp, data, usage, used = await fetch(payload)
+            # 原请求的错误文本先固定：recall 成功后 `data` 已被换掉。
+            upstream_error = None if resp.status_code < 400 else str(data)[:500]
+            repair = toolrepair.STATUS_NONE
+            if resp.status_code < 400 and isinstance(data, dict):
+                data, repair = responses._repair_calls(data, set())
+            recall_observed = None
+            if repair == toolrepair.STATUS_FAILED:
+                # 修不好：最多 recall 一次（仅聚合模式）。仍失败就原样返回，
+                # **不返回 502**——与 Responses 同一条边界。
+                data, repair, recall_observed = await responses.recall_tool_arguments(
+                    payload, data, set(), fetch)
+            # 先记原请求（记 `failed`：它的参数确实不合法），再记 recall（记
+            # `recalled`）——日志按 id 倒序展示，最近那条就是额外调用。
+            record(resp, usage, used,
+                   toolrepair.STATUS_FAILED if repair == toolrepair.STATUS_RECALLED
+                   else repair,
+                   upstream_error)
+            if recall_observed is not None:
+                record(recall_observed[0], recall_observed[2], recall_observed[3],
+                       repair,
+                       None if recall_observed[0].status_code < 400
+                       else str(recall_observed[1])[:500])
             if resp.status_code >= 400:
                 msg = ''
                 if isinstance(data, dict):
@@ -1051,7 +1082,8 @@ async def messages(request: Request):
                 data if isinstance(data, dict) else {}, model, thinking=want_thinking))
         except Exception as exc:  # noqa: BLE001
             latency = int((time.time() - started) * 1000)
-            gateway._record(key, ip, model, mapped or '', 502, 0, 0, latency, ua, str(exc), False)
+            gateway._record(key, ip, model, mapped or '', 502, 0, 0, latency, ua,
+                           str(exc), False)
             return _err(f'上游不可用：{exc}', 502, 'api_error')
 
     # ── 流式 ────────────────────────────────────────────────

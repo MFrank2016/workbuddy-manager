@@ -45,7 +45,7 @@ from collections.abc import Callable
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import config, db, keysvc, upstreamsvc
+from .. import config, db, keysvc, toolrepair, upstreamsvc
 from . import gateway
 
 logger = logging.getLogger('workbuddy.responses')
@@ -1107,6 +1107,26 @@ def project_items(body: dict) -> dict:
     return out
 
 
+# ── 工具参数修复（`tool_repair`，契约 §5）───────────────────────
+#
+# 只在**聚合模式**（非流式）生效：流式路径把参数当分片原样透传，客户端一边
+# 收一边累积；若我们只在收尾时改掉整串，已下发的 delta 与最终 item 会不一致，
+# 客户端拿到的仍是拼接后的原串。所以流式一律不动参数（日志记 `none`），
+# 与「流式不 recall」是同一条边界。
+#
+# 修不好时**不返回 502**：这是本功能明确偏离参考实现的地方——参考实现
+# （codebuddy2api）对非法参数整请求重试，失败即报错；本网关把「工具参数坏」
+# 当成上游的内容问题而不是网关故障，原样返回 + 日志记 `failed`，避免一次坏
+# JSON 就把整轮对话打断。
+#
+# 纯逻辑都在 `server.toolrepair`（Anthropic 层共用同一份判据）；这里只导出
+# 名字，让调用方认 responses 一个入口。
+TOOL_REPAIR_RECALL_INSTRUCTION = toolrepair.TOOL_REPAIR_RECALL_INSTRUCTION
+repair_tool_arguments = toolrepair.repair_tool_arguments
+_repair_calls = toolrepair.repair_calls
+recall_tool_arguments = toolrepair.recall_arguments
+
+
 # ── 响应：Chat Completions → Responses ───────────────────────
 
 def _usage_object(usage: dict) -> dict:
@@ -1864,25 +1884,60 @@ async def _handle(request: Request) -> JSONResponse | StreamingResponse:
     started = time.time()
 
     if not stream:
-        try:
+        # 取数回调：打一次上游并解析。**不在这里写日志**——修复 / recall 之后
+        # 才知道该记什么状态，所以两行日志都在拿到结果后由调用方写。
+        async def fetch(req_payload: dict) -> tuple[object, object, dict, int]:
             async with config.http_client(config.UPSTREAM_TIMEOUT, connect=5) as client:
-                resp = await client.post(url, json=payload,
-                                         headers=gateway._upstream_headers(upstream, key))
-            latency = int((time.time() - started) * 1000)
-            usage: dict = {}
+                got_resp = await client.post(
+                    url, json=req_payload,
+                    headers=gateway._upstream_headers(upstream, key))
+            used = int((time.time() - started) * 1000)
+            got_usage: dict = {}
             try:
-                data = resp.json()
-                usage = data.get('usage') or {}
+                got_data = got_resp.json()
+                got_usage = got_data.get('usage') or {}
             except Exception:  # noqa: BLE001
-                data = None
-            # 整份 usage 交过去（而不是只取 credit）：扣费与提示词缓存三段
-            # 都在这一份里，分开取就会出现「某条协议缓存永远是空的」（issue #69）。
+                got_data = None
+            return got_resp, got_data, got_usage, used
+
+        def record(resp_obj, usage_obj: dict, used: int, repair: str,
+                   error: str | None = None) -> None:
             gateway._record(
-                key, ip, model, mapped or '', resp.status_code,
-                _as_int(usage.get('prompt_tokens')), _as_int(usage.get('completion_tokens')),
-                latency, ua, None if resp.status_code < 400 else str(data)[:500], False,
-                usage=usage,
+                key, ip, model, mapped or '', resp_obj.status_code,
+                _as_int(usage_obj.get('prompt_tokens')),
+                _as_int(usage_obj.get('completion_tokens')),
+                used, ua, error, False,
+                usage=usage_obj, tool_repair=repair,
             )
+
+        try:
+            resp, data, usage, used = await fetch(payload)
+            # 原请求的错误文本要在 recall 之前固定：recall 成功后 `data` 已经
+            # 换成了新响应，再取就会把「第一次为什么失败」这条线索抹掉。
+            upstream_error = None if resp.status_code < 400 else str(data)[:500]
+            repair = toolrepair.STATUS_NONE
+            if resp.status_code < 400 and isinstance(data, dict):
+                data, repair = _repair_calls(data, custom_tool_names)
+            recall_observed = None
+            if repair == toolrepair.STATUS_FAILED:
+                # 修不好：最多 recall 一次（仅聚合模式）。仍失败就原样返回，
+                # **不返回 502**——见本文件「工具参数修复」段的说明。
+                data, repair, recall_observed = await recall_tool_arguments(
+                    payload, data, custom_tool_names, fetch)
+            # 先记原请求，再记 recall：日志按 id 倒序展示，最近那条是额外调用，
+            # 运维一眼看到的就是 `recalled`（真的重试过并修好了）。
+            # 原请求那一行记 `failed`（它的参数确实不合法）。
+            record(resp, usage, used,
+                   toolrepair.STATUS_FAILED if repair == toolrepair.STATUS_RECALLED
+                   else repair,
+                   upstream_error)
+            if recall_observed is not None:
+                # 额外那次调用**独立计一行**：它的 tokens/credit 是真花掉的，
+                # 漏记就是账单少一笔（issue #69 的同类教训）。
+                record(recall_observed[0], recall_observed[2], recall_observed[3],
+                       repair,
+                       None if recall_observed[0].status_code < 400
+                       else str(recall_observed[1])[:500])
             if resp.status_code >= 400:
                 return _failed(_upstream_error_text(data, resp), resp.status_code,
                                hint=gateway._error_hint(data))

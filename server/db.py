@@ -153,7 +153,10 @@ CREATE TABLE IF NOT EXISTS request_logs (
   -- 版本（cn / global）：由请求的模型名前缀判定（上游的路由协议）。
   -- 为什么必须存：界面按版本切换时，日志与统计要跟着切；不存就无法回溯过滤。
   -- NULL = 该字段上线前的历史记录（或模型名无前缀）——按 cn 归类，见 realm_of_model。
-  realm             TEXT
+  realm             TEXT,
+  -- 工具参数修复结果（契约 §5）：none / fixed / failed / recalled。
+  -- 默认 none = 未开启修复（或参数本来就合法）；历史记录也是 none。
+  tool_repair       TEXT    NOT NULL DEFAULT 'none'
 );
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON request_logs(ts);
 
@@ -700,6 +703,9 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # 值形如 `昵称(uid8)`，与上游日志里的写法一致；脱敏与截断在写入侧做。
     # NULL = 未关联上（采集不可用、或该条在上游日志里已滚掉），界面显示「—」。
     ('request_logs', 'account', 'TEXT'),
+    # 工具参数修复结果（契约 §5）：none / fixed / failed / recalled。
+    # 默认 none：升级前的历史记录与未开启修复的请求都是这个值。
+    ('request_logs', 'tool_repair', "TEXT NOT NULL DEFAULT 'none'"),
     # 输入侧命中缓存的 token 数（上游 usage.prompt_cache_hit_tokens）。
     #
     # 为什么值得单独记：prompt_tokens 是**含**缓存的，光看它看不出这次省了
@@ -1270,15 +1276,17 @@ def add_request_log(**fields: object) -> None:
         'INSERT INTO request_logs(ts, key_id, ip, model, mapped_model, status, '
         'prompt_tokens, completion_tokens, latency_ms, first_token_ms, ua, error, '
         'stream, credit, realm, account, cache_hit_tokens, cache_miss_tokens, '
-        'cache_write_tokens) '
-        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'cache_write_tokens, tool_repair) '
+        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         (fields.get('ts'), fields.get('key_id'), fields.get('ip'),
          fields.get('model'), fields.get('mapped_model'), fields.get('status'),
          fields.get('prompt_tokens'), fields.get('completion_tokens'),
          fields.get('latency_ms'), fields.get('first_token_ms'), fields.get('ua'),
          fields.get('error'), fields.get('stream'), fields.get('credit'),
          fields.get('realm'), fields.get('account'), fields.get('cache_hit_tokens'),
-         fields.get('cache_miss_tokens'), fields.get('cache_write_tokens')),
+         fields.get('cache_miss_tokens'), fields.get('cache_write_tokens'),
+         # 工具参数修复结果：调用方不传时走列默认值 `none`（契约 §5）。
+         fields.get('tool_repair') or 'none'),
     )
     _request_log_writes += 1
     if _request_log_writes >= _REQUEST_LOG_CHECK_EVERY:

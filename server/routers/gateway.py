@@ -421,7 +421,7 @@ def _usage_cache(usage: dict | None) -> tuple[int | None, int | None, int | None
             _one('prompt_cache_write_tokens'))
 
 
-def _record(key: dict | None, ip: str, model: str, mapped: str, status: int, pt: int, ct: int, latency: int, ua: str | None, error: str | None, stream: bool, *, credit: float | None = None, first_token: int | None = None, usage: dict | None = None) -> None:
+def _record(key: dict | None, ip: str, model: str, mapped: str, status: int, pt: int, ct: int, latency: int, ua: str | None, error: str | None, stream: bool, *, credit: float | None = None, first_token: int | None = None, usage: dict | None = None, tool_repair: str = 'none') -> None:
     """记录调用日志与用量。
 
     credit 为上游返回的真实扣费（usage.credit）。None 表示上游没给，
@@ -434,6 +434,10 @@ def _record(key: dict | None, ip: str, model: str, mapped: str, status: int, pt:
 
     first_token 为首字延迟（毫秒）。None 表示未采集到：非流式请求本来就没有
     中间过程，历史记录也没这个值，因此同样用 NULL 存，而不是 0。
+
+    tool_repair 是工具参数修复的结果（契约 §5：none / fixed / failed /
+    recalled）。默认 `none`——既表示没开修复，也表示参数本来就合法；
+    只有 Responses / Anthropic 的聚合路径会传别的值（流式不动参数）。
 
     注意：日志/统计属于旁路，任何异常都不能影响用户请求本身
     （曾因统计函数缺失导致流式响应在收尾阶段中断，客户端看到
@@ -480,6 +484,7 @@ def _record(key: dict | None, ip: str, model: str, mapped: str, status: int, pt:
             cache_hit_tokens=cache_hit,
             cache_miss_tokens=cache_miss,
             cache_write_tokens=cache_write,
+            tool_repair=tool_repair,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning('写入请求日志失败（不影响请求）: %s', exc)
