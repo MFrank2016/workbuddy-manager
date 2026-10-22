@@ -31,14 +31,9 @@ MODE_KEY = 'responses_projection_mode'
 MAX_KEY = 'responses_projection_max_item_bytes'
 
 
-def _text_of(item: dict) -> str:
-    """把 message/tool_output item 的文本 part 拼起来（与投影口径一致）。"""
-    kind = item.get('type')
-    value = item.get('output') if kind in (
-        'function_call_output', 'custom_tool_call_output') else item.get('content')
-    if isinstance(value, str):
-        return value
-    return ''.join(p.get('text') or '' for p in value or [] if isinstance(p, dict))
+def _user(*parts: dict) -> dict:
+    """一条 user message（content 为多 part 数组）—— 本文件最常见的外壳。"""
+    return {'type': 'message', 'role': 'user', 'content': list(parts)}
 
 
 def _bytes(text: str) -> int:
@@ -75,8 +70,7 @@ class FlagOffTest(ProjectionTestBase):
 
     def test_default_settings_leave_body_untouched(self) -> None:
         body = {'model': 'm', 'input': [
-            {'type': 'message', 'role': 'user', 'content': [
-                {'type': 'input_text', 'text': 'A' * 120000}]}]}
+            _user({'type': 'input_text', 'text': 'A' * 120000})]}
         self.assertEqual(R.project_items(body), body)
 
     def test_explicit_passthrough_ignores_budget(self) -> None:
@@ -99,8 +93,7 @@ class SinglePartTest(ProjectionTestBase):
         self._enable(budget=40000)
         text = 'A' * 40000 + 'B' * 40000 + 'C' * 40000
         body = {'model': 'm', 'input': [
-            {'type': 'message', 'role': 'user', 'content': [
-                {'type': 'input_text', 'text': text}]}]}
+            _user({'type': 'input_text', 'text': text})]}
 
         out = R.project_items(body)
         projected = out['input'][0]['content'][0]['text']
@@ -141,11 +134,8 @@ class MultiPartTest(ProjectionTestBase):
     def test_parts_share_one_item_budget(self) -> None:
         self._enable(budget=40000)
         body = {'model': 'm', 'input': [
-            {'type': 'message', 'role': 'user', 'content': [
-                {'type': 'input_text', 'text': 'A' * 40000},
-                {'type': 'input_text', 'text': 'B' * 40000},
-                {'type': 'input_text', 'text': 'C' * 40000},
-            ]}]}
+            _user(*[{'type': 'input_text', 'text': letter * 40000}
+                    for letter in ('A', 'B', 'C')])]}
 
         out = R.project_items(body)
         content = out['input'][0]['content']
@@ -160,10 +150,7 @@ class MultiPartTest(ProjectionTestBase):
         self._enable(budget=40000)
         image = {'type': 'input_image', 'image_url': 'data:image/png;base64,QUJD'}
         body = {'model': 'm', 'input': [
-            {'type': 'message', 'role': 'user', 'content': [
-                {'type': 'input_text', 'text': 'T' * 120000},
-                image,
-            ]}]}
+            _user({'type': 'input_text', 'text': 'T' * 120000}, image)]}
 
         out = R.project_items(body)
         content = out['input'][0]['content']
@@ -295,8 +282,7 @@ class EndpointProjectionTest(ProjectionTestBase):
         self._enable(budget=40000)
         text = 'H' * 50000 + 'M' * 50000 + 'T' * 50000
         outbound = self._post({'model': 'glm-5.2', 'input': [
-            {'type': 'message', 'role': 'user', 'content': [
-                {'type': 'input_text', 'text': text}]}]})
+            _user({'type': 'input_text', 'text': text})]})
 
         content = outbound['messages'][0]['content']
         self.assertLessEqual(_bytes(content), 40000)
