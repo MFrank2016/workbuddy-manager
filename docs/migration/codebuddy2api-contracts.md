@@ -14,20 +14,22 @@
 
 **1. Profile → endpoint（P2）**
 
-| profile | chat base | billing base | web base | Origin/Referer | UA platform | 典型 domain |
-|---|---|---|---|---|---|---|
-| `cn-cli` | `https://copilot.tencent.com` | `https://www.codebuddy.cn` | `https://www.workbuddy.cn` | `https://www.codebuddy.cn` | `WorkBuddy` | `copilot.tencent.com` |
-| `cn-work` | `https://www.workbuddy.cn` | `https://www.workbuddy.cn` | `https://www.workbuddy.cn` | `https://www.workbuddy.cn` | `WorkBuddy` | `www.workbuddy.cn` |
-| `intl-cli` | `https://www.codebuddy.ai` | `https://www.codebuddy.ai` | `https://www.codebuddy.ai` | `https://www.codebuddy.ai` | `WorkBuddy AI` | `www.codebuddy.ai` |
-| `intl-work` | `https://www.workbuddy.ai` | `https://www.workbuddy.ai` | `https://www.workbuddy.ai` | `https://www.workbuddy.ai` | `WorkBuddy AI` | `www.workbuddy.ai` |
+| profile | chat base | billing base | web base | auth base | Origin/Referer | UA platform | 典型 domain |
+|---|---|---|---|---|---|---|---|
+| `cn-cli` | `https://copilot.tencent.com` | `https://www.codebuddy.cn` | `https://www.workbuddy.cn` | `https://copilot.tencent.com` | `https://www.codebuddy.cn` | `WorkBuddy` | `copilot.tencent.com` |
+| `cn-work` | `https://www.workbuddy.cn` | `https://www.codebuddy.cn` | `https://www.workbuddy.cn` | `https://www.codebuddy.cn` | `https://www.workbuddy.cn` | `WorkBuddy` | `www.workbuddy.cn` |
+| `intl-cli` | `https://www.codebuddy.ai` | `https://www.codebuddy.ai` | `https://www.codebuddy.ai` | `https://www.codebuddy.ai` | `https://www.codebuddy.ai` | `WorkBuddy AI` | `www.codebuddy.ai` |
+| `intl-work` | `https://www.workbuddy.ai` | `https://www.workbuddy.ai` | `https://www.workbuddy.ai` | `https://www.workbuddy.ai` | `https://www.workbuddy.ai` | `WorkBuddy AI` | `www.workbuddy.ai` |
 
 - **Precedence:** explicit `profile` > persisted derived `profile_derived`（仅 `profile_backfill_v1=true` 的账号）> stored `realm`（`cn→cn-cli`、`global→intl-work`，保证 flag-off 等价）> domain > `cn-cli`。
+- **auth base 独立于 chat base：** refresh 端点一律用上表 `auth base`，**不再复用 profile 的 chat base**。证据分级：`cn-*` 的 **billing/签到**落在 `codebuddy.cn` 由本仓 `client.go:801`（`BillingBaseCN`）与 `:1008`（webBase=`workbuddy.cn`）直接证明；`cn-work` 的 **refresh host = `codebuddy.cn`** 目前只有第三方实现佐证（WorkDaddy `profiles.js` 的 `apiHost` + `token-refresh.js` 的 `${apiHost}/v2/plugin/auth/token/refresh`），因此 **refresh 必须实现候选序列 `[AuthBase, LegacyChatBase]` 并在 4xx/网络错误时回落**（仿 `billingMeterPaths`），不得只押一个 host。**`LegacyChatBase` = profile 化之前的 realm 默认 chat host：cn→`copilot.tencent.com`、global→`www.workbuddy.ai`；它不是 profile 的 `ChatBase` 字段，也不受 `upstream.cn_chat_base` 影响。** **本阶段 `auth base` 不提供 override 配置键**；回落行为写进 Todo 31 runbook。
+- **JWT `iss` 交叉校验（host 级，不改变 ① 选择链）：** 解析 accessToken payload 的 `iss`，映射到上表 auth base，用于交叉校验 realm 与 auth base；冲突时以 `iss` 为准并记 warning，缺失/不可解析时退回表。**`iss` 不足以单独定 profile**——`codebuddy.cn` 同时被 `cn-cli` 与 `cn-work` 共用。
 - 因此 `www.codebuddy.ai` + `realm=global` 的旧账号仍走 `intl-work`；要使用 `intl-cli`/`cn-work` 必须显式设置 `profile`（或后续 backfill）。
 - **Selector:** core `api_keys[].profiles`（数组，空 = 不限，`*` = 任意）与 `X-WB2A-Profile` 头；manager `api_keys.profile`（单值，空 = 不限），且必须 ⊆ 该上游 key 的 `profiles`。头值必须在 key 的 `profiles` 允许集内，否则 400 `profile_not_allowed`（校验点在 Todo 20/22 的选号入口）。
 - **Realm header:** `X-WB2A-Realm` **仅用于 search/MCP**（无 model 的请求）；chat/Responses/Anthropic 继续用现有 `key.realm` vs 请求模型 realm 的校验，不读该头。manager 设置该头：有 key.realm 时用 key.realm；无 key.realm 时按 key.profile 推导（`intl-*→global`、`cn-*→cn`）；头缺失/空时 core 回落 key.realm 或 profile 推导，不强制要求头。**仅 search/MCP 入口**在 `key.Realm != ""` 且头值不等时返回 400 `key_realm_mismatch`；chat 路径忽略该头。
 - **Header write site:** manager `gateway._upstream_headers(upstream, key=None)` 统一写入 `X-WB2A-Profile`/`X-WB2A-Realm`；值为空时不写该头；`key=None` 时（playground/admin 调试）不写。调用点必须全部更新：`playground.py:84`、`anthropic.py:1025,1061`、`responses.py:1640,1687`、`gateway.py:788,1006,1032`；`_map_model` 调用点：`gateway.py:531,976`、`responses.py:1596`、`anthropic.py:218,238,986,1224`；`_authorize` 返回签名变更的调用点：`gateway.py:775,977`、`responses.py:1597`、`anthropic.py:987,1225`。
-- **Base override precedence（两个独立轴）**：① **profile 选择**：explicit > persisted derived（仅 `profile_backfill_v1=true`）> stored realm > domain > cn-cli。② **host 选择**：在 ① 选定 profile 后，若该 profile 的 realm 配置了 `upstream.cn_chat_base`（cn-*）/`global.chat_base`（intl-* chat）/`global.billing_base`（intl-* billing），**该配置 override 替换 profile 表默认 host（对 explicit profile 同样生效）**；否则用 profile 表默认。`webBase`（`client.go:999-1005`）同 ②；cn-cli 的 web base 固定 `www.workbuddy.cn`。
-- **Auxiliary bases:** refresh/auth、`/v3/config`、tasks、travel、desktop 使用 **chat base**（cn-work→`www.workbuddy.cn`，intl-cli→`www.codebuddy.ai`）；`webBase` 使用 web base 列。
+- **Base override precedence（两个独立轴）**：① **profile 选择**：explicit > persisted derived（仅 `profile_backfill_v1=true`）> stored realm > domain > cn-cli。② **host 选择**：在 ① 选定 profile 后，**只有 chat host 可被 override**：`upstream.cn_chat_base` 只替换 cn-* 的 chat host；`global.chat_base` 只替换 intl-* 的 chat host；`global.billing_base` 只替换 intl-* 的 billing host（均对 explicit profile 同样生效）。**cn-* 的 billing base 与所有 profile 的 auth base 一律取表值，无 override 键。** `webBase` 取 web base 列，不受任何 override 影响；cn-cli 的 web base 固定 `www.workbuddy.cn`。
+- **Auxiliary bases:** refresh 使用 **auth base**（候选序列 `[AuthBase, LegacyChatBase]`）；`/v3/config`、tasks、travel、desktop 使用 **chat base**（cn-work→`www.workbuddy.cn`，intl-cli→`www.codebuddy.ai`）；`webBase` 使用 web base 列。**OAuth 设备流（`cmd/login`）本阶段仍按 realm 走，不在本计划范围。**
 - `profiles.enabled=false` 时完全走旧 `chatBase(a)`/`globalOn(a)`；`detect_only=true` 只写字段，**URL 路由与选号过滤都不使用 profile**。
 
 **2. Model route schema 与解析**
