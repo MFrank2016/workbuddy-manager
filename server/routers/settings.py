@@ -249,6 +249,42 @@ def save_model_map(body: dict[str, str], user: dict = Depends(security.require_a
     db.set_setting('model_map', clean)
     return clean
 
+# ── 模型目录（迁移 Todo 18：`catalog_group_merge`）──────────
+#
+# 端点固定为 `/api/settings/catalog`（契约 §5）。读任何登录用户都能看：只读
+# 角色也要知道「模型中心那张表是按组并集的还是只显示默认组」。写只对**会话**
+# 管理员开放（API Token 一律 403）：它改变的是所有管理员看到的目录口径，与
+# 改上游分组同级。billing 的三个 settings 由 Todo 17 的 `/api/settings/billing`
+# 负责，这里不重复实现。
+_CATALOG_SETTING = 'catalog_group_merge'
+
+
+def _catalog_view(value: object) -> dict:
+    """对外形状：单个布尔开关。非法存值一律按 false 展示（flag 的默认值）。"""
+    return {_CATALOG_SETTING: value if isinstance(value, bool) else False}
+
+
+@router.get('/settings/catalog')
+def get_catalog_settings(user: dict = Depends(security.current_user)) -> dict:
+    return _catalog_view(db.get_setting(_CATALOG_SETTING, False))
+
+
+@router.post('/settings/catalog')
+def save_catalog_settings(body: dict, request: Request,
+                          user: dict = Depends(security.require_session_admin)) -> dict:
+    """保存目录开关。**只接受布尔**（字符串 `"true"` 会让前端与后端口径分叉）。
+
+    每次成功写入留一条审计：谁把「跨组并集」打开了，事后要能查。
+    """
+    raw = (body or {}).get(_CATALOG_SETTING)
+    if not isinstance(raw, bool):
+        raise HTTPException(status_code=400,
+                            detail=f'{_CATALOG_SETTING} 只能是 true 或 false')
+    db.set_setting(_CATALOG_SETTING, raw)
+    security.audit(user, 'update_catalog_settings', '',
+                   f'{_CATALOG_SETTING}={str(raw).lower()}；来源 {client_ip(request)}')
+    return _catalog_view(raw)
+
 # ── 日志保留策略（迁移 C2：`log_retention_overrides`）───────
 @router.get('/settings/log-retention')
 def get_log_retention(user: dict = Depends(security.current_user)) -> dict:

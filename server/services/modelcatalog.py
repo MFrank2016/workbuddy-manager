@@ -21,7 +21,7 @@ import time
 
 from .. import config
 from .errtext import err_text
-from . import tencent, wb2api, native_modality
+from . import tencent, upstreammodels, wb2api, native_modality
 
 # 成功缓存 5 分钟：模型清单变化很慢，没必要每次进页面都打腾讯
 _TTL_OK = 300
@@ -305,6 +305,25 @@ async def _build(realm: str, force: bool = False) -> dict:
         'via': '',
         'errors': errors,
     }
+
+
+# ── 单个分组的模型清单（迁移 Todo 18，契约 §5 `catalog_group_merge`）──
+#
+# 拉取实现在 `services/upstreammodels.py`（并集目录也用它，单向依赖）；
+# 这里只做字段收敛：把上游的命名映射成内部统一形状，并去掉版本前缀。
+
+async def get_models_for_upstream(upstream: dict) -> dict:
+    """某个分组的模型清单（`{models, error}`，失败不抛异常）。
+
+    形状与 `wb2api.get_models` 一致：调用方据此决定「这组能不能用」，而不是
+    在异常里猜原因。`models` 的 id 已去掉 `cn:` / `global:` 前缀（与
+    `/v1/models` 的展示口径一致）。
+    """
+    items, error = await upstreammodels.fetch_upstream_models(upstream)
+    if error:
+        return {'models': [], 'error': error}
+    models = [_map_upstream_model_fields(_strip_realm_prefix(m)) for m in items]
+    return {'models': models, 'error': ''}
 
 
 # 上游 /v1/models 的字段名 → 我们内部统一的字段名。

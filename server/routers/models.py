@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from .. import security
-from ..services import modelcatalog
+from .. import db, security
+from ..services import catalogmerge, modelcatalog
 
 router = APIRouter(prefix='/api', tags=['models'])
 
@@ -35,6 +35,13 @@ async def model_catalog(
     r = 'global' if str(realm).strip().lower() == 'global' else 'cn'
     data = await modelcatalog.catalog(r, force=force)
     models = data.get('models') or []
+    # `catalog_group_merge`（契约 §5）：**仅管理端**目录在 flag 打开时变成各分组
+    # 的并集，并给每个模型标 `available_in_groups`。`/v1/models` 不经过这里，
+    # 所以它永远不会跨组并集 —— 下游客户端看到的必须只是自己那把密钥能调的。
+    if db.get_setting('catalog_group_merge', False):
+        merged = await catalogmerge.merged_catalog(r, models)
+        models = merged['models']
+        data = {**data, 'models': models, 'group_errors': merged['group_errors']}
     return {
         **data,
         'realm': r,

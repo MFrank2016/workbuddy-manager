@@ -298,6 +298,10 @@ class WriteEndpointScopeMatrixTest(unittest.TestCase):
         # 日志保留期（迁移 C2）：缩短保留期 = 能**提前抹掉**请求日志与审计痕迹，
         # 与 /api/logs/clear 同级。读（GET）不限，写只对会话开放。
         'POST /api/settings/log-retention',
+        # 模型目录口径（迁移 Todo 18）：打开 `catalog_group_merge` 会让管理端目录
+        # 去**所有分组**拉模型清单（消耗各组账号额度、暴露其它分组的模型名）。
+        # 与改上游分组同级，泄露的管理令牌不该能改它。
+        'POST /api/settings/catalog',
         # 泄露的 token 不该能借它探测 / 外带凭据。
         'POST /api/settings/upstash/test',
         'PUT /api/settings/proxy',
