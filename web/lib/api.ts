@@ -38,6 +38,8 @@ import type {
   Me,
   ModelCatalog,
   ModelListResponse,
+  ModelRoute,
+  ModelRouteList,
   Page,
   PgSyncConfig,
   PgSyncConfigResponse,
@@ -711,6 +713,19 @@ export const settingsApi = {
   logRetention: () => get<LogRetention>('/api/settings/log-retention'),
   saveLogRetention: (body: Partial<Record<RetentionKey, number>>) =>
     post<LogRetention>('/api/settings/log-retention', body),
+  /** 模型路由（迁移 Todo 6）：读不限角色，写仅会话管理员 */
+  modelRoutes: () => get<ModelRouteList>('/api/settings/model-routes'),
+  createModelRoute: (body: Partial<ModelRoute>) =>
+    post<ModelRoute>('/api/settings/model-routes', body),
+  updateModelRoute: (id: number, body: Partial<ModelRoute>) =>
+    patch<ModelRoute>(`/api/settings/model-routes/${id}`, body),
+  removeModelRoute: (id: number) =>
+    del<{ok: boolean; id: number}>(`/api/settings/model-routes/${id}`),
+  setModelRouteEnabled: (id: number, enabled: boolean) =>
+    post<ModelRoute>(`/api/settings/model-routes/${id}/enabled`, {enabled}),
+  modelRoutesConfig: () => get<{enabled: boolean}>('/api/settings/model-routes/config'),
+  saveModelRoutesConfig: (enabled: boolean) =>
+    post<{enabled: boolean}>('/api/settings/model-routes/config', {enabled}),
   users: () => get<UserItem[]>('/api/users'),
   /** 管理端审计日志（登录/改密码/增删用户等，仅管理员可读） */
   auditLogs: (limit = 200) => get<AuditLogPage>('/api/audit-logs', {limit}),

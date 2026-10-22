@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from .. import config, db, retention, security
 from ..services.filelock import file_lock
 from ..iputil import client_ip
-from ..services import modelmap, reload, updater, wb2api
+from ..services import modelmap, modelrouteadmin, reload, updater, wb2api
 
 router = APIRouter(prefix='/api', tags=['settings'])
 
@@ -287,6 +287,98 @@ def save_log_retention(body: dict, request: Request,
     security.audit(user, 'update_log_retention', '',
                    f'保留项：{changed or "（全部恢复默认）"}；来源 {client_ip(request)}')
     return retention.view(merged)
+
+# ── 模型路由（迁移 Todo 6，契约 §2）──────────────────────
+#
+# 七个端点分两类权限：读（列表 / 总开关）任何登录用户都能看 —— 只读角色也要
+# 知道「下游那个模型名实际打到哪儿」；写一律 `require_session_admin` —— 改路由
+# 等于改「请求去哪」，与改上游分组同级，泄露的 admin 令牌不该能重写它。
+#
+# 错误码按「用户下一步该做什么」分类：
+#   · 400 非法 / 分组不存在或已停用 → 改请求就能成功；
+#   · 404 路由 id 不存在 → 换一条（或刷新列表）；
+#   · 409 同一 (public_id, realm, group) 已存在 → 去改那条已有的行。
+# 审计只记「哪一行、哪些字段」，不含请求体原文（这里没有凭据，但口径统一）。
+@router.get('/settings/model-routes')
+def get_model_routes(user: dict = Depends(security.current_user)) -> dict:
+    return {'items': modelrouteadmin.list_routes(),
+            'enabled': modelrouteadmin.switch_enabled()}
+
+
+@router.post('/settings/model-routes')
+def create_model_route(body: dict, request: Request,
+                       user: dict = Depends(security.require_session_admin)) -> dict:
+    try:
+        created = modelrouteadmin.create_route(body)
+    except modelrouteadmin.DuplicateRoute as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    security.audit(user, 'create_model_route', created['public_id'],
+                   f"id={created['id']}；目标={created['target_model']}；"
+                   f"realm={created['realm']!r}；分组={created['upstream_group_id']}；"
+                   f'来源 {client_ip(request)}')
+    return created
+
+
+@router.patch('/settings/model-routes/{route_id}')
+def update_model_route(route_id: int, body: dict, request: Request,
+                       user: dict = Depends(security.require_session_admin)) -> dict:
+    try:
+        updated = modelrouteadmin.update_route(route_id, body)
+    except modelrouteadmin.DuplicateRoute as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail='路由不存在')
+    security.audit(user, 'update_model_route', updated['public_id'],
+                   f"id={updated['id']}；字段={','.join(sorted(body)) or '无'}；"
+                   f'来源 {client_ip(request)}')
+    return updated
+
+
+@router.delete('/settings/model-routes/{route_id}')
+def delete_model_route(route_id: int, request: Request,
+                       user: dict = Depends(security.require_session_admin)) -> dict:
+    deleted = modelrouteadmin.delete_route(route_id)
+    if deleted is None:
+        raise HTTPException(status_code=404, detail='路由不存在')
+    security.audit(user, 'delete_model_route', deleted['public_id'],
+                   f"id={deleted['id']}；目标={deleted['target_model']}；"
+                   f'来源 {client_ip(request)}')
+    return {'ok': True, 'id': deleted['id']}
+
+
+@router.post('/settings/model-routes/{route_id}/enabled')
+def set_model_route_enabled(route_id: int, body: dict, request: Request,
+                            user: dict = Depends(security.require_session_admin)) -> dict:
+    enabled = body.get('enabled')
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail='enabled 只能是 true 或 false')
+    updated = modelrouteadmin.set_enabled(route_id, enabled)
+    if updated is None:
+        raise HTTPException(status_code=404, detail='路由不存在')
+    security.audit(user, 'set_model_route_enabled', updated['public_id'],
+                   f"id={updated['id']}；enabled={enabled}；来源 {client_ip(request)}")
+    return updated
+
+
+@router.get('/settings/model-routes/config')
+def get_model_routes_config(user: dict = Depends(security.current_user)) -> dict:
+    return {'enabled': modelrouteadmin.switch_enabled()}
+
+
+@router.post('/settings/model-routes/config')
+def save_model_routes_config(body: dict, request: Request,
+                             user: dict = Depends(security.require_session_admin)) -> dict:
+    enabled = body.get('enabled')
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail='enabled 只能是 true 或 false')
+    value = modelrouteadmin.set_switch(enabled)
+    security.audit(user, 'update_model_routes_switch', '',
+                   f'enabled={value}；来源 {client_ip(request)}')
+    return {'enabled': value}
 
 
 # ── GitHub Token（版本检测 / 一键更新）────────────────────

@@ -56,6 +56,7 @@ import {ProxyPanel} from '@/components/common/settings/ProxyPanel';
 import {TokensPanel} from '@/components/common/settings/TokensPanel';
 import {ChangelogPanel} from '@/components/common/settings/ChangelogPanel';
 import {UpstreamReloadNotice} from '@/components/common/settings/UpstreamReloadNotice';
+import {ModelRoutesPanel} from '@/components/common/settings/ModelRoutesPanel';
 import {CopyButton} from '@/components/ui/copy-button';
 import {Button} from '@/components/ui/button';
 import {Badge} from '@/components/ui/badge';
@@ -2049,6 +2050,8 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
               </div>
             )}
           </div>
+
+          <ModelRoutesPanel />
         </TabsContent>
 
         {/* ═══ 管理用户 ═══ */}

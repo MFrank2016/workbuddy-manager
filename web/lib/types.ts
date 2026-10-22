@@ -1514,3 +1514,33 @@ export interface LogRetention {
   /** 每项的合法范围（天数为 1–3650，行数为 1–1000000） */
   bounds: Record<RetentionKey, {min: number; max: number}>;
 }
+
+/**
+ * 模型路由（迁移 Todo 6，契约 §2）。
+ *
+ * 形状与后端 `modelrouteadmin.list_routes` 一一对应，**没有** `priority`、
+ * `account` / `account_id`：解析链是固定 6 级、每步至多一行，没有优先级概念；
+ * 路由也不绑定具体账号（那是密钥的 `upstream_id`）。界面因此无从暴露它们。
+ */
+export interface ModelRoute {
+  id: number;
+  public_id: string;
+  target_model: string;
+  /** '' = 两个版本都适用；'cn' / 'global' = 只对该版本生效 */
+  realm: string;
+  /** null = 任意分组（未绑定分组的密钥都能命中） */
+  upstream_group_id: number | null;
+  /** null = 不覆盖；只影响 /v1/models 的展示，**不影响计费** */
+  credits_override: number | null;
+  /** true = 上游原名与别名同时出现在 /v1/models；false = 只留别名 */
+  keep_original: boolean;
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ModelRouteList {
+  items: ModelRoute[];
+  /** 总开关（`model_routes_enabled`，默认 false） */
+  enabled: boolean;
+}
