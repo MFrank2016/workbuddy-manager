@@ -463,6 +463,7 @@ def unknown_whitelist_entries(models: list[str], known_by_realm: dict,
         out.append(entry)
     return out
 
+
 def validate_ip_only(key: dict, ip: str) -> str | None:
     """只做 **key 级 IP 管控**（`ip_allowlist` / `max_ips`）：放行返回 None。
 
