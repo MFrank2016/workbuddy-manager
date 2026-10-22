@@ -928,7 +928,6 @@ def billing_usage(request: Request, start_date: str | None = None,
     return billing.usage(int(key['id']), start_day, end_day)
 
 
-
 # ── 模型列表 ─────────────────────────────────────────────
 # 列表按密钥的版本归属过滤：国际版密钥只看到 `global:` 条目、国内版密钥只看到
 # 其余条目（限定了版本的密钥看不到另一版本，免得挑出一个注定 403 的模型）。
