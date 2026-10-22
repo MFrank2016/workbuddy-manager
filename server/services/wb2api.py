@@ -1515,9 +1515,15 @@ def read_container_logs(limit: int = 200, timestamps: bool = True,
 # 面板的「临时停用」优先走它——它只摘对话流量，签到与保活照常。
 # 必须可由界面开启：否则用户只能手改上游 config.json，而这条路的收益
 # （保留签到与保活）正需要一个「顺手就能开」的入口，否则没人会去开。
+# `search` / `mcp`：工具端点开关（`search.enabled` / `mcp.enabled`，默认 false）。
+# 白名单必须含它们，否则设置页存不进去（Todo 29 的两个开关走的就是这条路）。
+#
+# `profiles`：产品 profile 开关（Todo 20 才在 core 落地）。**先放进白名单**：
+# 下发/写入共用同一份列表，先加不影响现有部署（core 对未知段是忽略），
+# 后加则会出现「界面能填但存不下去」的窗口期。
 _EDITABLE_SECTIONS = ('schedule', 'pool', 'cooldown', 'features',
                       'session_sticky', 'prompt', 'server', 'upstream', 'global',
-                      'admin')
+                      'admin', 'search', 'mcp', 'profiles')
 
 
 def _mask(v: str) -> str:
@@ -1639,6 +1645,15 @@ _UPSTREAM_TEXT_KEYS = (
     'device_token_file',   # 设备 token 文件路径
 )
 _UPSTREAM_TEXT_MAX = 512
+
+# 只允许 bool 的「开关型」段（段内只认 enabled 一个 bool 键）。
+# search/mcp 都是这种形状；集中定义而不是逐段写 if，是为了同类段再加一个时
+# 只改这一行。
+_BOOL_ONLY_SECTIONS = ('search', 'mcp')
+
+# 图片处置策略白名单：必须与 core `normalizeTools` 逐字一致。
+# core 对非法值是启动报错，所以两边不一致就会「保存成功、上游起不来」。
+_IMAGE_POLICIES = ('passthrough', 'truncate', 'error')
 
 # 整数/小数字段的取值范围：键 -> (最小, 最大, 单位)
 # 上限不是洁癖——这些值直接决定上游的行为强度与成本（例如
@@ -1846,6 +1861,38 @@ def _sanitize_section(section: str, incoming: dict) -> dict:
                     '开启账号管理接口需要上游已设置 api_key（上游要求管理端点必须鉴权，'
                     '否则拒绝启动）。请先在上游 config.json 里设置 api_key')
             out[key] = bool(raw)
+        elif section in _BOOL_ONLY_SECTIONS and key == 'enabled':
+            # 工具端点开关（search.enabled / mcp.enabled）：上游是 Go 的 bool，
+            # 字符串 "false" 会让它 JSON 解析失败 → 启动失败。只收真布尔。
+            if not isinstance(raw, bool):
+                raise ValueError(f'{section}.enabled 必须是布尔值')
+            out[key] = raw
+        elif section == 'profiles' and key in ('enabled', 'detect_only'):
+            # 产品 profile 开关（Todo 20 才在 core 落地，这里先按 bool 校验）。
+            # 不校验的话字符串 "false" 会写进 core 让它启动失败。
+            if not isinstance(raw, bool):
+                raise ValueError(f'profiles.{key} 必须是布尔值')
+            out[key] = raw
+        elif section == 'upstream' and key == 'capability_guard':
+            # 能力预检开关：同上，必须真布尔。
+            if not isinstance(raw, bool):
+                raise ValueError('upstream.capability_guard 必须是布尔值')
+            out[key] = raw
+        elif section == 'upstream' and key == 'max_images':
+            # 图片数上限：**0 = 不限**是合法哨兵，不能当未设置。
+            # 上游对负值是启动报错，这里先拦；bool 是 int 子类，必须显式排除。
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                raise ValueError('upstream.max_images 必须是整数（0 = 不限）')
+            if raw < 0:
+                raise ValueError('upstream.max_images 不得为负（0 = 不限）')
+            out[key] = raw
+        elif section == 'upstream' and key == 'image_policy':
+            # 图片处置策略：上游对非法值是启动报错（normalizeTools），所以这里必须拦。
+            # 与 prompt.mode 同风格：去空白 + 小写归一后再比对。
+            val = str(raw or '').strip().lower()
+            if val not in _IMAGE_POLICIES:
+                raise ValueError('upstream.image_policy 只能是 passthrough / truncate / error')
+            out[key] = val
         elif section == 'upstream' and key in _UPSTREAM_TEXT_KEYS:
             # 单行文本：UA、客户端版本、用量归知名度、设备 token 文件路径
             val = str(raw or '').strip()
@@ -1896,11 +1943,102 @@ def _sanitize_section(section: str, incoming: dict) -> dict:
     return out
 
 
-def save_upstream_config(patch: dict) -> dict:
+def _is_default_upstream(upstream_id: object) -> bool:
+    """是否指向**默认上游**（None / '' / 0 / '0' 均视为默认）。
+
+    与 `upstreamsvc.resolve_for_key` 的判定同口径：默认上游不是一个数据库行，
+    而是运行时读出来的 WB2API_BASE + upstream_api_key()。上游 `upstreams` 表的
+    自增 id 从 1 开始，所以 0 不可能是真分组。
+    """
+    return upstream_id in (None, '', 0, '0')
+
+
+async def save_upstream_config_remote(upstream: dict, patch: dict) -> dict:
+    """把配置写到**非默认分组自己的**实例（它自己的 `base_url` + `forward_api_key`）。
+
+    为什么必须存在：`save_upstream_config` 写的是本机挂载的默认 upstream 配置文件。
+    非默认分组的 `upstream.*` / `search.enabled` / `mcp.enabled` 只能经它自己的
+    panel API 写入 —— 直接写默认文件会把「A 组的图片上限」安静地变成「默认组的
+    图片上限」，而两个池子的隔离正是多分组存在的理由（见 upstreamsvc 模块说明第 2 条）。
+
+    与默认路径的差异：
+
+      · **不带 `write=0`**：本机没有该实例的 config.json，写盘权只能交给它自己；
+      · 鉴权用 `forward_api_key(upstream)`：同址且未单独填 key 的分组沿用默认那把，
+        地址不同的分组用自己那把（不带就发空 Bearer，支持不鉴权的自建实例）；
+      · 失败一律回 `ValueError`（路由层转 400/502），绝不静默回落写默认文件。
+    """
+    from .. import upstreamsvc
+
+    base = str(upstream.get('base_url') or '').strip().rstrip('/')
+    if not base:
+        raise ValueError('该分组未配置 base_url，无法写入它的上游配置')
+    if not upstream.get('enabled', True):
+        raise ValueError(f'分组「{upstream.get("name") or ""}」已停用，无法写入配置')
+
+    # 先在本地过一遍同一套校验：错值不必打一趟上游，报错文案也与默认路径一致。
+    clean: dict = {}
+    for field in _EDITABLE_SECTIONS:
+        if field in patch and isinstance(patch[field], dict):
+            section_out = _sanitize_section(field, patch[field])
+            section_out.pop('__delete__', None)
+            clean[field] = section_out
+    if not clean:
+        raise ValueError('没有可写入的配置段')
+
+    try:
+        async with config.http_client(20, connect=5) as client:
+            resp = await client.post(f'{base}{HOT_CONFIG_PATH}', json=clean,
+                                     headers=_auth_headers(
+                                         upstreamsvc.forward_api_key(upstream)))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f'无法连接该分组的上游（{base}）：{_err_text(exc)}') from exc
+
+    if resp.status_code == 400:
+        detail = ''
+        try:
+            detail = str((resp.json() or {}).get('error') or '')
+        except Exception:  # noqa: BLE001
+            detail = (resp.text or '')[:200]
+        raise ValueError(detail or '该分组的上游拒绝了这份配置（400）')
+    if resp.status_code in (404, 405, 501):
+        raise ValueError(
+            f'该分组的上游（{base}）不支持配置写入接口（版本过旧或未内嵌面板），'
+            '请到该实例的配置文件直接修改')
+    if resp.status_code >= 400:
+        raise ValueError(f'该分组的上游返回 {resp.status_code}: {(resp.text or "")[:200]}')
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        raise ValueError(f'该分组的上游（{base}）返回非 JSON') from None
+    if not isinstance(data, dict) or not data.get('ok'):
+        raise ValueError('该分组的上游未确认写入')
+    return {
+        'ok': True,
+        'upstream_id': upstream.get('id'),
+        'base_url': base,
+        'restart_required': [str(x) for x in (data.get('restart_required') or [])
+                             if str(x).strip()],
+        'message': '配置已写入该分组的上游并热生效',
+    }
+
+
+def save_upstream_config(patch: dict, *, upstream_id: object = None) -> dict:
     """仅允许改写 schedule / pool / cooldown / features / upstash 等非敏感段。
 
     配置读不到时直接拒绝，绝不基于空 dict 生成新文件覆盖真实配置。
+
+    `upstream_id` 非默认（None / '' / 0 / '0' 之外）时**直接拒绝**：本函数写的是
+    **默认 upstream 的** config.json（`config.UPSTREAM_CONFIG`），把非默认分组的
+    `upstream.*` / `search.enabled` / `mcp.enabled` 写进去等于把它们落到默认实例上 ——
+    隔离静默失效，且从面板上完全看不出来。非默认分组必须走它自己的
+    `base_url` + `forward_api_key` 的 panel API（见 `save_upstream_config_remote`），
+    或在界面明确禁用。
     """
+    if not _is_default_upstream(upstream_id):
+        raise ValueError(
+            '该分组不是默认上游：上游配置只能写到默认上游。'
+            '请到该实例自己的面板修改，或在界面切换到默认分组后再改。')
     path = config.UPSTREAM_CONFIG
     if not path.is_file():
         raise FileNotFoundError(f'未找到上游配置文件 {path}，已取消保存')
