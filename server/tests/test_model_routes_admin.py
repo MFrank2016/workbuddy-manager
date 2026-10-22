@@ -27,6 +27,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -34,6 +35,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from server import config, db, security, upstreamsvc  # noqa: E402
 from server.routers import gateway as G  # noqa: E402
+from server.services import modelroutes  # noqa: E402
 
 BASE = '/api/settings/model-routes'
 
@@ -232,6 +234,20 @@ class WritePermissionTest(_ApiCase):
 
 class ValidationTest(_ApiCase):
     """400 / 404 / 409 各归其位。"""
+
+    def test_delegates_to_modelroutes_validate(self) -> None:
+        """校验只有一份：管理面必须走 `modelroutes.validate()`，不得自己再写一套。
+
+        为什么要钉这一条：回填与保存共用那份口径，某天 realm 多一个合法值或
+        新增一致性规则时，两份实现必然漂移——而漂移的表现是「管理面存进了
+        解析面不认的行」，只会在特定 realm/分组组合下静默不生效。
+        """
+        with mock.patch.object(modelroutes, 'validate',
+                               wraps=modelroutes.validate) as spy:
+            with self._as('admin', 'admin-pw') as c:
+                self.assertEqual(c.post(BASE, json={
+                    'public_id': 'a', 'target_model': 'b'}).status_code, 200)
+        self.assertEqual(spy.call_count, 1, '创建必须且只能调一次统一校验')
 
     def test_invalid_realm_is_400(self) -> None:
         with self._as('admin', 'admin-pw') as c:

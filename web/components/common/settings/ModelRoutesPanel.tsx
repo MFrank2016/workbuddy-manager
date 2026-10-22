@@ -235,6 +235,17 @@ export function ModelRoutesPanel() {
 
   return (
     <div className="space-y-4">
+      {/* ── 区块标题：与上方旧的「别名 → 模型名」两列映射明确分开 ── */}
+      <div className="rounded-[20px] bg-muted p-4">
+        <div className="mb-1 flex items-center gap-2 text-sm font-medium">
+          <Route className="h-4 w-4" />
+          {t('settings.routesTitle')}
+        </div>
+        <div className="text-[11px] leading-5 text-muted-foreground">
+          <RichText text={t('settings.routesDesc')} />
+        </div>
+      </div>
+
       {/* ── 总开关 ── */}
       <div className="rounded-[20px] bg-muted p-4">
         <div className="flex items-start justify-between gap-4">

@@ -50,8 +50,8 @@ def _row(raw: Any) -> dict[str, Any]:
 
 
 def _dup_key(public_id: str, realm: str, group: int | None) -> tuple[str, str, int]:
+    """唯一键口径与索引一致：`(public_id, realm, COALESCE(group, 0))`。"""
     return (public_id, realm, group or 0)
-
 
 
 def _ensure_unique(key: tuple[str, str, int], exclude_id: int | None = None) -> None:
@@ -108,7 +108,8 @@ def create_route(payload: object) -> dict[str, Any]:
     except sqlite3.IntegrityError as exc:
         raise DuplicateRoute('同样的路由已经存在（public_id / realm / 分组 重复）') from exc
     created = get_route(new_id)
-    assert created is not None
+    if created is None:
+        raise RuntimeError('插入后读不回刚写的路由')
     return created
 
 
