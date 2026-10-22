@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -264,9 +265,11 @@ class DeviceTokenTest(_Base):
 
     def setUp(self) -> None:
         super().setUp()
-        self._tmp = Path(__file__).resolve().parent / '_dt_tmp'
-        self._tmp.mkdir(exist_ok=True)
-        self.addCleanup(lambda: [p.unlink() for p in self._tmp.glob('*')])
+        # 用系统临时目录：仓库目录在容器里可能不可写（root 检出 / 只读挂载），
+        # 而且往源码树里写测试产物本身就是污染。
+        self._tmpdir = tempfile.TemporaryDirectory(prefix='wb-dt-')
+        self.addCleanup(self._tmpdir.cleanup)
+        self._tmp = Path(self._tmpdir.name)
 
     def _patch_cfg(self, up: dict):
         p = mock.patch.object(realm, '_read_upstream_sec', return_value=up)
