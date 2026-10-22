@@ -34,6 +34,7 @@ Harness 的 `openai-responses` 协议、部分 OpenAI 官方 SDK 用法）只发
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import re
 import logging
@@ -43,7 +44,7 @@ import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import config, keysvc, upstreamsvc
+from .. import config, db, keysvc, upstreamsvc
 from . import gateway
 
 logger = logging.getLogger('workbuddy.responses')
@@ -312,6 +313,11 @@ def _upstream_error_text(data: object, resp: object = None,
 
 # ── 请求：Responses → Chat Completions ───────────────────────
 
+# 承载可读文本的 content part 类型：翻译与投影必须认同同一份清单，否则
+# 投影截断的 part 与翻译压平的 part 会对不上（多 part 合计预算就算错）。
+_TEXT_PART_TYPES = ('input_text', 'output_text', 'text', 'summary_text')
+
+
 def _text_of_parts(content: object) -> tuple[str, list[dict]]:
     """拆出 input 里的文本与图片，返回 (文本, OpenAI 内容块列表)。
 
@@ -328,7 +334,7 @@ def _text_of_parts(content: object) -> tuple[str, list[dict]]:
         if not isinstance(part, dict):
             continue
         kind = str(part.get('type') or '')
-        if kind in ('input_text', 'output_text', 'text', 'summary_text'):
+        if kind in _TEXT_PART_TYPES:
             text = part.get('text')
             if isinstance(text, str) and text:
                 texts.append(text)
@@ -876,6 +882,224 @@ def _images_as_user_messages(images: list[dict]) -> list[dict]:
     if not images:
         return []
     return [{'role': 'user', 'content': images}]
+
+
+# ── 请求：逐 item 上下文投影（契约 §5）───────────────────
+#
+# 目的：客户端把整段会话历史（含工具结果）原样带回来时，单个 item 就可能
+# 几十上百 KB。投影只做**确定性截断**：不调用模型生成摘要、不删除 item、
+# 不设全局总预算。
+#
+# 三条硬约束（都是踩过就会 400 的地方）：
+#
+#   · `tool_call.arguments` **永不截断**——截断 JSON 字符串只能得到非法 JSON，
+#     上游直接拒；所以 tool_call 的预算是「参数原样，超了就整项回退」。
+#   · tool_call 与 tool_result 是相邻两个 item，只压缩、不删除，配对关系天然
+#     保持（上游按组校验 tool 消息）。
+#   · instructions / system / developer 永远完整：它们是行为约束，压掉就等于
+#     换了个助手。
+#
+# 预算口径按 item 计：content 文本 + tool_result 文本。图片 base64 不计入
+# （它不参与分词意义上的「上下文文本」，也从不被改写）。
+
+PROJECTION_MODE_KEY = 'responses_projection_mode'
+PROJECTION_MAX_KEY = 'responses_projection_max_item_bytes'
+PROJECTION_DEFAULT_MAX_BYTES = 40000
+# 契约 §5：合法预算只有 0（关闭）或 >=256（再小就连标记都放不下）。
+PROJECTION_MIN_BYTES = 256
+PROJECTION_HEAD_RATIO = 0.6
+def _utf8_len(text: str) -> int:
+    return len(text.encode('utf-8'))
+
+
+def _cut_head(text: str, limit: int) -> str:
+    """保留前缀，最多 limit 字节（按字符边界切，不产生半个 UTF-8 字符）。"""
+    if limit <= 0:
+        return ''
+    raw = text.encode('utf-8')
+    if len(raw) <= limit:
+        return text
+    return raw[:limit].decode('utf-8', errors='ignore')
+
+
+def _cut_tail(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ''
+    raw = text.encode('utf-8')
+    if len(raw) <= limit:
+        return text
+    return raw[-limit:].decode('utf-8', errors='ignore')
+
+
+def _truncation_marker(removed: int) -> str:
+    return f'\n...[truncated {removed} bytes]...\n'
+
+
+def _split_texts(texts: list[str], sizes: list[int],
+                 budget: int) -> tuple[list[tuple[str, str]], int, int]:
+    """按 60% 头 / 40% 尾分配预算。
+
+    返回 (各 part 的 (头, 尾), 保留字节, 标记应插入的 part 下标)。头从前往后填、
+    尾从后往前填，同一个 part 上两者不会重叠（尾部只能用它**头之后剩下的**
+    字节）。标记插在「头部最后那个 part」的头尾之间：单 part 时在中间，
+    多 part 时在中间 part 的边界上。
+    """
+    head_budget = int(budget * PROJECTION_HEAD_RATIO)
+    tail_budget = budget - head_budget
+    head = [0] * len(texts)
+    remaining = head_budget
+    for index, size in enumerate(sizes):
+        if remaining <= 0:
+            break
+        take = min(size, remaining)
+        head[index] = take
+        remaining -= take
+    tail = [0] * len(texts)
+    remaining = tail_budget
+    for index in range(len(texts) - 1, -1, -1):
+        if remaining <= 0:
+            break
+        take = min(sizes[index] - head[index], remaining)
+        tail[index] = take
+        remaining -= take
+    marker_index = max((i for i, n in enumerate(head) if n > 0), default=0)
+    out = []
+    kept = 0
+    for index, text in enumerate(texts):
+        prefix = _cut_head(text, head[index]) if head[index] else ''
+        suffix = _cut_tail(text, tail[index]) if tail[index] else ''
+        kept += _utf8_len(prefix) + _utf8_len(suffix)
+        out.append((prefix, suffix))
+    return out, kept, marker_index
+
+
+def _compress_texts(texts: list[str], budget: int) -> list[str] | None:
+    """把同一 item 的文本 part 合计压到 budget 以内；压不下去返回 None。
+
+    标记里的 N 是**实际移除**的字节数（按 UTF-8 计，与预算同一口径）。
+    多 part 时头部从前往后分配、尾部从后往前分配，中间的 part 整体让位
+    —— 这样「多 part 合计超限」也能压，而不是只截第一个 part。
+    """
+    sizes = [_utf8_len(text) for text in texts]
+    total = sum(sizes)
+    if total <= budget:
+        return list(texts)
+    target = budget - _utf8_len(_truncation_marker(total))
+    for _ in range(4):
+        if target < 2:
+            return None
+        out, kept, marker_index = _split_texts(texts, sizes, target)
+        marker = _truncation_marker(total - kept)
+        overflow = kept + _utf8_len(marker) - budget
+        if overflow > 0:
+            # UTF-8 边界 / 位数变化带来的溢出：下一轮从预算里扣掉。
+            target -= overflow
+            continue
+        return [prefix + (marker if index == marker_index else '') + suffix
+                for index, (prefix, suffix) in enumerate(out)]
+
+
+def _content_texts(content: object) -> tuple[list[str], object]:
+    """取出 content 里可压缩的文本 part，并返回写回函数。
+
+    `encrypted_content` 故意不算：它是客户端原样搬来搬去的不透明串，截断它
+    等于把凭据弄坏（会触发上游 11155）。
+    """
+    if isinstance(content, str):
+        return [content], lambda values: values[0]
+    if not isinstance(content, list):
+        return [], lambda values: content
+    indexes = [
+        index for index, part in enumerate(content)
+        if isinstance(part, dict)
+        and str(part.get('type') or '') in _TEXT_PART_TYPES
+        and isinstance(part.get('text'), str)
+    ]
+
+    def apply(values: list[str]) -> object:
+        for index, value in zip(indexes, values):
+            content[index] = {**content[index], 'text': value}
+        return content
+
+    return [content[index]['text'] for index in indexes], apply
+
+
+def _project_item(item: dict, budget: int) -> bool:
+    """就地压缩一个 item；返回 False 表示无法压到预算内（调用方记日志）。"""
+    kind = str(item.get('type') or '')
+    role = str(item.get('role') or '')
+    if role in ('system', 'developer'):
+        return True
+    if kind in ('function_call', 'custom_tool_call'):
+        raw = item.get('arguments') if kind == 'function_call' else item.get('input')
+        size = _utf8_len(raw) if isinstance(raw, str) else 0
+        if size <= budget:
+            return True
+        logger.warning(
+            'Responses 投影：tool_call 参数 %d 字节超过 item 预算 %d，'
+            '截断会破坏 JSON —— 该 item 回退 passthrough', size, budget)
+        return False
+    if kind in ('function_call_output', 'custom_tool_call_output'):
+        key = 'output'
+    elif kind in ('', 'message', 'agent_message'):
+        key = 'content'
+    else:
+        # reasoning / tool_search 等：不在本契约的预算口径内，保持原样。
+        return True
+    texts, apply = _content_texts(item.get(key))
+    if not texts:
+        return True
+    compressed = _compress_texts(texts, budget)
+    if compressed is None:
+        logger.warning(
+            'Responses 投影：item 无法压到 %d 字节（文本合计 %d 字节，'
+            '预算不足以容纳截断标记）—— 该 item 回退 passthrough',
+            budget, sum(_utf8_len(text) for text in texts))
+        return False
+    if compressed != texts:
+        item[key] = apply(compressed)
+    return True
+
+
+def _projection_settings() -> tuple[str, int]:
+    """读开关；非法预算回退默认值并记日志（不能让笔误变成「静默关闭」）。"""
+    mode = db.get_setting(PROJECTION_MODE_KEY, 'passthrough')
+    raw = db.get_setting(PROJECTION_MAX_KEY, PROJECTION_DEFAULT_MAX_BYTES)
+    valid = isinstance(raw, int) and not isinstance(raw, bool)
+    budget = raw if valid else PROJECTION_DEFAULT_MAX_BYTES
+    if not valid or (budget != 0 and budget < PROJECTION_MIN_BYTES):
+        logger.warning(
+            'responses_projection_max_item_bytes=%r 非法（只接受 0 或 >=%d），'
+            '已回退默认 %d', raw, PROJECTION_MIN_BYTES, PROJECTION_DEFAULT_MAX_BYTES)
+        budget = PROJECTION_DEFAULT_MAX_BYTES
+    return (mode if isinstance(mode, str) else 'passthrough'), budget
+
+
+def project_items(body: dict) -> dict:
+    """按 item 逐项投影请求历史（`responses_projection_mode=balanced` 时才生效）。
+
+    `passthrough`（默认）或 `max_item_bytes=0` 时**原样返回同一个对象**：
+    不开投影的请求体必须与 golden 逐字节一致，连深拷贝都不该有。
+    """
+    mode, budget = _projection_settings()
+    if mode != 'balanced' or budget == 0:
+        return body
+    out = copy.deepcopy(body)
+    items = out.get('input')
+    if isinstance(items, str):
+        compressed = _compress_texts([items], budget)
+        if compressed is None:
+            logger.warning('Responses 投影：input 字符串无法压到 %d 字节 —— 回退 passthrough',
+                           budget)
+        else:
+            out['input'] = compressed[0]
+        return out
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if isinstance(item, dict):
+            _project_item(item, budget)
+    return out
 
 
 # ── 响应：Chat Completions → Responses ───────────────────────
@@ -1605,6 +1829,7 @@ async def _handle(request: Request) -> JSONResponse | StreamingResponse:
     ua = request.headers.get('user-agent')
     stream = bool(body.get('stream'))
     try:
+        body = project_items(body)
         bridge = _ToolBridge(body.get('tools'), body.get('input'))
         custom_tool_names = bridge.custom_names
         payload = to_chat_request(body, custom_tool_names, bridge)
