@@ -681,6 +681,61 @@ def _normalize_eol(raw: bytes) -> bytes:
         return raw
     return raw.replace(b'\r\n', b'\n')
 
+def _check_upstream_marker(src: Path, rep: Reporter | None = None) -> str:
+    """核对同步后的 `.upstream-id`，返回**需要让本次更新失败**的问题描述。
+
+    标记文件是面板判断「本机上游是否已同步」的唯一依据。源码都同步成功、
+    只有它没写进去时，界面会一直提示不一致（issue #240 的现场：目录不是
+    持久化挂载，或容器用户不可写）—— 只打一行日志不够：面板照样报
+    「更新完成」，用户怎么点都消不掉提示。
+
+    只有「包内与本机都存在、内容却不同」才返回非空：那是真的写坏了，必须
+    让本次更新失败。包内缺失 / 为空 / 本机原本没有（老部署或首次同步）
+    只记日志，不算失败 —— 那些场景有各自的兼容理由（见调用方）。
+
+    `rep` 为空时只判断、不写日志：调用方要在重建容器**之后**再核对一次
+    来决定成败，先抛错会留下「源码已换、容器还是旧的」中间态。
+    """
+    src_id = src / '.upstream-id'
+    if not src_id.is_file():
+        return ''
+    try:
+        want = src_id.read_text(encoding='utf-8').strip()
+    except OSError as exc:
+        if rep:
+            rep.log(f'读取包内 .upstream-id 失败：{exc}', 'warn')
+        return ''
+    if not want:
+        if rep:
+            rep.log('包内 upstream/.upstream-id 为空，无法核对同步结果', 'warn')
+        return ''
+    local_id = UPSTREAM_DIR / '.upstream-id'
+    local_exists = local_id.is_file()
+    try:
+        got = local_id.read_text(encoding='utf-8').strip() if local_exists else ''
+    except OSError as exc:
+        if rep:
+            rep.log(f'核对上游标识失败：{exc}', 'warn')
+        return ''
+    if not local_exists:
+        msg = (f'上游标识未能更新：{local_id} '
+               f'仍是缺失，应为 {want[:8]}。'
+               '请确认该目录已从宿主机挂载且容器用户可写；'
+               '否则面板会一直提示「随包上游与本机不一致」。')
+    elif got != want:
+        msg = (f'上游标识未能更新：{local_id} '
+               f'仍是 {got[:8]}，应为 {want[:8]}。'
+               '请确认该目录已从宿主机挂载且容器用户可写；'
+               '否则面板会一直提示「随包上游与本机不一致」。')
+    else:
+        if rep:
+            rep.log(f'上游标识已同步：{want[:8]}')
+        return ''
+    if rep:
+        rep.log(msg, 'error')
+    return msg
+
+
 
 def _sync_bundled_upstream(src: Path, rep: Reporter) -> int:
     """把发布包内自带的上游源码同步进 `UPSTREAM_DIR`（保留用户数据与定制）。
@@ -760,26 +815,10 @@ def _sync_bundled_upstream(src: Path, rep: Reporter) -> int:
     # 标记文件是面板判断「本机上游是否已同步」的唯一依据。它没写进去时，
     # 上面所有文件都可能已经同步成功，但界面仍会一直提示不一致（issue #240
     # 的现场就是这类：目录不是持久化挂载，或写权限不足）。这里把它单独验一遍。
-    src_id = src / '.upstream-id'
-    if src_id.is_file():
-        try:
-            want = src_id.read_text(encoding='utf-8').strip()
-            local_id = UPSTREAM_DIR / '.upstream-id'
-            got = local_id.read_text(encoding='utf-8').strip() if local_id.is_file() else ''
-        except OSError as exc:
-            rep.log(f'核对上游标识失败：{exc}', 'warn')
-        else:
-            if not want:
-                rep.log('包内 upstream/.upstream-id 为空，无法核对同步结果', 'warn')
-            elif got != want:
-                rep.log(
-                    f'上游标识未能更新：{local_id} '
-                    f'仍是 {got[:8] or "缺失"}，应为 {want[:8]}。'
-                    '请确认该目录已从宿主机挂载且容器用户可写；'
-                    '否则面板会一直提示「随包上游与本机不一致」。',
-                    'error')
-            else:
-                rep.log(f'上游标识已同步：{want[:8]}')
+    # 只记日志、不在这里抛错：调用方要等重建容器**之后**再据此定成败
+    # （见 update_upstream）—— 提前抛错会留下「源码已换、容器还是旧的」
+    # 中间态，而下一次更新会因文件已一致跳过重建，容器就永远停在旧代码上。
+    _check_upstream_marker(src, rep)
     if changed or added:
         rep.log(f'上游源码已随包更新：改写 {changed} 个、新增 {added} 个文件')
     else:
@@ -806,7 +845,15 @@ def update_upstream(rep: Reporter) -> None:
         rebuild_upstream(rep)
     else:
         rep.log('上游源码与包内一致，无需重建')
+    # 成败判定放在**重建之后**：标记不一致说明源码没真正落盘（目录未挂载 /
+    # 不可写），本次更新不能算成功 —— 否则面板会报「更新完成」而提示永远
+    # 消不掉（issue #240）。放在重建之后而不是同步中途抛错，是因为中途抛
+    # 会留下「源码已换、容器还是旧的」中间态，而下一次更新又因文件已一致
+    # 跳过重建，容器就永远停在旧代码上。
+    marker_error = _check_upstream_marker(new_root / 'upstream')
     _clear_version_cache(rep)
+    if marker_error:
+        raise RuntimeError(marker_error)
 
 
 def rebuild_upstream(rep: Reporter) -> None:

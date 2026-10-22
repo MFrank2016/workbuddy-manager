@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -1316,6 +1317,20 @@ class UpdaterBootstrapPackagingTest(unittest.TestCase):
                              '随 server 下发的更新器把安装目录算到了 server/')
             self.assertEqual(mod.DATA_DIR, install.resolve() / 'data')
 
+    def _pkg_with_marker(self, pkg_root: Path, marker: str | None) -> Path:
+        """造一个最小的解压后发布包（`<pkg_root>/upstream/`），返回 `pkg_root`。
+
+        包内必须有 `docker-compose.yml`：它是 `_sync_bundled_upstream` 判断
+        「本包是否带上游源码」的存在性判据。
+        """
+        up = pkg_root / 'upstream'
+        up.mkdir(parents=True)
+        (up / 'docker-compose.yml').write_text(
+            'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n', encoding='utf-8')
+        if marker is not None:
+            (up / '.upstream-id').write_text(marker + '\n', encoding='utf-8')
+        return pkg_root
+
     def test_marker_mismatch_after_sync_is_reported(self) -> None:
         """`.upstream-id` 没真正写进去时，同步后必须报错（不能只看文件数）。
 
@@ -1327,32 +1342,131 @@ class UpdaterBootstrapPackagingTest(unittest.TestCase):
         rep = _Rep()
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            src = root / 'pkg'
-            dst = root / 'upstream'
-            src.mkdir()
+            pkg = self._pkg_with_marker(root / 'pkg', 'a' * 64)
+            dst = root / 'installed'
             dst.mkdir()
-            (src / 'docker-compose.yml').write_text(
-                'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n', encoding='utf-8')
-            (src / '.upstream-id').write_text('a' * 64 + '\n', encoding='utf-8')
             (dst / '.upstream-id').mkdir()  # 写入必失败
             with mock.patch.object(m, 'UPSTREAM_DIR', dst):
-                m._sync_bundled_upstream(src, rep)
+                m._sync_bundled_upstream(pkg / 'upstream', rep)
+                # 判定在重建之后、由 update_upstream 做；这里直接验同一函数
+                marker_error = m._check_upstream_marker(pkg / 'upstream')
+        self.assertTrue(marker_error, '标识没写进去却判定为成功')
         self.assertTrue(any('上游标识未能更新' in e for e in rep.errors()),
                         f'标识没写进去却没报错，日志：{rep.text()}')
 
-    def test_marker_sync_success_is_reported(self) -> None:
-        """正常同步后要有一条可核对的成功日志。"""
+    def test_marker_mismatch_fails_the_update(self) -> None:
+        """包内与本机 marker **都存在但不同** → 更新必须失败（不是只打日志）。
+
+        审查意见：只写日志时 `main()` 仍然 `ok=True`、退出码 0，面板报
+        「更新完成」，而 issue #240 的现象原样保留。这里驱动真实的
+        `update_upstream()`，断言它把失败抛到 `main()` 的失败路径上。
+
+        现场用「写标记时 os.replace 失败」复现（只读挂载 / 权限不足）：源码
+        循环会打 warn 继续，旧 marker 留在原地，于是包内与本机两份都存在、
+        内容不同 —— 正是要判失败的那种状态。
+        """
         m = _load_update_mod()
         rep = _Rep()
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            src = root / 'pkg'
-            dst = root / 'upstream'
-            src.mkdir()
+            pkg = self._pkg_with_marker(root / 'pkg', 'a' * 64)
+            dst = root / 'installed'
             dst.mkdir()
-            (src / 'docker-compose.yml').write_text(
-                'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n', encoding='utf-8')
-            (src / '.upstream-id').write_text('a' * 64 + '\n', encoding='utf-8')
+            (dst / '.upstream-id').write_text('b' * 64 + '\n', encoding='utf-8')
+            real_replace = m.os.replace
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst), \
+                 mock.patch.object(m, '_release_root', return_value=(pkg, {})), \
+                 mock.patch.object(m, 'enforce_local_bind', return_value=None), \
+                 mock.patch.object(m, 'rebuild_upstream', return_value=None), \
+                 mock.patch.object(m.os, 'replace',
+                                   side_effect=lambda a, b: (_ for _ in ()).throw(
+                                       OSError(13, 'Permission denied'))
+                                   if Path(b).name == '.upstream-id' else real_replace(a, b)):
+                with self.assertRaises(RuntimeError) as ctx:
+                    m.update_upstream(rep)
+            self.assertEqual((dst / '.upstream-id').read_text(encoding='utf-8').strip(),
+                             'b' * 64, '本用例的前提是旧 marker 仍在原地')
+        self.assertIn('上游标识未能更新', str(ctx.exception))
+        self.assertIn('aaaaaaaa', str(ctx.exception), '失败信息要能定位到包内那 8 位')
+        self.assertTrue(any('上游标识未能更新' in e for e in rep.errors()),
+                        f'失败日志缺失，日志：{rep.text()}')
+
+    def test_marker_mismatch_exits_nonzero(self) -> None:
+        """端到端：`main()` 的退出码必须非 0，面板才不会当成「更新完成」。
+
+        `read_status()` 只信持久化的 `ok`，所以这里断言两件事：异常路径把
+        `ok` 落成 False，且进程退出码为 1。
+        """
+        m = _load_update_mod()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = self._pkg_with_marker(root / 'pkg', 'a' * 64)
+            dst = root / 'installed'
+            dst.mkdir()
+            (dst / '.upstream-id').write_text('b' * 64 + '\n', encoding='utf-8')
+            status = root / 'status.json'
+            real_replace = m.os.replace
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst), \
+                 mock.patch.object(m, 'STATUS_FILE', status), \
+                 mock.patch.object(m, '_release_root', return_value=(pkg, {})), \
+                 mock.patch.object(m, 'enforce_local_bind', return_value=None), \
+                 mock.patch.object(m, 'rebuild_upstream', return_value=None), \
+                 mock.patch.object(m.os, 'replace',
+                                   side_effect=lambda a, b: (_ for _ in ()).throw(
+                                       OSError(13, 'Permission denied'))
+                                   if Path(b).name == '.upstream-id' else real_replace(a, b)), \
+                 mock.patch.object(m.sys, 'argv', ['update.py', '--target', 'upstream']), \
+                 mock.patch.dict(os.environ, {'WB_SYNC_UPSTREAM': '0'}):
+                code = m.main()
+            self.assertEqual(code, 1, '标识不一致却退出码 0 = 面板会报「更新完成」')
+            data = json.loads(status.read_text(encoding='utf-8'))
+            self.assertIs(data.get('ok'), False, f'状态文件没落成失败：{data.get("ok")}')
+            self.assertFalse(data.get('running'))
+
+    def test_missing_packaged_marker_does_not_fail(self) -> None:
+        """包内没有 `.upstream-id`（老部署 / 首次同步）保持现状：warn，不失败。"""
+        m = _load_update_mod()
+        rep = _Rep()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = self._pkg_with_marker(root / 'pkg', None)
+            dst = root / 'installed'
+            dst.mkdir()
+            (dst / '.upstream-id').write_text('b' * 64 + '\n', encoding='utf-8')
             with mock.patch.object(m, 'UPSTREAM_DIR', dst):
-                m._sync_bundled_upstream(src, rep)
+                n = m._sync_bundled_upstream(pkg / 'upstream', rep)
+                self.assertEqual(m._check_upstream_marker(pkg / 'upstream'), '',
+                                 '包内没有标记时不该判定失败')
+        self.assertGreater(n, 0)
+        self.assertEqual(rep.errors(), [])
+
+    def test_empty_packaged_marker_does_not_fail(self) -> None:
+        """包内标记为空 → warn，不失败（与缺失同等对待）。"""
+        m = _load_update_mod()
+        rep = _Rep()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = self._pkg_with_marker(root / 'pkg', '')
+            dst = root / 'installed'
+            dst.mkdir()
+            (dst / '.upstream-id').write_text('b' * 64 + '\n', encoding='utf-8')
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst):
+                self.assertEqual(m._check_upstream_marker(pkg / 'upstream', rep), '')
+        self.assertEqual(rep.errors(), [])
+        self.assertTrue(any('为空' in msg for lvl, msg in rep.lines if lvl == 'warn'),
+                        f'空标记该有一条 warn，日志：{rep.text()}')
+
+    def test_marker_sync_success_is_reported(self) -> None:
+        """正常同步后要有一条可核对的成功日志，且不判失败。"""
+        m = _load_update_mod()
+        rep = _Rep()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = self._pkg_with_marker(root / 'pkg', 'a' * 64)
+            dst = root / 'installed'
+            dst.mkdir()
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst):
+                m._sync_bundled_upstream(pkg / 'upstream', rep)
+                self.assertEqual(m._check_upstream_marker(pkg / 'upstream', rep), '')
         self.assertIn('上游标识已同步：aaaaaaaa', rep.text())
+        self.assertEqual(rep.errors(), [])
