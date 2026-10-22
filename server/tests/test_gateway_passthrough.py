@@ -119,6 +119,11 @@ class GatewayPassthroughTest(unittest.TestCase):
           · **Responses 兼容层**（`routers/responses.py`）：同理——Chat
             Completions 的 `tool_calls[].index` 要重建成 Responses 的
             `function_call` 输出项与 `function_call_arguments.delta` 事件。
+          · **工具参数修复层**（`toolrepair.py`，迁移 Todo 15）：只读
+            `choices[].message.tool_calls[].function.arguments` 做确定性修复，
+            默认关（`tool_repair=false`）；它既不碰 SSE 帧也不改转发内容，
+            只在响应回给客户端之前就地修参数。登记在此是因为它按名字
+            读这个字段，而不是因为它成了转发热路径。
 
         这与「替上游兜底」是两回事：它们不改动转发给上游的内容，只改变回给
         客户端的表达形式；「转发热路径必须原样透传」这条约束由上面几个用例
@@ -128,7 +133,7 @@ class GatewayPassthroughTest(unittest.TestCase):
         有人复核，静默放行会让这条约束慢慢失效。
         """
         # 例外：协议转换层（不是转发热路径）
-        allow = {'routers/anthropic.py', 'routers/responses.py'}
+        allow = {'routers/anthropic.py', 'routers/responses.py', 'toolrepair.py'}
         root = Path(__file__).resolve().parents[2] / 'server'
         hits = []
         for f in root.rglob('*.py'):

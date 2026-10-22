@@ -13,7 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import config, db, iputil, keysvc, upstreamsvc
-from ..services import modellisting, modelmap, modelroutes, proxyroutes
+from ..services import billing, modellisting, modelmap, modelroutes, proxyroutes
 from ..config import _env_int
 from ..routers.security import get_config as get_security_config
 
@@ -826,6 +826,107 @@ def key_usage(request: Request):
         'snapshot_at': now,
         'data_source': 'panel-recorded',
     }
+
+# ── OpenAI 兼容 billing（迁移 Todo 17，契约 §3）─────────────
+#
+# 这两条端点是给 OpenAI 生态的用量面板 / 计费插件看的：它们会读
+# `/v1/dashboard/billing/subscription` 与 `.../usage` 来展示额度与每天的花费。
+# 本面板的额度单位是**积分**，所以这里只做换算（`services.billing`），不改任何
+# 计费口径。
+#
+# **鉴权刻意比调用路径宽松**：先按 `/v1/usage` 的方式解析密钥、过全局 IP 规则、
+# 再过 key 级 `ip_allowlist` / `max_ips`，然后**跳过** enabled / expiry / quota /
+# quota_credit —— 额度用尽或已过期时，用户最需要看的正是「我还剩多少、为什么调
+# 不动」。这与 `/v1/usage` 的自查口径一致（issue #137），但**多了 IP 关**：
+# billing 会暴露金额，而 `/v1/usage` 只回自己的 token 数。
+#
+# 与 `/v1/usage` 的关系（两者都保留，职责不同）：
+#   · `/v1/usage`：本面板自己的形状（token / 积分额度、`data_source`），供
+#     自有工具与界面用；
+#   · `/v1/dashboard/billing/*`：OpenAI 形状、**金额**（USD 字段 + 美分用量），
+#     供第三方客户端直接消费。两者读的是同一份面板记录，不各自去问上游。
+def _resolve_billing_key(request: Request) -> tuple[dict | None, str, str | None, JSONResponse | None]:
+    """billing 专用鉴权：返回 `(key, ip, ua, error_response)`。
+
+    只做「认人 + IP」两层；额度/过期/停用一律不拦（见上面的模块注释）。
+    全局 IP 规则与 `_authorize` **同源**（`get_security_config()` +
+    `iputil.evaluate`），key 级判定复用 `keysvc.validate_ip_only` —— 这样
+    Todo 28 的 tools 入口也能只过 IP 关，而 `validate_tools` 再在其上补额度。
+    """
+    ip = iputil.client_ip(request)
+    ua = request.headers.get('user-agent')
+    path = request.url.path
+
+    token = _bearer(request)
+    if not token:
+        _log_ip(ip, path, True, ua, 'missing_key')
+        return None, ip, ua, _oai_error('缺少 API Key，请在 Authorization 头中提供 Bearer 令牌',
+                                        401, 'authentication_error', 'missing_api_key')
+    key = keysvc.resolve(token)
+    if not key:
+        _log_ip(ip, path, True, ua, 'invalid_key')
+        return None, ip, ua, _oai_error('API Key 无效', 401, 'authentication_error', 'invalid_api_key')
+
+    sec = get_security_config()
+    if sec.get('enabled'):
+        rules = [
+            {'kind': r['kind'], 'cidr': r['cidr']}
+            for r in db.query('SELECT kind, cidr FROM ip_rules')
+        ]
+        if not iputil.evaluate(ip, rules, sec.get('mode', 'blacklist')):
+            _log_ip(ip, path, True, ua, 'ip_blocked')
+            _record(key, ip, '', '', 403, 0, 0, 0, ua, 'IP 被拦截', False)
+            return None, ip, ua, _oai_error(
+                f'来源 IP {ip} 被安全策略拦截', 403, 'permission_error', 'ip_blocked')
+
+    reason = keysvc.validate_ip_only(key, ip)
+    if reason:
+        _record(key, ip, '', '', getattr(reason, 'status', 400), 0, 0, 0, ua,
+                reason, False)
+        _log_ip(ip, path, True, ua, _key_reject_code(reason, False))
+        return None, ip, ua, _oai_error(
+            reason, getattr(reason, 'status', 400),
+            getattr(reason, 'err_type', 'invalid_request_error'),
+            getattr(reason, 'code', 'forbidden'))
+
+    _log_ip(ip, path, False, ua)
+    return key, ip, ua, None
+
+
+def _billing_logged(key: dict, ip: str, ua: str | None, status: int,
+                    error: str | None = None) -> None:
+    """billing 请求的**唯一**日志落点（与 `/v1/usage` 同口径）。
+
+    0 token、credit NULL：读账单不是调用，不能推动「已用 token / 已用积分」
+    （那是计费口径）。但**要进请求日志**：否则监控脚本的轮询在运维眼里是
+    隐形的。`_record` 顺带留下「最近使用」与来源 IP。
+    """
+    _record(key, ip, '', '', status, 0, 0, 0, ua, error, False)
+
+
+@router.get('/v1/dashboard/billing/subscription')
+def billing_subscription(request: Request):
+    key, ip, ua, err = _resolve_billing_key(request)
+    if err:
+        return err
+    _billing_logged(key, ip, ua, 200)
+    return billing.subscription(key)
+
+
+@router.get('/v1/dashboard/billing/usage')
+def billing_usage(request: Request, start_date: str | None = None,
+                  end_date: str | None = None):
+    key, ip, ua, err = _resolve_billing_key(request)
+    if err:
+        return err
+    try:
+        start_day, end_day = billing.parse_range(start_date, end_date)
+    except billing.InvalidRange as exc:
+        _billing_logged(key, ip, ua, 400, str(exc))
+        return _oai_error(str(exc), 400, 'invalid_request_error', 'invalid_date_range')
+    _billing_logged(key, ip, ua, 200)
+    return billing.usage(int(key['id']), start_day, end_day)
+
 
 
 # ── 模型列表 ─────────────────────────────────────────────

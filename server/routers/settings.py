@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from .. import config, db, retention, security
 from ..services.filelock import file_lock
 from ..iputil import client_ip
-from ..services import modelmap, modelrouteadmin, reload, updater, wb2api
+from ..services import billing, modelmap, modelrouteadmin, reload, updater, wb2api
 
 router = APIRouter(prefix='/api', tags=['settings'])
 
@@ -284,6 +284,37 @@ def save_catalog_settings(body: dict, request: Request,
     security.audit(user, 'update_catalog_settings', '',
                    f'{_CATALOG_SETTING}={str(raw).lower()}；来源 {client_ip(request)}')
     return _catalog_view(raw)
+
+# ── billing 设置（迁移 Todo 17，契约 §3/§5）───────────────
+#
+# 读：任何登录用户（只读角色也要能看见账单按什么单价/汇率算）。
+# 写：仅**会话**管理员（API Token 一律 403）——改单价等于改所有客户端看到的
+# 金额，与改上游同级。每次写入留一条审计（只记改了哪些键→新值，不含凭据）。
+@router.get('/settings/billing')
+def get_billing_settings(user: dict = Depends(security.current_user)) -> dict:
+    return billing.settings_view()
+
+
+@router.post('/settings/billing')
+def save_billing_settings(body: dict, request: Request,
+                          user: dict = Depends(security.require_session_admin)) -> dict:
+    """保存 billing 设置（**部分更新**：只写提交了的键，其余保持原值）。
+
+    逐键严格校验（`billing.merge`）：非法值 400 且**不改库**。这里不做
+    `strip`/大小写归一化——"CNY " 看起来存进去了、实际一直走默认，那种静默
+    失败比 400 难查得多。
+    """
+    try:
+        fields = billing.merge(body)
+    except billing.InvalidBilling as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for key, value in fields.items():
+        db.set_setting(key, value)
+    changed = '，'.join(f'{k}={v}' for k, v in sorted(fields.items()))
+    security.audit(user, 'update_billing_settings', '',
+                   f'{changed}；来源 {client_ip(request)}')
+    return billing.settings_view()
+
 
 # ── 日志保留策略（迁移 C2：`log_retention_overrides`）───────
 @router.get('/settings/log-retention')

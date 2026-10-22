@@ -463,6 +463,38 @@ def unknown_whitelist_entries(models: list[str], known_by_realm: dict,
         out.append(entry)
     return out
 
+def validate_ip_only(key: dict, ip: str) -> str | None:
+    """只做 **key 级 IP 管控**（`ip_allowlist` / `max_ips`）：放行返回 None。
+
+    为什么单独抽出来：billing 端点（迁移 Todo 17）与 tools 入口（Todo 28）
+    都要先过 IP 关，但**不能**顺带套用额度/过期/停用——配额耗尽的密钥恰恰
+    最需要读账单。所以把「IP 这一层」做成可复用的最小判定：
+
+      · 本函数**只**看 key 级白名单与 max_ips。全局 IP 规则不在这里（它在
+        网关侧与 `_authorize` 同源执行），避免两处各写一份判定；
+      · 调用方若还要 enabled/expiry/quota/quota_credit，**必须**在它之上再
+        调 `validate`（Todo 28 的 `validate_tools` 就是这么做的）——只调本
+        函数就放行，会让配额耗尽的密钥免费用 search/MCP。
+
+    语义与 `validate` 里的对应分支**逐字一致**（400 `ip_not_allowed` /
+    400 `too_many_ips`）：同一个拒绝原因在两处出现时，状态码与文案不能漂移。
+    """
+    allow = key['ip_allowlist']
+    if allow and not any(ip_matches(ip, c) for c in allow):
+        # 观感上像认证失败，但它不是「密钥错」而是「来源不对」，客户端原样显示
+        # 才能让用户知道要加白名单，故用 400 让报文得以透出。
+        return Rejection(f'来源 IP {ip} 不在密钥白名单内', 400,
+                         'invalid_request_error', 'ip_not_allowed')
+
+    if key['max_ips']:
+        known = db.query('SELECT ip FROM api_key_ips WHERE key_id = ?', (key['id'],))
+        ips = {r['ip'] for r in known}
+        if ip not in ips and len(ips) >= key['max_ips']:
+            return Rejection(
+                f'密钥已绑定 {len(ips)} 个 IP，超出上限 {key["max_ips"]}', 400,
+                'invalid_request_error', 'too_many_ips')
+    return None
+
 
 def validate(key: dict, ip: str, model: str | None,
              *, is_model_list: bool = False,
@@ -500,20 +532,11 @@ def validate(key: dict, ip: str, model: str | None,
             f'密钥积分额度已用尽（已用 {key["used_credit"]:g} / 上限 {key["quota_credit"]:g}）',
             429, 'insufficient_quota', 'credit_quota_exhausted')
 
-    allow = key['ip_allowlist']
-    if allow and not any(ip_matches(ip, c) for c in allow):
-        # 观感上像认证失败，但它不是「密钥错」而是「来源不对」，客户端原样显示
-        # 才能让用户知道要加白名单，故用 400 让报文得以透出。
-        return Rejection(f'来源 IP {ip} 不在密钥白名单内', 400,
-                         'invalid_request_error', 'ip_not_allowed')
-
-    if key['max_ips']:
-        known = db.query('SELECT ip FROM api_key_ips WHERE key_id = ?', (key['id'],))
-        ips = {r['ip'] for r in known}
-        if ip not in ips and len(ips) >= key['max_ips']:
-            return Rejection(
-                f'密钥已绑定 {len(ips)} 个 IP，超出上限 {key["max_ips"]}', 400,
-                'invalid_request_error', 'too_many_ips')
+    # IP 这一层抽在 `validate_ip_only` 里：billing / tools 入口只过 IP 关时
+    # 复用同一份判定，语义（400 码与文案）不会在两条路径上漂移。
+    reason = validate_ip_only(key, ip)
+    if reason:
+        return reason
 
     # 版本归属：密钥限定版本后，只能调用该版本的模型。
     #
