@@ -110,6 +110,11 @@ CREATE TABLE IF NOT EXISTS api_keys (
   -- 空值是**历史密钥**的存量形态（本列引入前创建的），保持其原有行为不变，
   -- 界面上单独标注以便管理员补填。新建密钥一律要选一个版本。
   realm         TEXT    NOT NULL DEFAULT '',
+  -- 产品 profile（cn-cli / cn-work / intl-cli / intl-work；空 = 不限）。
+  -- 与 realm **正交但必须一致**：cn-* 只配 cn、intl-* 只配 global（写入前校验）。
+  -- 单值：core 的 api_keys[].profiles 是允许集，本列是该 key 选定的那一个，
+  -- 必须 ⊆ 绑定上游 key 的 profiles（见 services/keyprofiles.py）。
+  profile       TEXT    NOT NULL DEFAULT '',
   quota         INTEGER NOT NULL DEFAULT 0,
   used_tokens   INTEGER NOT NULL DEFAULT 0,
   -- 积分额度与已用量（issue #27）：与 token 限额**各自独立**，0 = 不限。
@@ -656,6 +661,9 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # 人家正在用的密钥悄悄限死（那会让线上调用突然 403）。管理员在界面上
     # 看到「未限定」标记后可按需补填。
     ('api_keys', 'realm', "TEXT NOT NULL DEFAULT ''"),
+    # 产品 profile（迁移 Todo 20）。存量密钥一律为空 = 不限，行为与升级前一致；
+    # 新建密钥由界面选择（4 值），写入前校验与 realm 一致且 ⊆ 上游允许集。
+    ('api_keys', 'profile', "TEXT NOT NULL DEFAULT ''"),
     # 密钥绑定的上游接入点（多上游 / 分组隔离）。可空 = **默认上游** ——
     # 存量密钥一律为空，行为与升级前完全一致（走 WB2API_BASE 那一套）。
     # 不设外键约束：SQLite 的外键要开 PRAGMA 且删除上游时语义是「级联删密钥」还是

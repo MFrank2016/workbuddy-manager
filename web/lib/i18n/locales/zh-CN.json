@@ -682,7 +682,21 @@
     "upstreamHint": "绑定后，这把密钥的请求只走该上游的账号池；未绑定 = 默认上游",
     "upstreamTag": "上游：{name}",
     "upstreamDisabledSuffix": "（已停用）",
-    "upstreamsFailed": "上游列表没取到 —— 新建密钥的「绑定上游」只会显示默认项，先重试再建。"
+    "upstreamsFailed": "上游列表没取到 —— 新建密钥的「绑定上游」只会显示默认项，先重试再建。",
+    "profile": "产品 profile",
+    "colProfile": "Profile",
+    "profileLimit": "产品 profile",
+    "profileUnset": "不限",
+    "profileUnsetTitle": "未限定 profile：绑定上游密钥允许的任意 profile 都可使用这把密钥。",
+    "profileHintUnlimited": "不限：请求不绑定到具体的产品 profile（CLI 或工作台）。",
+    "profileHintCnCli": "cn-cli 走国内版 CLI 端点（copilot.tencent.com）。",
+    "profileHintCnWork": "cn-work 走国内版工作台端点（www.workbuddy.cn）。",
+    "profileHintIntlCli": "intl-cli 走国际版 CLI 端点（www.codebuddy.ai）。",
+    "profileHintIntlWork": "intl-work 走国际版工作台端点（www.workbuddy.ai）。",
+    "profileRealmConflict": "profile 与版本归属冲突：cn-* 属于国内版，intl-* 属于国际版。",
+    "profileAllowedMissing": "该 profile 不在绑定上游密钥的 profiles 允许集内 —— 上游会以 profile_not_allowed 拒绝调用。",
+    "profileRealmAuto": "版本归属由 profile 推导（cn-* → 国内版，intl-* → 国际版）。",
+    "profileFollowing": "新建密钥按所选 profile 写入；除非需要区分 CLI/工作台，否则保持不限。"
   },
   "upstreams": {
     "title": "多上游（账号池分组）",

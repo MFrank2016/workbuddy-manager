@@ -494,6 +494,14 @@ export interface ApiKey {
    * 新建密钥会跟随当前所在版本写入。
    */
   realm: 'cn' | 'global' | '';
+  /**
+   * 产品 profile（cn-cli / cn-work / intl-cli / intl-work）；空串 = 不限。
+   *
+   * 与 realm **正交但必须一致**（cn-* ↔ cn、intl-* ↔ global），且必须 ⊆ 绑定
+   * 上游 key 的 `profiles`（core 侧）。两条都由后端在写入前校验；这里只是
+   * 类型声明，取值见 `web/lib/key-profile.ts`。
+   */
+  profile: string;
   quota: number | null;
   used_tokens: number;
   /**

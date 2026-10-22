@@ -18,6 +18,13 @@ import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
 import {useAuth} from '@/lib/auth-context';
 import {useRealm, type Realm} from '@/lib/realm-context';
+import {
+  PROFILES,
+  normalizeProfile,
+  profileRealm,
+  profileRealmConflict,
+  type Profile,
+} from '@/lib/key-profile';
 import {Button} from '@/components/ui/button';
 import {CopyButton} from '@/components/ui/copy-button';
 import {RichText} from '@/lib/i18n/rich-text';
@@ -69,6 +76,14 @@ interface FormState {
   realm: Realm | '';
   /** 绑定的上游（账号池分组）：null = 默认上游。见 server/upstreamsvc.py */
   upstream_id: number | null;
+  /**
+   * 产品 profile（'' = 不限）。
+   *
+   * 与 realm **正交但必须一致**：cn-* ↔ cn、intl-* ↔ global。选了一个 profile
+   * 就把版本归属一并钉住（见 submit 里的推导），否则会存出「core 按 profile
+   * 拼端点、却按 realm 选号」的自相矛盾配置。
+   */
+  profile: Profile | '';
 }
 
 const emptyForm: FormState = {
@@ -82,6 +97,20 @@ const emptyForm: FormState = {
   quotaCredit: '0',
   realm: 'cn',
   upstream_id: null,
+  profile: '',
+};
+
+/**
+ * profile → 提示文案的键。写成静态映射而不是拼字符串：拼出来的键不在
+ * `TranslationKey` 里，只能靠 `as` 强转绕过类型检查 —— 那样拼错一个字母就
+ * 会在界面上显示成键名本身，而编译器不会报。
+ */
+const PROFILE_HINT: Record<Profile | '', Parameters<ReturnType<typeof useT>>[0]> = {
+  '': 'keys.profileHintUnlimited',
+  'cn-cli': 'keys.profileHintCnCli',
+  'cn-work': 'keys.profileHintCnWork',
+  'intl-cli': 'keys.profileHintIntlCli',
+  'intl-work': 'keys.profileHintIntlWork',
 };
 
 function toLines(v: string): string[] {
@@ -238,6 +267,7 @@ export default function KeysPage() {
       quotaCredit: String(k.quota_credit ?? 0),
       realm: k.realm || '',
       upstream_id: k.upstream_id ?? null,
+      profile: normalizeProfile(k.profile),
     });
     setUnknownModels(null);
     setFormOpen(true);
@@ -271,11 +301,28 @@ export default function KeysPage() {
         // 例外是用户在新建弹窗里显式打开了「不限制」（form.realm === ''，
         // issue #191）：那是明确的意图，不能被页面版本覆盖掉。
         realm: editing || form.realm === '' ? form.realm : realm,
+        // 产品 profile（'' = 不限）。
+        profile: form.profile,
         // 绑定上游（多上游 / 分组隔离）：null = 默认上游，照传——
         // 后端以它区分「显式改回默认上游」与「本次没提交该字段」（PATCH 语义）。
         upstream_id: form.upstream_id,
       };
 
+      // 产品 profile 与版本归属必须一致（契约 §1）。三条规则：
+      //   · 两者都非空且冲突 → **拦住并说清楚**，不要替用户改他的版本选择
+      //     （静默改写会让「我明明选了国内版」变成一个查不出的谜）；
+      //   · profile 有值、realm 为空（新建的「不限版本」开关）→ 由 profile 推导，
+      //     否则会存出「profile=intl-cli 却两版都能调」的自相矛盾配置；
+      //   · profile 为空 → 保持 realm 原样（不限 profile 不改变版本语义）。
+      if (form.profile) {
+        if (profileRealmConflict(form.profile, payload.realm as string)) {
+          notify.err(t('keys.profileRealmConflict'));
+          setBusy(false);
+          submitting.current = false;
+          return;
+        }
+        if (!payload.realm) payload.realm = profileRealm(form.profile);
+      }
       // 新建：填了天数才设过期（0 = 永不过期，不下发 expires_at）
       // 编辑：按显式选择处理，避免「打开就保存」把有效期重置
       if (!editing) {
@@ -583,6 +630,9 @@ export default function KeysPage() {
               <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
               {/* 版本列紧跟状态：它和状态一样是「这把密钥的属性」，位置与账号页的列序一致 */}
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.realm')}</TableHead>
+              {/* profile 紧跟版本：两者都是「这把密钥属于哪个租户维度」的属性，
+                  分开排会让人以为是两件不相关的事（而它们必须一致）。 */}
+              <TableHead className="text-[11px] text-muted-foreground">{t('keys.colProfile')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.expiry')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.colIpModels')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('keys.colUsedTokens')}</TableHead>
@@ -640,6 +690,20 @@ export default function KeysPage() {
                         title={t('keys.realmUnsetTitle')}
                       >
                         {t('keys.realmUnset')}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {k.profile ? (
+                      <Badge variant="secondary" className="rounded-full font-mono text-[10px]">
+                        {k.profile}
+                      </Badge>
+                    ) : (
+                      <span
+                        className="text-[10px] text-muted-foreground"
+                        title={t('keys.profileUnsetTitle')}
+                      >
+                        {t('keys.profileUnset')}
                       </span>
                     )}
                   </TableCell>
@@ -932,7 +996,11 @@ export default function KeysPage() {
                             : t('realm.cn')}
                       </Badge>
                       <span className="text-[11px] leading-4 text-muted-foreground">
-                        {form.realm === '' ? t('keys.realmUnlimitedOn') : t('keys.realmFollowsPage')}
+                        {form.profile
+                          ? t('keys.profileRealmAuto')
+                          : form.realm === ''
+                            ? t('keys.realmUnlimitedOn')
+                            : t('keys.realmFollowsPage')}
                       </span>
                     </div>
                     {/* 新建默认跟随当前版本（不给「国内版/国际版」二选一，选错了是静默的），
@@ -942,16 +1010,56 @@ export default function KeysPage() {
                       htmlFor="key-realm-unlimited"
                       className="mt-1.5 flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground"
                     >
+                      {/* 选了 profile 就不能同时「不限版本」：profile 的端点族本身
+                          就决定了版本（cn-* / intl-*）。把它禁用而不是让用户点出一对
+                          自相矛盾的配置。 */}
                       <Switch
                         id="key-realm-unlimited"
-                        checked={form.realm === ''}
-                        disabled={!isAdmin}
+                        checked={form.realm === '' && !form.profile}
+                        disabled={!isAdmin || !!form.profile}
                         onCheckedChange={(on) => setForm({...form, realm: on ? '' : realm})}
                       />
                       {t('keys.realmAll')}
                     </label>
                   </>
                 )}
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-[11px] text-muted-foreground">{t('keys.profileLimit')}</Label>
+                {/* 产品 profile（4 值 + 不限）。与版本归属**必须一致**：
+                    选了 profile 就把版本一起钉住（submit 里推导后一并提交），
+                    因为 cn-* 的端点只在 cn 池上、intl-* 只在 global 池上 ——
+                    两者不一致不是"更细的限制"，而是每次调用都打空池。
+                    选择器始终显示（新建与编辑都要能选）：它是独立的租户维度，
+                    与「版本跟随页面」那条不同，不能靠页面状态替用户猜。 */}
+                <Select
+                  value={form.profile || '__all__'}
+                  onValueChange={(v) => {
+                    const profile = v === '__all__' ? '' : (v as Profile);
+                    // 选 profile 时把版本对齐到它推导出的值；选「不限」时保留
+                    // 当前版本（不擅自改动用户的版本归属）。
+                    const nextRealm = profile ? (profileRealm(profile) as Realm) : form.realm;
+                    setForm({...form, profile, realm: nextRealm});
+                  }}
+                >
+                  <SelectTrigger aria-label={t('keys.profile')}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__all__">{t('keys.profileUnset')}</SelectItem>
+                    {PROFILES.map((p) => (
+                      <SelectItem key={p} value={p}>{p}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  {t(PROFILE_HINT[form.profile])}
+                </p>
+                {profileRealmConflict(form.profile, form.realm) ? (
+                  <p className="text-[11px] leading-4 text-destructive">
+                    {t('keys.profileRealmConflict')}
+                  </p>
+                ) : null}
               </div>
               <div className="space-y-1.5">
                 <Label className="text-[11px] text-muted-foreground">{t('keys.upstreamLabel')}</Label>

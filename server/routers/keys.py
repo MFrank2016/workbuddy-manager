@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import config, db, keysvc, security, upstreamsvc
-from ..services import keyexport, keyimport, modelcatalog, modelmap
+from ..services import keyexport, keyimport, keyprofiles, modelcatalog, modelmap
 from ..iputil import client_ip
 
 router = APIRouter(prefix='/api/keys', tags=['keys'])
@@ -61,6 +61,35 @@ def _check_name(name: str | None) -> None:
         raise HTTPException(status_code=400, detail='密钥名称不能只有空格')
 
 
+def _check_profile(profile: object, realm: object, upstream_id: object) -> None:
+    """写入前的 profile 校验：与 realm 一致 + ⊆ 绑定上游的允许集。
+
+    两条都必须在**写入之前**拦（见 services/keyprofiles 的模块说明）：
+      · 与 realm 冲突 → core 拼出的端点族与选号池不匹配，每次调用都空池/502；
+      · 超出上游允许集 → 保存成功、调用被 400 profile_not_allowed。
+
+    上游读不到时**跳过**（记 warning），不阻断保存：不可达不代表配置非法。
+    """
+    conflict = keyprofiles.realm_conflict(profile, realm)
+    if conflict:
+        raise HTTPException(status_code=400, detail=conflict)
+
+    # profile 为空 = 不限，子集判据恒通过 —— 不必为这个绝大多数情况打一趟上游
+    # （默认上游读盘也要 stat/parse，非默认还要一次 HTTP）。
+    if not str(profile or '').strip():
+        return
+
+    upstream = upstreamsvc.get_upstream(upstream_id) if upstream_id not in (None, '', 0, '0') \
+        else upstreamsvc.default_upstream()
+    if upstream is None:
+        # 绑定的上游不存在由 _check_upstream 报；这里不重复报错。
+        return
+    allowed, _warning = keyprofiles.fetch_allowed(upstream)
+    subset = keyprofiles.subset_conflict(profile, allowed)
+    if subset:
+        raise HTTPException(status_code=400, detail=subset)
+
+
 class KeyIn(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     # 绑定的上游（多上游 / 分组隔离）：null / 0 / 省略 = 默认上游。
@@ -77,6 +106,10 @@ class KeyIn(BaseModel):
     # 版本归属：'' = 不限制（存量密钥的形态）。非 cn/global 的值由
     # keysvc._norm_realm 归一化成 ''——不报错，免得旧前端（不带该字段）被拒。
     realm: str = Field(default='', max_length=16)
+    # 产品 profile（cn-cli / cn-work / intl-cli / intl-work；'' = 不限）。
+    # 必须与 realm 一致（cn-* ↔ cn、intl-* ↔ global），且 ⊆ 绑定上游 key 的
+    # profiles —— 两条都在 _check_profile 里拦。
+    profile: str = Field(default='', max_length=16)
 
 
 class KeyPatch(BaseModel):
@@ -91,6 +124,8 @@ class KeyPatch(BaseModel):
     quota: int | None = None
     quota_credit: float | None = None
     realm: str | None = None
+    # 显式传 null/'' 是**允许**的：把密钥改回「不限 profile」。
+    profile: str | None = None
 
 
 class WhitelistCheckIn(BaseModel):
@@ -146,6 +181,7 @@ def create_key(body: KeyIn, request: Request,
     _check_name(body.name)
     _check_ip_allowlist(body.ip_allowlist)
     _check_upstream(body.upstream_id)
+    _check_profile(body.profile, body.realm, body.upstream_id)
     created = keysvc.create_key(
         name=body.name,
         expires_at=body.expires_at,
@@ -156,6 +192,7 @@ def create_key(body: KeyIn, request: Request,
         realm=body.realm,
         quota_credit=body.quota_credit,
         upstream_id=body.upstream_id,
+        profile=body.profile,
     )
     # 密钥是拿额度用的凭证，发放必须留痕（含来源 IP）
     upstream_name = '默认上游'
@@ -168,7 +205,8 @@ def create_key(body: KeyIn, request: Request,
 
 
 @router.patch('/{key_id}')
-def update_key(key_id: int, body: KeyPatch, user: dict = Depends(security.require_admin)) -> dict:
+def update_key(key_id: int, body: KeyPatch, request: Request,
+               user: dict = Depends(security.require_admin)) -> dict:
     # 只校验本次真的提交了的字段（PATCH 是部分更新，`exclude_unset` 语义）
     patch = body.model_dump(exclude_unset=True)
     if 'name' in patch:
@@ -177,9 +215,33 @@ def update_key(key_id: int, body: KeyPatch, user: dict = Depends(security.requir
         _check_ip_allowlist(patch['ip_allowlist'])
     if 'upstream_id' in patch:
         _check_upstream(patch['upstream_id'])
+
+    # 404 必须**先于** profile 校验：不存在的密钥报「profile 冲突」会把人引到
+    # 一个错误的排查方向上（密钥都不在了，改 profile 无从谈起）。
+    current = keysvc.get_key(key_id)
+    if not current:
+        raise HTTPException(status_code=404, detail='密钥不存在')
+
+    if 'profile' in patch or 'realm' in patch or 'upstream_id' in patch:
+        # 用**合并后的有效值**校验：只改 profile 时 realm 取库里的现值，反之亦然。
+        # 只校验提交字段会让「存量 realm=cn 的密钥改成 intl-cli」漏过去 ——
+        # 那正是这类 bug 最常见的形态。
+        effective_profile = patch['profile'] if 'profile' in patch else current.get('profile', '')
+        effective_realm = patch['realm'] if 'realm' in patch else current.get('realm', '')
+        effective_upstream = (patch['upstream_id'] if 'upstream_id' in patch
+                              else current.get('upstream_id'))
+        _check_profile(effective_profile, effective_realm, effective_upstream)
+
     updated = keysvc.update_key(key_id, patch)
     if not updated:
         raise HTTPException(status_code=404, detail='密钥不存在')
+    # 审计必须留在这里（handler 才有 request / 来源 IP）：keysvc 是网关与管理端
+    # 共用的，放进去就拿不到来源，也会把「管理操作」混进「数据层」。
+    ip = client_ip(request)
+    security.audit(user, 'update_key', str(updated.get('name') or str(key_id)),
+                   f"id={key_id}；profile={updated.get('profile') or '-'}"
+                   f"；realm={updated.get('realm') or '-'}；来源 {ip}",
+                   ip=ip)
     return updated
 
 

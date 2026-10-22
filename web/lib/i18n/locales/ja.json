@@ -682,7 +682,21 @@
     "upstreamHint": "紐付けると、このキーのリクエストはそのプールだけを使います。未設定なら既定のアップストリームです",
     "upstreamTag": "アップストリーム：{name}",
     "upstreamDisabledSuffix": "（停止中）",
-    "upstreamsFailed": "上流一覧を取得できませんでした。新しいキーの「上流の紐付け」には既定の上流しか出ません。再試行してから作成してください。"
+    "upstreamsFailed": "上流一覧を取得できませんでした。新しいキーの「上流の紐付け」には既定の上流しか出ません。再試行してから作成してください。",
+    "profile": "プロダクト profile",
+    "colProfile": "Profile",
+    "profileLimit": "プロダクト profile",
+    "profileUnset": "制限なし",
+    "profileUnsetTitle": "profile 未指定：紐付け先の上流キーが許可する任意の profile で利用できます。",
+    "profileHintUnlimited": "制限なし：リクエストを特定のプロダクト profile（CLI / デスクトップ）に固定しません。",
+    "profileHintCnCli": "cn-cli は中国版 CLI のエンドポイント（copilot.tencent.com）を使います。",
+    "profileHintCnWork": "cn-work は中国版デスクトップのエンドポイント（www.workbuddy.cn）を使います。",
+    "profileHintIntlCli": "intl-cli は国際版 CLI のエンドポイント（www.codebuddy.ai）を使います。",
+    "profileHintIntlWork": "intl-work は国際版デスクトップのエンドポイント（www.workbuddy.ai）を使います。",
+    "profileRealmConflict": "profile とエディションが矛盾しています：cn-* は中国版、intl-* は国際版です。",
+    "profileAllowedMissing": "この profile は紐付け先の上流キーの profiles に含まれていません。上流は profile_not_allowed で拒否します。",
+    "profileRealmAuto": "エディションは profile から導出されます（cn-* → 中国版、intl-* → 国際版）。",
+    "profileFollowing": "新しいキーは選択した profile で作成されます。CLI / デスクトップを分ける必要がなければ制限なしのままにしてください。"
   },
   "upstreams": {
     "title": "複数アップストリーム（アカウントプールのグループ）",

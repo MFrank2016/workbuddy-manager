@@ -709,7 +709,21 @@
     "upstreamHint": "Once bound, this key only uses that upstream account pool; unbound = default upstream",
     "upstreamTag": "Upstream: {name}",
     "upstreamDisabledSuffix": " (disabled)",
-    "upstreamsFailed": "Could not load the upstream list — new keys will only offer the default upstream. Retry before creating one."
+    "upstreamsFailed": "Could not load the upstream list — new keys will only offer the default upstream. Retry before creating one.",
+    "profile": "Product profile",
+    "colProfile": "Profile",
+    "profileLimit": "Product profile",
+    "profileUnset": "unrestricted",
+    "profileUnsetTitle": "No profile pinned: every profile the bound upstream key allows can use this key.",
+    "profileHintUnlimited": "Unrestricted: requests are not pinned to a product profile (CLI or desktop).",
+    "profileHintCnCli": "cn-cli routes to the China-edition CLI endpoints (copilot.tencent.com).",
+    "profileHintCnWork": "cn-work routes to the China-edition desktop endpoints (www.workbuddy.cn).",
+    "profileHintIntlCli": "intl-cli routes to the Global-edition CLI endpoints (www.codebuddy.ai).",
+    "profileHintIntlWork": "intl-work routes to the Global-edition desktop endpoints (www.workbuddy.ai).",
+    "profileRealmConflict": "The profile conflicts with the pinned edition: cn-* profiles belong to China, intl-* profiles to Global.",
+    "profileAllowedMissing": "This profile is not in the profiles list of the bound upstream key — the upstream would reject calls with profile_not_allowed.",
+    "profileRealmAuto": "Pinned edition is derived from the profile (cn-* → China, intl-* → Global).",
+    "profileFollowing": "New keys follow the profile you pick; leave unrestricted unless you need CLI/desktop separation."
   },
   "upstreams": {
     "title": "Multiple upstreams (account pool groups)",

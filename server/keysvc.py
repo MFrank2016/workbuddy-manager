@@ -55,6 +55,21 @@ def _norm_realm(value: object) -> str:
     return v if v in ('cn', 'global') else ''
 
 
+PROFILES = ('cn-cli', 'cn-work', 'intl-cli', 'intl-work')
+
+
+def _norm_profile(value: object) -> str:
+    """归一化密钥的产品 profile；'' = 不限（存量密钥的形态）。
+
+    与 realm 同口径：**不报错**，脏值吃掉成 ''。理由是这一列来自管理端表单，
+    格式问题不该让整次保存失败；而路由层的「profile 与 realm 必须一致」
+    （见 services/keyprofiles.realm_conflict）会挡住真正自相矛盾的组合 ——
+    那才是会**静默失效**的那一类，格式错只是显示问题。
+    """
+    v = str(value or '').strip().lower()
+    return v if v in PROFILES else ''
+
+
 def _norm_upstream_id(value: object) -> int | None:
     """归一化密钥绑定的上游 id：空 / 非法一律当「未绑定」（= 默认上游）。
 
@@ -174,6 +189,8 @@ def _parse(row) -> dict:
         'ip_allowlist': _json_list(row['ip_allowlist']),
         'models': _json_list(row['models']),
         'realm': _norm_realm(row['realm']),
+        # 产品 profile：'' = 不限（存量密钥）。必须 ⊆ 绑定上游 key 的 profiles。
+        'profile': _norm_profile(row['profile']),
         # 绑定的上游接入点（多上游 / 分组隔离）。None = 默认上游 —— 见 upstreamsvc
         # 的模块注释：默认上游不是数据库里的某一行，所以这里保持 None 而不是补 0。
         'upstream_id': _norm_upstream_id(row['upstream_id']),
@@ -217,6 +234,7 @@ def create_key(
     realm: str = '',
     quota_credit: float = 0,
     upstream_id: int | None = None,
+    profile: str = '',
     *,
     _conn: sqlite3.Connection | None = None,
 ) -> dict:
@@ -232,8 +250,9 @@ def create_key(
     """
     token = TOKEN_PREFIX + secrets.token_urlsafe(32)
     sql = ('INSERT INTO api_keys(name, key_hash, prefix, enabled, expires_at, max_ips, '
-           'ip_allowlist, models, realm, quota, used_tokens, quota_credit, used_credit, '
-           'created_at, upstream_id) VALUES(?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)')
+           'ip_allowlist, models, realm, profile, quota, used_tokens, quota_credit, '
+           'used_credit, created_at, upstream_id) '
+           'VALUES(?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)')
     args = (
         name,
         _hash(token),
@@ -243,6 +262,7 @@ def create_key(
         json.dumps(_norm_cidrs(ip_allowlist)),
         json.dumps(models or []),
         _norm_realm(realm),
+        _norm_profile(profile),
         quota,
         _norm_credit_quota(quota_credit),
         int(time.time()),
@@ -257,6 +277,17 @@ def create_key(
     out = _parse(row)
     out['key'] = token  # 仅此一次返回明文
     return out
+
+
+def get_key(key_id: int) -> dict | None:
+    """按 id 取一把密钥（None = 不存在）。
+
+    给 PATCH handler 用：它要在**写入前**拿到合并后的有效值（profile 与 realm
+    可能只提交其中一个），而 `update_key` 只返回写后的结果 —— 拿它做校验等于
+    先写坏再回滚，那是另一类问题。
+    """
+    row = db.query_one('SELECT * FROM api_keys WHERE id = ?', (key_id,))
+    return _parse(row) if row else None
 
 
 def update_key(key_id: int, patch: dict) -> dict | None:
@@ -281,6 +312,10 @@ def update_key(key_id: int, patch: dict) -> dict | None:
         # 显式传 null/'' 是**允许**的：管理员可以把旧密钥改回「不限制」。
         # 所以这里不能用 `patch['realm'] or ...` 之类的真值判断。
         fields['realm'] = _norm_realm(patch['realm'])
+    if 'profile' in patch:
+        # 显式传 null/'' 是**允许**的：管理员可以把密钥改回「不限」。
+        # 与 realm 同口径，不能用真值判断（否则改不回不限）。
+        fields['profile'] = _norm_profile(patch['profile'])
     if 'quota' in patch:
         fields['quota'] = int(patch['quota'] or 0)
     if 'quota_credit' in patch:

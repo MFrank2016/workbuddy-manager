@@ -682,7 +682,21 @@
     "upstreamHint": "연결하면 이 키의 요청은 해당 업스트림 풀만 사용합니다. 연결하지 않으면 기본 업스트림입니다",
     "upstreamTag": "업스트림: {name}",
     "upstreamDisabledSuffix": "(중지됨)",
-    "upstreamsFailed": "업스트림 목록을 불러오지 못했습니다. 새 키의 \"업스트림 연결\"에는 기본 항목만 표시됩니다. 다시 시도한 뒤 생성하세요."
+    "upstreamsFailed": "업스트림 목록을 불러오지 못했습니다. 새 키의 \"업스트림 연결\"에는 기본 항목만 표시됩니다. 다시 시도한 뒤 생성하세요.",
+    "profile": "제품 profile",
+    "colProfile": "Profile",
+    "profileLimit": "제품 profile",
+    "profileUnset": "제한 없음",
+    "profileUnsetTitle": "profile 미지정: 연결된 업스트림 키가 허용하는 모든 profile을 사용할 수 있습니다.",
+    "profileHintUnlimited": "제한 없음: 요청을 특정 제품 profile(CLI / 데스크톱)에 고정하지 않습니다.",
+    "profileHintCnCli": "cn-cli는 중국판 CLI 엔드포인트(copilot.tencent.com)를 사용합니다.",
+    "profileHintCnWork": "cn-work는 중국판 데스크톱 엔드포인트(www.workbuddy.cn)를 사용합니다.",
+    "profileHintIntlCli": "intl-cli는 글로벌 CLI 엔드포인트(www.codebuddy.ai)를 사용합니다.",
+    "profileHintIntlWork": "intl-work는 글로벌 데스크톱 엔드포인트(www.workbuddy.ai)를 사용합니다.",
+    "profileRealmConflict": "profile과 에디션이 충돌합니다: cn-*은 중국판, intl-*은 글로벌입니다.",
+    "profileAllowedMissing": "이 profile은 연결된 업스트림 키의 profiles에 없습니다. 업스트림이 profile_not_allowed로 거부합니다.",
+    "profileRealmAuto": "에디션은 profile에서 파생됩니다(cn-* → 중국판, intl-* → 글로벌).",
+    "profileFollowing": "새 키는 선택한 profile로 생성됩니다. CLI/데스크톱을 구분할 필요가 없으면 제한 없음으로 두세요."
   },
   "upstreams": {
     "title": "다중 업스트림(계정 풀 그룹)",
