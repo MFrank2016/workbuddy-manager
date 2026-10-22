@@ -109,16 +109,27 @@ class OrderedChainTest(_Case):
         self.assertEqual(modelroutes.resolve('m', 'cn', 1), 't3-blank-realm-group')
 
     def test_other_realm_skips_realm_specific_rows(self) -> None:
-        self._seed()
+        """专属 realm 的行只服务那一版；另一版落到空白 realm 的同版本行。"""
+        self._seed([('m', 'glm-5.2', 'cn', 1, None, 1, 1),
+                    ('m', 'global:x', '', 1, None, 1, 1)])
 
-        # global 没有专属行 → 第 3 级（public + '' + group），不是 cn 的行
-        self.assertEqual(modelroutes.resolve('m', 'global', 1), 't3-blank-realm-group')
+        # global 没有专属行 → 第 3 级（public + '' + group），且目标必须是 global
+        self.assertEqual(modelroutes.resolve('m', 'global', 1), 'global:x')
+        self.assertEqual(modelroutes.resolve('m', 'cn', 1), 'glm-5.2')
 
-    def test_blank_realm_rows_serve_both_realms(self) -> None:
-        self._seed([('m', 'both', '', None, None, 1, 1)])
+    def test_blank_realm_row_serves_only_its_target_realm(self) -> None:
+        """realm='' 只表示「对两版都适用」；**目标版本**决定它服务哪一版。
 
-        self.assertEqual(modelroutes.resolve('m', 'cn', None), 'both')
-        self.assertEqual(modelroutes.resolve('m', 'global', None), 'both')
+        跨版本改写会把请求送到另一套账号池，调用方的版本检查必 400
+        （`realm_mismatch`）——所以不是它的版本就原样透传。
+        """
+        self._seed([('cn-alias', 'glm-5.2', '', None, None, 1, 1),
+                    ('global:alias', 'global:x', '', None, None, 1, 1)])
+
+        self.assertEqual(modelroutes.resolve('cn-alias', 'cn', None), 'glm-5.2')
+        self.assertEqual(modelroutes.resolve('cn-alias', 'global', None), 'cn-alias')
+        self.assertEqual(modelroutes.resolve('global:alias', 'global', None), 'global:x')
+        self.assertEqual(modelroutes.resolve('global:alias', 'cn', None), 'global:alias')
 
     def test_star_fallback_serves_unknown_models(self) -> None:
         self._seed()

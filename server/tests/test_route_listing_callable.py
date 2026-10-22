@@ -255,14 +255,16 @@ class ValidateRejectsInconsistentRealmTest(unittest.TestCase):
         self.assertIn('版本', msg)
 
     def test_blank_realm_row_may_target_either_realm(self) -> None:
-        """realm='' 的行对两版都适用（升级窗口的 `alias → global:x`，issue #47）。
+        """realm='' 只表示「对两版都适用」；目标必须与 public_id **同版本**。
 
-        它只会被列给**目标版本**的密钥（清单侧按目标版本过滤），所以合法。
+        升级窗口从旧 `model_map` 搬来的 `alias → global:x` 之所以曾被视为合法，
+        是因为当时只有「目标版本」一维过滤；但解析按**请求名**算 realm，那一行
+        对 cn 请求命中后必 400。现在它会在写入口被拒绝（存量行由 `resolve` 跳过，
+        不会跨版本改写）。
         """
-        rows = modelroutes.validate([{'public_id': 'alias',
-                                     'target_model': 'global:x', 'realm': ''}])
-
-        self.assertEqual(rows[0]['realm'], '')
+        with self.assertRaises(ValueError):
+            modelroutes.validate([{'public_id': 'alias',
+                                   'target_model': 'global:x', 'realm': ''}])
 
     def test_consistent_rows_are_accepted(self) -> None:
         rows = modelroutes.validate([
@@ -318,12 +320,13 @@ class ReachableHelperTest(_Case):
 
     def test_row_that_loses_to_a_higher_precedence_one_is_not_reachable(self) -> None:
         """同一个 public_id 的空白 realm 行会被专属 realm 行盖住。"""
-        _route('m', 'cn-target', 'cn')
-        _route('m', 'blank-target', '')
-        blank = self._alias('m', 'blank-target', '')
+        _route('m', 'glm-5.2', 'cn')
+        _route('m', 'global:x', '')
+        blank = self._alias('m', 'global:x', '')
 
         self.assertFalse(modelroutes.reachable(blank, 'cn'), '该行不是解析会命中的那行')
-        self.assertTrue(modelroutes.reachable(blank, 'global'))
+        self.assertTrue(modelroutes.reachable(blank, 'global'),
+                        '空白 realm 行在**它自己目标版本**里就是命中行')
 
 
 

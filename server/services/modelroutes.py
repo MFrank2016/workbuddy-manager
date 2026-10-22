@@ -176,12 +176,28 @@ def _group_order(group: int | None) -> tuple[int | None, ...]:
     return (group, None) if group is not None else (None,)
 
 
+def _same_realm(alias: Alias, realm: str) -> bool:
+    """这一行的**目标版本**是否与请求版本一致（`realm` 为空时无从判定，不拦）。"""
+    return not realm or db.realm_of_model(alias.target_model) == realm
+
+
 def _pick(public_id: str, realm: str, group: int | None) -> Alias | None:
-    """某个 public_id 在 4 个 realm/分组组合里的第一条命中。"""
+    """某个 public_id 在 4 个 realm/分组组合里的第一条**同版本**命中。
+
+    跨版本的行一律**跳过并继续下一级**（不 return）：命中它只会把请求改写成
+    另一版本的模型，而调用方的版本检查必 400 `realm_mismatch`。这是 `'*'`
+    兜底行与历史脏行的纵深防御——写入口径（`validate`）已经拦住了新行，但
+    回填搬来的旧形状、手工改库的行仍可能跨版本。
+
+    跳过而非透传是必要的：第 1 级跨版本时，第 2/3/4 级可能还有合法的同版本
+    行（见 `test_cross_realm_row_falls_through_to_a_valid_lower_level`）。
+    清单侧用同一个 `_pick`（`reachable`），所以「列出来的 id 都调得通」是
+    按构造成立的，不靠两处各写一遍。
+    """
     for candidate_realm in _realm_order(realm):
         for candidate_group in _group_order(group):
             hit = _row(public_id, candidate_realm, candidate_group)
-            if hit:
+            if hit and _same_realm(hit, realm):
                 return hit
     return None
 
@@ -231,6 +247,11 @@ def resolve(model: str | None, realm: str, key_group: int | None) -> str | None:
 
     `realm` 由调用方用 `db.realm_of_model(mapped or model)` 算好传进来 ——
     判定依据是**真正发往上游的那个名字**（issue #47）。
+
+    **跨版本不改写**：`_pick` 只接受目标版本与 `realm` 一致的行，不一致就跳过、
+    继续下一级；全都没命中就原样透传。所以 `'*'` 兜底只作用于**同版本**的模型，
+    历史脏行（`realm=''` 却指向另一版本）也不会把请求改到另一套账号池。
+    没有这条，清单列出的 id 会在调用时被版本检查 400 `realm_mismatch`。
     """
     if not model:
         return model

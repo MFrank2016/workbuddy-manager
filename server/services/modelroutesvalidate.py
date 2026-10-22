@@ -27,35 +27,43 @@ def _norm_flag(value: object, field: str) -> int:
 
 
 def _check_realm_consistency(public_id: str, target: str, realm: str) -> None:
-    """realm 列必须与**解析时会算出来的版本**一致，否则这行调用时只会被 400 打回。
+    """realm 列与**解析时会算出来的版本**必须一致，否则这行调用时只会被 400 打回。
 
     解析的 realm 只看模型名（`db.realm_of_model`，见 issue #47），因此：
 
-      · 非 `*` 行：显式 realm 必须等于 public_id 的版本 —— `alias`（无前缀）配
-        `realm='global'` 是**不可达**的（解析会用 cn 去找 global 行）；
-      · `*` 是兜底**键**、不是模型名，realm 由调用方的模型名决定，所以不受上一条
-        约束（否则「未知模型一律走国际版」这种合法意图就无法表达）；
-      · 显式 realm 还必须等于**目标模型**的版本，否则命中后立刻 400。
+      · 非 `*` 行：`target_model` 的版本必须等于 `public_id` 的版本 —— **realm
+        留空不是免检通道**。留空只表示「这行对两版都适用」（升级窗口从旧
+        `model_map` 搬来的形状），而一个 cn 名字配上 `global:` 目标，解析按请求名
+        算出的 realm 与目标版本必然不同，命中后立刻 400；
+      · 非 `*` 行 + 显式 realm：realm 还必须等于 public_id 的版本 —— `alias`
+        （无前缀）配 `realm='global'` 是**不可达**的（解析会用 cn 找 global 行）；
+      · `*` 是兜底**键**、不是模型名，realm 由调用方的模型名决定，所以不受
+        public_id 那条约束（否则「未知模型一律走国际版」这种合法意图就无法
+        表达）；但显式 realm 仍必须等于**目标模型**的版本，否则命中后立刻 400。
 
-    realm='' 的行对两个版本都适用，目标可指向任一版本（升级窗口从旧 `model_map`
-    搬来的 `alias → global:x` 正是这种形状，issue #47）。它是否出现在某把密钥的
-    清单里，由清单侧按**目标版本**过滤，所以这里不拦。
+    写入口径与读出口径成对：`resolve` 命中后也会跳过跨版本的行（历史脏行、
+    `*` 兜底），两者一起保证「清单里列出的 id 都调得通」。
     """
-    if not realm:
-        return
-    if public_id != modelmap.FALLBACK_KEY:
-        name_realm = db.realm_of_model(public_id)
-        if name_realm != realm:
-            raise ValueError(
-                f'realm={realm!r} 与 public_id={public_id!r} 的版本不一致'
-                f'（按模型名判定为 {name_realm!r}）：调用时该行不可达、必被版本'
-                '检查打回。请给 public_id 加 global: 前缀，或把 realm 留空')
     target_realm = db.realm_of_model(target)
-    if target_realm != realm:
+    if public_id == modelmap.FALLBACK_KEY:
+        if realm and target_realm != realm:
+            raise ValueError(
+                f'realm={realm!r} 与 target_model={target!r} 的版本不一致'
+                f'（按模型名判定为 {target_realm!r}）：该行命中后必被版本检查打回。'
+                '请改 realm，或换一个同版本的目标模型')
+        return
+    name_realm = db.realm_of_model(public_id)
+    if realm and name_realm != realm:
         raise ValueError(
-            f'realm={realm!r} 与 target_model={target!r} 的版本不一致'
-            f'（按模型名判定为 {target_realm!r}）：该行命中后必被版本检查打回。'
-            '请改 realm，或换一个同版本的目标模型')
+            f'realm={realm!r} 与 public_id={public_id!r} 的版本不一致'
+            f'（按模型名判定为 {name_realm!r}）：调用时该行不可达、必被版本'
+            '检查打回。请给 public_id 加 global: 前缀，或把 realm 留空')
+    if target_realm != name_realm:
+        raise ValueError(
+            f'target_model={target!r} 与 public_id={public_id!r} 的版本不一致'
+            f'（按模型名判定分别为 {target_realm!r} / {name_realm!r}）：解析按请求'
+            '名的版本找行，命中后必被版本检查打回。请把 target_model 换成同版本的'
+            '模型，或改用带 global: 前缀的 public_id')
 
 
 def _norm_row(raw: object) -> dict[str, Any]:
