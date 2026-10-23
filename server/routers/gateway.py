@@ -350,6 +350,18 @@ def _log_ip(ip: str, path: str, blocked: bool, ua: str | None,
     db.add_ip_access_log(ip, path, blocked, ua, reason)
 
 
+
+# 上游只给机器码、不给 gateway_hint 的两类图片错误（契约 §5）：由 manager 补一句
+# 可执行建议，让 Anthropic / Responses 的翻译层也能把建议带到客户端。
+_UPSTREAM_CODE_HINTS = {
+    'too_many_images': (
+        'request has too many images; reduce images in messages or raise '
+        'upstream.max_images (manager: settings -> upstream)'
+    ),
+    'model_capability_mismatch': (
+        'the selected model does not support image input; remove images or choose another model'
+    ),
+}
 def _error_hint(data: object) -> str | None:
     """从上游错误体里取 `error.gateway_hint`（取不到返回 None）。
 
@@ -370,6 +382,11 @@ def _error_hint(data: object) -> str | None:
     hint = err.get('gateway_hint')
     if isinstance(hint, str) and hint.strip():
         return hint.strip()[:300]
+    code = err.get('code')
+    if isinstance(code, str):
+        mapped = _UPSTREAM_CODE_HINTS.get(code)
+        if mapped:
+            return mapped
     return None
 
 

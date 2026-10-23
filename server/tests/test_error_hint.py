@@ -150,5 +150,25 @@ class StreamingErrorKeepsHintTest(unittest.TestCase):
         self.assertIn('all accounts busy', text, 'message 原文也该在')
 
 
+class UpstreamCodeHintTest(unittest.TestCase):
+    """图片类错误只有机器码、没有 gateway_hint 时，manager 补一句可执行建议。"""
+
+    def test_too_many_images_gets_actionable_hint(self) -> None:
+        got = gateway._error_hint({'error': {'code': 'too_many_images', 'message': 'x'}})
+        self.assertIn('max_images', got or '')
+        self.assertIn('reduce images', got or '')
+
+    def test_model_capability_mismatch_gets_actionable_hint(self) -> None:
+        got = gateway._error_hint({'error': {'code': 'model_capability_mismatch', 'message': 'x'}})
+        self.assertIn('does not support image input', got or '')
+
+    def test_upstream_gateway_hint_wins_over_code_fallback(self) -> None:
+        got = gateway._error_hint({'error': {
+            'code': 'too_many_images', 'gateway_hint': 'upstream says this'}})
+        self.assertEqual(got, 'upstream says this')
+
+    def test_unknown_code_stays_none(self) -> None:
+        self.assertIsNone(gateway._error_hint({'error': {'code': 'something_else'}}))
+
 if __name__ == '__main__':
     unittest.main()
