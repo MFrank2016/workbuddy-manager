@@ -497,6 +497,44 @@ def validate_ip_only(key: dict, ip: str) -> str | None:
     return None
 
 
+def _validate_state(key: dict) -> str | None:
+    """密钥自身的可用性（停用 / 过期 / token 配额 / 积分配额）。
+
+    billing（Todo 17）与 tools（Todo 28）都要先过这一层；billing 要跳过它，
+    tools 要在它之上再加 IP 关。抽出来是为了让两处判定逐字一致。
+    """
+    if not key['enabled']:
+        return Rejection('密钥已停用', 403, 'permission_error', 'key_disabled')
+    if key['expires_at'] and key['expires_at'] < time.time():
+        return Rejection('密钥已过期', 403, 'permission_error', 'key_expired')
+    if key['quota'] and key['used_tokens'] >= key['quota']:
+        # 配额用尽与认证无关，用 429 才对（403 会被客户端读成「密钥无效」：
+        # 用户于是去查密钥、而不是去调额度，方向就被带偏了）。
+        return Rejection('密钥配额已用尽', 429, 'insufficient_quota', 'quota_exhausted')
+    # 积分额度（issue #27）：与 token 额度**各自独立**，任一超限即拦。
+    # 文案里带上具体数字：这个额度是按真实扣费算的，用户需要知道「超了多少、
+    # 该充多少」，只说「已用尽」会让他去翻日志。
+    if key['quota_credit'] and key['used_credit'] >= key['quota_credit']:
+        return Rejection(
+            f'密钥积分额度已用尽（已用 {key["used_credit"]:g} / 上限 {key["quota_credit"]:g}）',
+            429, 'insufficient_quota', 'credit_quota_exhausted')
+    return None
+
+
+def validate_tools(key: dict, ip: str) -> str | None:
+    """tools 入口（/v1/search、/v1/mcp）的密钥判定（契约 §4 / Todo 28）。
+
+    = `_validate_state`（enabled/expiry/quota/quota_credit）+ `validate_ip_only`
+    （全局 IP 在网关侧先跑，这里只管 key 级 ip_allowlist/max_ips）。
+    **跳过 realm 与模型白名单**：search/MCP 没有 model 维度，按模型白名单拒
+    会让「只开了白名单模型」的密钥连搜索都用不了；realm 由 X-WB2A-Realm
+    与 core 侧校验。
+    """
+    if reason := _validate_state(key):
+        return reason
+    return validate_ip_only(key, ip)
+
+
 def validate(key: dict, ip: str, model: str | None,
              *, is_model_list: bool = False,
              mapped_model: str | None = None) -> str | None:
@@ -517,21 +555,8 @@ def validate(key: dict, ip: str, model: str | None,
         `gateway._scope_models`）。改成判映射后的名字，会让「白名单里写别名」
         的密钥反被拒掉，与列表自相矛盾——issue #46 修的正是这处一致性。
     """
-    if not key['enabled']:
-        return Rejection('密钥已停用', 403, 'permission_error', 'key_disabled')
-    if key['expires_at'] and key['expires_at'] < time.time():
-        return Rejection('密钥已过期', 403, 'permission_error', 'key_expired')
-    if key['quota'] and key['used_tokens'] >= key['quota']:
-        # 配额用尽与认证无关，用 429 才对（403 会被客户端读成「密钥无效」：
-        # 用户于是去查密钥、而不是去调额度，方向就被带偏了）。
-        return Rejection('密钥配额已用尽', 429, 'insufficient_quota', 'quota_exhausted')
-    # 积分额度（issue #27）：与 token 额度**各自独立**，任一超限即拦。
-    # 文案里带上具体数字：这个额度是按真实扣费算的，用户需要知道「超了多少、
-    # 该充多少」，只说「已用尽」会让他去翻日志。
-    if key['quota_credit'] and key['used_credit'] >= key['quota_credit']:
-        return Rejection(
-            f'密钥积分额度已用尽（已用 {key["used_credit"]:g} / 上限 {key["quota_credit"]:g}）',
-            429, 'insufficient_quota', 'credit_quota_exhausted')
+    if reason := _validate_state(key):
+        return reason
 
     # IP 这一层抽在 `validate_ip_only` 里：billing / tools 入口只过 IP 关时
     # 复用同一份判定，语义（400 码与文案）不会在两条路径上漂移。

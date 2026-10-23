@@ -17,7 +17,7 @@ from .stdio_utf8 import force_utf8_stdio
 from .routers import (
     accounts, anthropic, auth, gateway, keys, logs, models, playground,
     pgsync as pgsync_router, redpackets, responses, security as security_router,
-    proxies, settings, stats, system, tokens, upstreams,
+    proxies, settings, stats, system, tokens, tools, upstreams,
 )
 from .services import (accountlog, cooling, dailyplan, modelroutes, pgsync, renew,
                        tasklog, taskrun)
@@ -202,6 +202,9 @@ app.include_router(anthropic.router)
 # OpenAI Responses API 兼容层（/v1/responses、/responses）——给 Codex /
 # DeepSeek Harness 的 openai-responses 协议用
 app.include_router(responses.router)
+# 工具端点（迁移 Todo 28）：/v1/search 与 /v1/mcp 的鉴权/限流/转发。
+# 开关关闭时两个端点各自回 404，与路由未注册不可区分。
+app.include_router(tools.router)
 
 
 @app.middleware('http')
