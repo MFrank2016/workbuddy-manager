@@ -316,6 +316,82 @@ def save_billing_settings(body: dict, request: Request,
     return billing.settings_view()
 
 
+# ── Responses 投影 / 工具参数修复（迁移 Todo 16，契约 §5）──
+#
+# 这四个键都是 **manager 本地设置**（db settings），不是 core config.json 的段：
+# responses 端点在本服务里实现，投影/修复也在这里做。读对 viewer 开放（只读
+# 角色也要知道请求会不会被改写），写只对会话管理员开放。
+#
+# 校验口径与 responses.py / toolrepair.py 的读取端保持一致：
+#   · mode 只认 passthrough | balanced；
+#   · max_item_bytes 只认 0（不限制）或 >=256；
+#   · 两个修复开关只认真布尔（字符串 "true" 不算开启）。
+_RESPONSES_MODE_KEY = 'responses_projection_mode'
+_RESPONSES_MAX_KEY = 'responses_projection_max_item_bytes'
+_RESPONSES_MODES = ('passthrough', 'balanced')
+_RESPONSES_MIN_BYTES = 256
+_RESPONSES_DEFAULT_MAX_BYTES = 40000
+
+
+def _responses_view() -> dict:
+    mode = db.get_setting(_RESPONSES_MODE_KEY, 'passthrough')
+    if mode not in _RESPONSES_MODES:
+        mode = 'passthrough'
+    raw = db.get_setting(_RESPONSES_MAX_KEY, _RESPONSES_DEFAULT_MAX_BYTES)
+    budget = raw if isinstance(raw, int) and not isinstance(raw, bool) else _RESPONSES_DEFAULT_MAX_BYTES
+    if budget != 0 and budget < _RESPONSES_MIN_BYTES:
+        budget = _RESPONSES_DEFAULT_MAX_BYTES
+    return {
+        'projection_mode': mode,
+        'max_item_bytes': budget,
+        'tool_repair': db.get_setting('tool_repair', False) is True,
+        'tool_repair_recall': db.get_setting('tool_repair_recall', False) is True,
+    }
+
+
+@router.get('/settings/responses')
+def get_responses_settings(user: dict = Depends(security.current_user)) -> dict:
+    """读 Responses 投影 / 工具修复设置（任何已登录用户）。"""
+    return _responses_view()
+
+
+@router.post('/settings/responses')
+def save_responses_settings(body: dict, request: Request,
+                            user: dict = Depends(security.require_session_admin)) -> dict:
+    """保存 Responses 设置（**部分更新**：只写提交了的键）。
+
+    非法值 400 且不改库；未知键也 400（拼错键名不能静默成功）。
+    审计只记改了哪几项 → 新值，不含请求体原文。
+    """
+    allowed = {'projection_mode', 'max_item_bytes', 'tool_repair', 'tool_repair_recall'}
+    unknown = sorted(set(body) - allowed)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"未知设置项：{', '.join(unknown)}")
+    updates: dict[str, object] = {}
+    if 'projection_mode' in body:
+        mode = body['projection_mode']
+        if mode not in _RESPONSES_MODES:
+            raise HTTPException(status_code=400, detail='projection_mode 只能是 passthrough 或 balanced')
+        updates[_RESPONSES_MODE_KEY] = mode
+    if 'max_item_bytes' in body:
+        raw = body['max_item_bytes']
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise HTTPException(status_code=400, detail='max_item_bytes 必须是整数')
+        if raw != 0 and raw < _RESPONSES_MIN_BYTES:
+            raise HTTPException(status_code=400, detail=f'max_item_bytes 只能是 0 或 >= {_RESPONSES_MIN_BYTES}')
+        updates[_RESPONSES_MAX_KEY] = raw
+    for key in ('tool_repair', 'tool_repair_recall'):
+        if key in body:
+            if not isinstance(body[key], bool):
+                raise HTTPException(status_code=400, detail=f'{key} 必须是布尔值')
+            updates[key] = body[key]
+    for key, value in updates.items():
+        db.set_setting(key, value)
+    changed = '，'.join(f'{k}={v}' for k, v in sorted(updates.items()))
+    security.audit(user, 'update_responses_settings', '',
+                   f"{changed or '（无改动）'}；来源 {client_ip(request)}")
+    return _responses_view()
+
 # ── 日志保留策略（迁移 C2：`log_retention_overrides`）───────
 @router.get('/settings/log-retention')
 def get_log_retention(user: dict = Depends(security.current_user)) -> dict:

@@ -57,6 +57,7 @@ import {TokensPanel} from '@/components/common/settings/TokensPanel';
 import {ChangelogPanel} from '@/components/common/settings/ChangelogPanel';
 import {UpstreamReloadNotice} from '@/components/common/settings/UpstreamReloadNotice';
 import {ModelRoutesPanel} from '@/components/common/settings/ModelRoutesPanel';
+import {ResponsesPanel} from '@/components/common/settings/ResponsesPanel';
 import {CopyButton} from '@/components/ui/copy-button';
 import {Button} from '@/components/ui/button';
 import {Badge} from '@/components/ui/badge';
@@ -609,6 +610,37 @@ const UPSTREAM_FIELDS: Field[] = [
     desc: '是否把客户端 IP（X-Forwarded-For / X-Real-IP）透传给上游。缺省关闭——不把内网/代理 IP 暴露给上游',
     def: false,
   },
+  // 图片策略（契约 §5 / 上游 upstream.*）。这三个键只作用于**默认上游**：
+  // 非默认分组请到该实例自己的面板/配置文件里改（UpstreamEndpoints 有说明）。
+  {
+    key: 'max_images',
+    kind: 'num',
+    label: '单请求图片上限',
+    desc: '一次请求最多保留多少张图片（0 = 不限）。truncate 保留最新的 N 张，error 直接拒绝。只作用于默认上游',
+    unit: '张',
+    min: 0,
+    max: 100,
+    def: 0,
+  },
+  {
+    key: 'image_policy',
+    kind: 'select',
+    label: '超限图片策略',
+    desc: '请求图片数超过上限时怎么处理：passthrough 原样透传、truncate 保留最新 N 张、error 返回 413。只作用于默认上游',
+    options: [
+      {value: 'passthrough', label: 'passthrough（不处理，默认）'},
+      {value: 'truncate', label: 'truncate（保留最新 N 张）'},
+      {value: 'error', label: 'error（超限直接拒绝）'},
+    ],
+    def: 'passthrough',
+  },
+  {
+    key: 'capability_guard',
+    kind: 'bool',
+    label: '图片能力预检',
+    desc: '开启后，模型目录**显式**声明不支持图片时，带图请求在选号前直接 400；目录未声明能力时放行（fail-open）。只作用于默认上游',
+    def: false,
+  },
 ];
 
 /**
@@ -741,8 +773,9 @@ const GROUPS: GroupDef[] = [
   {
     id: 'upstream',
     section: 'upstream',
-    title: '出站标识',
-    desc: '网关向腾讯发起请求时的客户端标识',
+    title: '默认上游 · 出站标识与图片策略',
+    desc: '网关向腾讯发起请求时的客户端标识，以及图片数量/能力预检。'
+      + '这些字段只作用于**默认上游**；其它分组请到该实例自己的面板或配置文件里改',
     fields: UPSTREAM_FIELDS,
   },
   {
@@ -1349,6 +1382,9 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
               放在 config.json 字段之前：它是「本端接了几个上游」的清单，
               而下面那批字段描述的是**默认上游自身**的配置。 */}
           <UpstreamEndpoints />
+          {/* Responses 投影 / 工具修复是 manager 本地设置，走 /api/settings/responses；
+              放在这里是因为它与「默认上游的出站行为」相邻，且默认 Tab 最容易找到。 */}
+          <ResponsesPanel />
           {upstreamError && (
             <div className="flex items-start gap-2.5 rounded-[20px] border border-amber-500/30 bg-amber-500/10 p-4">
               <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
