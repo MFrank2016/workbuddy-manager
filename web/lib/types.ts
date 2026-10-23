@@ -713,6 +713,17 @@ export interface RequestLog {
    * 稍后刷新即有）。null 也可能是「日志已滚掉」或「上游没在跑容器」。
    */
   account: string | null;
+  /**
+   * 版本（`cn` / `global`）：后端已把历史 NULL 归为 `cn`（与 db.realm_of_model
+   * 同一口径），所以这里不会是空串。抽屉里按它显示国内版 / 国际版。
+   */
+  realm?: 'cn' | 'global' | null;
+  /**
+   * 工具参数修复结果（契约 §5）：`none` / `fixed` / `failed` / `recalled`。
+   * 旧记录与未开修复的请求都是 `none`；**未知值原样显示**，不要渲染成空白。
+   * 可选：老版本后端不返回该字段，界面按 `none` 处理。
+   */
+  tool_repair?: string | null;
 }
 
 export interface UsagePoint {

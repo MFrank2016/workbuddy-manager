@@ -9,6 +9,8 @@ import {useAsyncAll} from '@/lib/use-async-data';
 import {useDebounced} from '@/lib/use-debounce';
 import type {ApiKey, RequestLog} from '@/lib/types';
 import {fmtCredit, fmtDateTime, fmtDateTimeMarked, fmtLatency, fmtNumber} from '@/lib/format';
+import {logDetailRows} from '@/lib/log-detail';
+import {cn} from '@/lib/utils';
 import {PageHeader} from '@/components/common/layout/PageHeader';
 import {EmptyState} from '@/components/common/layout/EmptyState';
 import {ConfirmDialog} from '@/components/common/layout/ConfirmDialog';
@@ -18,7 +20,7 @@ import {useAuth} from '@/lib/auth-context';
 import {useRealm} from '@/lib/realm-context';
 import {Button} from '@/components/ui/button';
 import {CopyButton} from '@/components/ui/copy-button';
-import {useT} from '@/lib/i18n/provider';
+import {useI18n} from '@/lib/i18n/provider';
 import {Badge} from '@/components/ui/badge';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
@@ -103,7 +105,7 @@ function AccountCell({account}: {account: string | null}) {
 }
 
 export default function LogsPage() {
-  const t = useT();
+  const {t, locale} = useI18n();
   const {isAdmin} = useAuth();
   // 日志随顶部版本切换：两个版本走不同账号池，混看会把两个池子的调用搅在一起
   const {realm} = useRealm();
@@ -534,69 +536,34 @@ export default function LogsPage() {
           </DrawerHeader>
           {detail && (
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-8 text-xs">
-              {([
-                ['ip', t('logs.rowIp'), detail.ip],
-                ['key', t('logs.rowKey'), detail.key_name || '—'],
-                // 账号来自上游日志回填，可能比请求本身晚几秒；这里只能说
-                // “尚未采集”，不能写成“非流式请求”——那是在猜原因。
-                ['account', t('logs.rowAccount'), detail.account || t('logs.accountPending')],
-                ['model', t('logs.rowModel'), detail.model || '—'],
-                ['mapped', t('logs.rowMappedModel'), detail.mapped_model || '—'],
-                ['status', t('logs.rowStatus'), String(detail.status)],
-                [
-                  'firstToken',
-                  t('logs.rowFirstToken'),
-                  detail.first_token_ms != null
-                    ? fmtLatency(detail.first_token_ms)
-                    : t('logs.notCollected'),
-                ],
-                ['latency', t('logs.rowLatency'), fmtLatency(detail.latency_ms)],
-                ['promptTokens', 'Prompt Token', fmtNumber(detail.prompt_tokens)],
-                ['completionTokens', 'Completion Token', fmtNumber(detail.completion_tokens)],
-                // 提示词缓存三段（issue #69）。null 显示「未采集」而不是 0：
-                // 老上游不返回这三个字段，显示 0 会让人以为缓存从未生效。
-                [
-                  'cacheHit',
-                  t('logs.rowCacheHit'),
-                  detail.cache_hit_tokens != null
-                    ? fmtNumber(detail.cache_hit_tokens)
-                    : t('logs.notCollected'),
-                ],
-                [
-                  'cacheMiss',
-                  t('logs.rowCacheMiss'),
-                  detail.cache_miss_tokens != null
-                    ? fmtNumber(detail.cache_miss_tokens)
-                    : t('logs.notCollected'),
-                ],
-                [
-                  'cacheWrite',
-                  t('logs.rowCacheWrite'),
-                  detail.cache_write_tokens != null
-                    ? fmtNumber(detail.cache_write_tokens)
-                    : t('logs.notCollected'),
-                ],
-                [
-                  'credit',
-                  t('logs.rowCredit'),
-                  typeof detail.credit === 'number'
-                    ? fmtCredit(detail.credit) + (detail.credit > 0 ? '' : t('logs.unbilled'))
-                    : t('logs.noCredit'),
-                ],
-                ['stream', t('logs.rowStream'), detail.stream ? t('common.yes') : t('common.no')],
-                ['ua', 'User-Agent', detail.ua || '—'],
-                ['error', t('logs.rowError'), detail.error || '—'],
-              ] as [string, string, string][]).map(([id, k, v]) => {
-                // 这些字段内容较长且常需要贴出来（排查 / 反馈），给出复制入口
-                const copyable = ['ip', 'ua', 'error'].includes(id) && v !== '—';
-                return (
-                  <div key={id} className="flex items-start gap-3">
-                    <div className="w-32 shrink-0 text-muted-foreground">{k}</div>
-                    <div className="min-w-0 flex-1 break-all font-mono">{v}</div>
-                    {copyable && <CopyButton value={v} title={t('logs.copyField', {field: k})} className="-mt-1" />}
+              {logDetailRows(detail, {t, n: fmtNumber, locale}).map((row) => (
+                <div key={row.id} className="flex items-start gap-3">
+                  {/* 标签列在窄屏上收窄：`w-32` 固定宽在 375px 视口里会吃掉一半
+                      宽度，值那一侧只剩几十像素、每个字都换行。 */}
+                  <div className="w-20 shrink-0 text-muted-foreground sm:w-32">{row.label}</div>
+                  {/* 值一律 `break-all`：UA / 错误里可能有一长串没有空格的 base64 或 URL，
+                      不换行就会把抽屉顶宽（窄屏上整页横向滚动）。长文本再限高滚动，
+                      免得一条几万字的堆栈把下面的字段挤出屏幕。 */}
+                  <div
+                    className={cn(
+                      'min-w-0 flex-1 break-all font-mono',
+                      row.tone === 'ok' && 'text-emerald-600 dark:text-emerald-400',
+                      row.tone === 'warn' && 'text-amber-600 dark:text-amber-400',
+                      row.tone === 'bad' && 'text-red-600 dark:text-red-400',
+                      row.scroll && 'scroll-slim max-h-48 overflow-y-auto whitespace-pre-wrap',
+                    )}
+                  >
+                    {row.value}
                   </div>
-                );
-              })}
+                  {row.copyable && (
+                    <CopyButton
+                      value={row.value}
+                      title={t('logs.copyField', {field: row.label})}
+                      className="-mt-1 shrink-0"
+                    />
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </DrawerContent>

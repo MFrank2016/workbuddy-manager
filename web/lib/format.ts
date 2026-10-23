@@ -6,6 +6,7 @@
  * 因此本文件里不要写死任何语言：日期、数字、时长、相对时间都跟随界面语言。
  */
 import {intlLocale, t} from '@/lib/i18n';
+import {creditText, latencyText} from '@/lib/log-detail';
 
 /** 秒级时长格式化：已过期 / 分钟 / 小时 / 天 */
 export function fmtRemain(seconds: number): string {
@@ -98,9 +99,9 @@ export function fmtCompact(n: number | null | undefined): string {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
+/** 耗时格式化：不足 1 秒用毫秒，否则用秒（两位小数）。实现见 `lib/log-detail`。 */
 export function fmtLatency(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(2)}s`;
+  return latencyText(ms);
 }
 
 /** Token 有效期的语义分档，账号列表与仪表盘共用同一套规则 */
@@ -259,12 +260,10 @@ export async function copyText(text: string): Promise<boolean> {
 /**
  * 扣费金额格式化（上游 usage.credit）。
  * 单次调用常是 0.0x 量级，直接 toLocaleString 会显示成 0，因此小数值保留
- * 最多 4 位有效小数；整数则按千分位显示。
+ * 最多 4 位有效小数；整数则按千分位显示。**null 与 0 严格分开**（null = 上游
+ * 没返回，0 = 确实没扣费）。实现只有一份，在 `lib/log-detail` 的 `creditText`，
+ * 这里只补上当前界面语言。
  */
 export function fmtCredit(v: number | null | undefined): string {
-  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
-  if (v === 0) return '0';
-  if (Math.abs(v) >= 100) return Math.round(v).toLocaleString(intlLocale());
-  if (Math.abs(v) >= 1) return v.toFixed(2);
-  return v.toFixed(4);
+  return creditText(v, intlLocale());
 }
