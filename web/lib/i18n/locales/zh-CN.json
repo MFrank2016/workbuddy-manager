@@ -294,6 +294,9 @@
     "throughputHint": "按 {n} 条成功请求的生成耗时估算（只覆盖日志保留期）"
   },
   "accounts": {
+    "colProfile": "产品 Profile",
+    "profileFilterLabel": "按 Profile 筛选",
+    "profileFilterAll": "全部 Profile",
     "proxyLine": "出口线路",
     "proxyDirect": "默认出口",
     "proxyDirectOnly": "直连（不走代理）",

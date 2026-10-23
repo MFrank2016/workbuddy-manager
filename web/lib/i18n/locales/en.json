@@ -321,6 +321,9 @@
     "throughputHint": "Estimated from {n} successful requests (request-log retention window only)"
   },
   "accounts": {
+    "colProfile": "Profile",
+    "profileFilterLabel": "Filter by profile",
+    "profileFilterAll": "All profiles",
     "proxyLine": "Exit route",
     "proxyDirect": "Default route",
     "proxyDirectOnly": "Direct (no proxy)",

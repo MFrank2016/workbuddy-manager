@@ -39,6 +39,23 @@ export function profileRealmConflict(
   return `profile ${prof} belongs to ${want}, which conflicts with the pinned edition ${rlm}`;
 }
 
+/**
+ * 账号的**有效版本**（迁移 Todo 23）：优先用 profile 推导，其次 realm。
+ *
+ * 为什么需要：intl-cli 的典型 domain 是 codebuddy.ai，按旧域名规则
+ * （只认 workbuddy.ai）会被判成 cn。账号列表的版本过滤必须按 profile 推导，
+ * 否则「切到国际版看不到 intl-cli 账号」——而它明明是国际版端点。
+ */
+export function accountRealm(a: {
+  profile_realm?: string | null;
+  effective_profile?: string | null;
+  realm?: string | null;
+} | null | undefined): 'cn' | 'global' {
+  const fromProfile = profileRealm(a?.profile_realm ?? a?.effective_profile);
+  if (fromProfile) return fromProfile;
+  return String(a?.realm ?? '').trim().toLowerCase() === 'global' ? 'global' : 'cn';
+}
+
 /** 归一化表单里的 profile：非法/空 → ''（= 不限）。 */
 export function normalizeProfile(value: unknown): Profile | '' {
   const v = String(value ?? '').trim().toLowerCase();

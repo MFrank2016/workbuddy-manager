@@ -294,6 +294,9 @@
     "throughputHint": "依 {n} 筆成功請求的生成耗時估算（僅涵蓋日誌保留期間）"
   },
   "accounts": {
+    "colProfile": "產品 Profile",
+    "profileFilterLabel": "依 Profile 篩選",
+    "profileFilterAll": "全部 Profile",
     "proxyLine": "出口線路",
     "proxyDirect": "預設出口",
     "proxyDirectOnly": "直連（不走代理）",

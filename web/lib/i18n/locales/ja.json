@@ -294,6 +294,9 @@
     "throughputHint": "{n} 件の成功リクエストの生成時間から推定（ログ保持期間内のみ）"
   },
   "accounts": {
+    "colProfile": "プロファイル",
+    "profileFilterLabel": "プロファイルで絞り込み",
+    "profileFilterAll": "すべてのプロファイル",
     "proxyLine": "送信経路",
     "proxyDirect": "既定の経路",
     "proxyDirectOnly": "直接接続（プロキシなし）",

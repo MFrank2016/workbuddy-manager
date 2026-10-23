@@ -294,6 +294,9 @@
     "throughputHint": "성공한 요청 {n}건의 생성 시간으로 추정(로그 보존 기간만)"
   },
   "accounts": {
+    "colProfile": "프로필",
+    "profileFilterLabel": "프로필로 필터",
+    "profileFilterAll": "모든 프로필",
     "proxyLine": "송신 경로",
     "proxyDirect": "기본 경로",
     "proxyDirectOnly": "직접 연결(프록시 없음)",
