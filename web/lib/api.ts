@@ -35,6 +35,7 @@ import type {
   KeyImportResult,
   KeyImportStatus,
   LogRetention,
+  ResponsesSettings,
   Me,
   ModelCatalog,
   ModelListResponse,
@@ -726,6 +727,10 @@ export const settingsApi = {
   modelRoutesConfig: () => get<{enabled: boolean}>('/api/settings/model-routes/config'),
   saveModelRoutesConfig: (enabled: boolean) =>
     post<{enabled: boolean}>('/api/settings/model-routes/config', {enabled}),
+  /** Responses 投影 / 工具修复（迁移 Todo 16）：GET 不限角色，POST 仅会话管理员 */
+  responses: () => get<ResponsesSettings>('/api/settings/responses'),
+  saveResponses: (body: Partial<ResponsesSettings>) =>
+    post<ResponsesSettings>('/api/settings/responses', body),
   users: () => get<UserItem[]>('/api/users'),
   /** 管理端审计日志（登录/改密码/增删用户等，仅管理员可读） */
   auditLogs: (limit = 200) => get<AuditLogPage>('/api/audit-logs', {limit}),

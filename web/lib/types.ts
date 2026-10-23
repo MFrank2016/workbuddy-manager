@@ -404,6 +404,13 @@ export interface CatalogModel {
   image_input_sources?: Record<string, boolean | null>;
   /** 系列归属（按 id 前缀推导，仅用于分组浏览） */
   series: string;
+  /**
+   * 该模型在哪些上游分组里可用（迁移 Todo 18/19）。
+   *
+   * **只有** `catalog_group_merge` 打开时后端才返回；关闭 / 老后端时是
+   * undefined（界面显示「—」，不要当成「所有组都可用」）。
+   */
+  available_in_groups?: number[];
 }
 
 export interface CatalogSummary {
@@ -1532,6 +1539,20 @@ export interface LogRetention {
   effective: Record<RetentionKey, number>;
   /** 每项的合法范围（天数为 1–3650，行数为 1–1000000） */
   bounds: Record<RetentionKey, {min: number; max: number}>;
+}
+
+
+/**
+ * Responses 投影 / 工具参数修复设置（迁移 Todo 16，契约 §5）。
+ *
+ * 这四个键是 manager 本地设置（db settings），不是 core config.json：responses
+ * 端点在本服务里实现，投影与修复也在这里做。`max_item_bytes=0` 表示不限制。
+ */
+export interface ResponsesSettings {
+  projection_mode: 'passthrough' | 'balanced';
+  max_item_bytes: number;
+  tool_repair: boolean;
+  tool_repair_recall: boolean;
 }
 
 /**

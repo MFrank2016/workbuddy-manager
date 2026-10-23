@@ -29,13 +29,13 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import {modelApi} from '@/lib/api';
+import {modelApi, upstreamsApi} from '@/lib/api';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {useRealm} from '@/lib/realm-context';
 import {notify} from '@/lib/toast';
 import {useT} from '@/lib/i18n/provider';
 import {cn} from '@/lib/utils';
-import type {CatalogModel, ModelCatalog} from '@/lib/types';
+import type {CatalogModel, ModelCatalog, UpstreamEndpoint} from '@/lib/types';
 
 /** 上下文窗口显示：131072 → 128K；1048576 → 1M；0 → — */
 function fmtCtx(n: number): string {
@@ -149,9 +149,18 @@ export default function ModelsPage() {
    */
   const {values, isInitialLoading, isInitialFailed, isRefreshing, reload} = useAsyncAll({
     catalog: () => modelApi.catalog(realm, forceNext.current),
+    // 分组名用于「可用分组」列：catalog 只给 id，直接显示 #3 对用户没有意义。
+    groups: () => upstreamsApi.list(),
   }, [realm]);
 
   const data: ModelCatalog | null = values.catalog ?? null;
+  const groupName = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const g of (values.groups?.items ?? []) as UpstreamEndpoint[]) {
+      if (g.id != null) map.set(g.id, g.name);
+    }
+    return map;
+  }, [values.groups]);
 
   /**
    * 切版本时清掉筛选状态，避免「上一版的系列筛选把新版过滤成空」。
@@ -430,6 +439,7 @@ export default function ModelsPage() {
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colContext')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colMaxOutput')}</TableHead>
                     <TableHead className="text-[11px] text-muted-foreground">{t('models.colEfforts')}</TableHead>
+                    <TableHead className="text-[11px] text-muted-foreground">{t('models.colGroups')}</TableHead>
                     <TableHead className="pr-4 text-[11px] text-muted-foreground">{t('models.series')}</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -477,6 +487,19 @@ export default function ModelsPage() {
                           </div>
                         ) : (
                           <span className="text-[11px] text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-[11px] text-muted-foreground">
+                        {m.available_in_groups?.length ? (
+                          <div className="flex flex-wrap items-center gap-1">
+                            {m.available_in_groups.map((id) => (
+                              <Badge key={id} variant="secondary" className="rounded-md text-[10px]">
+                                {groupName.get(id) ?? `#${id}`}
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <span title={t('models.groupsHint')}>—</span>
                         )}
                       </TableCell>
                       <TableCell className="pr-4">

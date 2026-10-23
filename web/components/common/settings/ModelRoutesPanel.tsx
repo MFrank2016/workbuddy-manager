@@ -321,6 +321,16 @@ export function ModelRoutesPanel() {
                       +{t('settings.routesKeepOriginalShort')}
                     </span>
                   )}
+                  {/* override 只影响模型中心的展示与排序，**不参与计费**：
+                      这里如实显示，避免有人把它当成「按这个价扣费」。 */}
+                  {route.credits_override != null && (
+                    <span className="ml-1.5 font-sans text-[10px] text-amber-600 dark:text-amber-400"
+                          title={t('settings.routesCreditsHint')}>
+                      {route.credits_override === 0
+                        ? t('settings.routesCreditsFree')
+                        : t('settings.routesCreditsValue', {value: route.credits_override})}
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell className="text-[11px]">
                   {route.realm || t('settings.routesRealmAny')}
