@@ -70,6 +70,51 @@ def profile_realm(profile: object) -> str:
     return ''
 
 
+def normalize_profile(value: object) -> str:
+    """归一化 profile：只接受契约 §1 的 4 个值；其余（含空）→ ''。"""
+    name = str(value or '').strip().lower()
+    return name if name in PROFILES else ''
+
+
+def profile_for_domain(domain: object) -> str:
+    """按 4-host 表推导 profile；共用 host 不猜（返回 ''）。
+
+    与 core `profileForDomain` 同一张表：只列能唯一确定 profile 的 host。
+    """
+    d = str(domain or '').strip().lower()
+    return {
+        'copilot.tencent.com': 'cn-cli',
+        'www.workbuddy.cn': 'cn-work',
+        'www.codebuddy.ai': 'intl-cli',
+        'www.workbuddy.ai': 'intl-work',
+    }.get(d, '')
+
+
+def resolve_profile(explicit: object, derived: object, raw_realm: object,
+                    domain: object) -> str:
+    """契约 §1 的 profile 选择链（manager 侧只读展示用）。
+
+    explicit > persisted derived（调用方只在 profile_backfill_v1=true 时传
+    derived）> stored realm > domain > cn-cli。
+
+    **与 core 的唯一区别**：core 的 `ResolveProfile` 不校验 explicit 是否在
+    4 个值内（那是写入侧 `_norm_profile` 的职责）；这里读的是磁盘上的存量文件，
+    可能来自旧版本/手写，所以认不出的 explicit 不采纳，继续往下推导。
+    """
+    p = normalize_profile(explicit)
+    if p:
+        return p
+    p = normalize_profile(derived)
+    if p:
+        return p
+    realm = str(raw_realm or '').strip().lower()
+    if realm == 'global':
+        return 'intl-work'
+    if realm == 'cn':
+        return 'cn-cli'
+    return profile_for_domain(domain) or 'cn-cli'
+
+
 def realm_conflict(profile: object, realm: object) -> str | None:
     """返回冲突说明；None = 一致（含任一为空 = 不限的情况）。
 

@@ -122,6 +122,19 @@ export interface Account {
   manual_reason?: string;
   /** 账号所属版本（cn / global）；存量账号按域名回退，无该字段时视为 cn */
   realm?: 'cn' | 'global';
+  /**
+   * 产品 profile（迁移 Todo 23）：磁盘上的显式值 / 推导值 / 是否可信。
+   *
+   * `effective_profile` 是后端按契约 §1 选择链算好的**展示值**（explicit >
+   * backfill 可信的 derived > realm > domain > cn-cli）；界面直接显示它，
+   * 不再自己拼一遍。`profile_realm` 用于让现有 realm 过滤识别 profile
+   * （intl-cli 的 domain 是 codebuddy.ai，按旧域名规则可能被误判为 cn）。
+   */
+  profile?: string;
+  profile_derived?: string;
+  profile_backfill_v1?: boolean;
+  effective_profile?: string;
+  profile_realm?: 'cn' | 'global' | '';
   /** 该版本是否支持签到体系（国际版没有） */
   checkin_supported?: boolean;
   /** auth 文件里的 domain，便于确认归属 */

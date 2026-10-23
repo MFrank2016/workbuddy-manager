@@ -76,6 +76,7 @@ import {AccountCoolingDialog} from '@/components/common/accounts/AccountCoolingD
 import {AccountTaskDialog} from '@/components/common/accounts/AccountTaskDialog';
 import {useAuth} from '@/lib/auth-context';
 import {realmLabel, useRealm} from '@/lib/realm-context';
+import {PROFILES, accountRealm, type Profile} from '@/lib/key-profile';
 import {useT} from '@/lib/i18n/provider';
 import {Button} from '@/components/ui/button';
 import {Badge} from '@/components/ui/badge';
@@ -141,6 +142,8 @@ export default function AccountsPage() {
   const [q, setQ] = useState('');
   const [statusGroup, setStatusGroup] = useState<GroupFilter>('all');
   const [sort, setSort] = useState<SortKey>('default');
+  /** profile 筛选（迁移 Todo 23）：空 = 全部；与版本筛选 AND。 */
+  const [profileFilter, setProfileFilter] = useState<'all' | Profile>('all');
   const [page, setPage] = useState(1);
   /**
    * 账号分组（多账号池）：一个分组 = 一套上游实例（账号池）。
@@ -411,8 +414,14 @@ export default function AccountsPage() {
    * 存量账号没有 realm 字段，后端按域名回退（多为 cn），与升级前一致。
    */
   const visible = useMemo(
-    () => merged.filter((a) => (a.realm ?? 'cn') === realm),
+    () => merged.filter((a) => accountRealm(a) === realm),
     [merged, realm],
+  );
+  const visibleByProfile = useMemo(
+    () => (profileFilter === 'all'
+      ? visible
+      : visible.filter((a) => a.effective_profile === profileFilter)),
+    [visible, profileFilter],
   );
 
   /**
@@ -422,8 +431,8 @@ export default function AccountsPage() {
    * 看不出池子本来的分布，也就失去了「一眼扫过」的意义。
    */
   const counts = useMemo(
-    () => groupCounts(visible.filter((a) => matchesQuery(a, q)), groupOf),
-    [visible, q],
+    () => groupCounts(visibleByProfile.filter((a) => matchesQuery(a, q)), groupOf),
+    [visibleByProfile, q],
   );
 
   /**
@@ -434,11 +443,11 @@ export default function AccountsPage() {
    */
   const filtered = useMemo(
     () =>
-      selectAccounts(visible, {q, group: statusGroup, sort}, {
+      selectAccounts(visibleByProfile, {q, group: statusGroup, sort}, {
         groupOf,
         creditOf: (a) => liveCredits[a.uid] ?? a.credits ?? null,
       }),
-    [visible, q, statusGroup, sort, liveCredits],
+    [visibleByProfile, q, statusGroup, sort, liveCredits],
   );
 
   const paged = useMemo(() => paginate(filtered, page, PAGE_SIZE), [filtered, page]);
@@ -454,13 +463,14 @@ export default function AccountsPage() {
   /** 三种「看不到账号」的原因，必须分开说——它们要用户做的事完全不同 */
   const noAccountsAtAll = merged.length === 0;
   const noAccountsInRealm = !noAccountsAtAll && visible.length === 0;
-  const noMatch = visible.length > 0 && filtered.length === 0;
+  const noMatch = visibleByProfile.length > 0 && filtered.length === 0;
 
   /** 清掉列表自己的筛选（不动分组，也不动版本） */
   function clearListFilters() {
     setQ('');
     setStatusGroup('all');
     setSort('default');
+    setProfileFilter('all');
     setPage(1);
   }
 
@@ -475,7 +485,7 @@ export default function AccountsPage() {
     () =>
       visible.filter(
         (a) =>
-          (a.realm ?? 'cn') === 'cn' &&
+          accountRealm(a) === 'cn' &&
           a.disabled_by_panel !== true &&
           a.checkin_today == null,
       ).length,
@@ -1420,6 +1430,15 @@ export default function AccountsPage() {
                   <SelectItem value="credits">{t('accounts.sortCredits')}</SelectItem>
                 </SelectContent>
               </Select>
+              <Select value={profileFilter} onValueChange={(v) => { setProfileFilter(v as 'all' | Profile); setPage(1); }}>
+                <SelectTrigger className="h-9 w-[150px] bg-background" aria-label={t('accounts.profileFilterLabel')}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t('accounts.profileFilterAll')}</SelectItem>
+                  {PROFILES.map((p) => (
+                    <SelectItem key={p} value={p}>{p}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
         </section>
@@ -1481,6 +1500,7 @@ export default function AccountsPage() {
               <TableHead className="pl-4 text-[11px] text-muted-foreground">{t('accounts.colNickname')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">UID</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
+              <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colProfile')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('metric.credits')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colExpiry')}</TableHead>
               {hasProxyUi && <TableHead className="text-[11px] text-muted-foreground">{t('accounts.proxyLine')}</TableHead>}
@@ -1507,12 +1527,12 @@ export default function AccountsPage() {
                       variant="secondary"
                       className={
                         'shrink-0 rounded-md px-1.5 py-0 text-[10px] ' +
-                        ((a.realm ?? 'cn') === 'global'
+                        (accountRealm(a) === 'global'
                           ? 'bg-sky-500/10 text-sky-700 dark:text-sky-400'
                           : '')
                       }
                     >
-                      {realmLabel(a.realm)}
+                      {realmLabel(accountRealm(a))}
                     </Badge>
                   </div>
                 </TableCell>
@@ -1522,6 +1542,15 @@ export default function AccountsPage() {
                     {renderStatus(a)}
                     {renderModelLimit(a)}
                   </div>
+                </TableCell>
+                <TableCell className="text-[11px]">
+                  {a.effective_profile ? (
+                    <Badge variant="secondary" className="rounded-md font-mono text-[10px]">
+                      {a.effective_profile}
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
                 </TableCell>
                 <TableCell>{renderCredits(a)}</TableCell>
                 <TableCell>{renderExpiry(a)}</TableCell>

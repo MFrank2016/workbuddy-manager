@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .. import config
 from .filelock import file_lock
+from . import keyprofiles as _keyprofiles
 from . import realm as _realm
 from .errtext import err_text
 from .realm import realm_of, supports_checkin
@@ -190,6 +191,29 @@ def token_issued_at(access_token: str) -> int | None:
     return times[0] if times else None
 
 
+def _profile_fields(raw: dict, auth: dict) -> dict:
+    """从一份 auth JSON 里取出 profile 三段与 effective profile（Todo 23）。
+
+    兼容嵌套形（profile 在顶层）与扁平形（profile 在 auth 内）。推导值只在
+    `profile_backfill_v1=true` 时可信（与 core `auth.Parse` 同一条约束）。
+    """
+    explicit = raw.get('profile') or auth.get('profile') or ''
+    derived = raw.get('profile_derived') or auth.get('profile_derived') or ''
+    backfill = (raw.get('profile_backfill_v1') if 'profile_backfill_v1' in raw
+                else auth.get('profile_backfill_v1')) is True
+    raw_realm = raw.get('realm') or auth.get('realm') or ''
+    domain = auth.get('domain') or ''
+    effective = _keyprofiles.resolve_profile(
+        explicit, derived if backfill else '', raw_realm, domain)
+    return {
+        'profile': str(explicit or ''),
+        'profile_derived': str(derived or ''),
+        'profile_backfill_v1': backfill,
+        'effective_profile': effective,
+        'profile_realm': _keyprofiles.profile_realm(effective),
+    }
+
+
 def list_auth_accounts(auth_dir: Path | None = None) -> list[dict]:
     """读取 auths/ 目录下的本地账号（与 /status 的运行时状态互补）。
 
@@ -267,6 +291,11 @@ def list_auth_accounts(auth_dir: Path | None = None) -> list[dict]:
                 # 按 domain 回退，domain 也为空则判 cn（行为与升级前一致）
                 'realm': realm_of({'realm': raw.get('realm') or auth.get('realm'),
                                    'domain': auth.get('domain')}),
+                # 产品 profile（迁移 Todo 23）：磁盘上可能有三段——
+                # 显式 profile / 推导 profile_derived（仅 backfill_v1 可信）/ 都没有。
+                # effective_profile 按契约 §1 的链算好，界面直接显示它，
+                # 不再自己拼一遍（拼错会显示成与 core 不同的 profile）。
+                **_profile_fields(raw, auth),
                 'domain': str(auth.get('domain') or ''),
                 # 手写权重（issue #187）：0 = 未设置（上游按 1.0 处理）。
                 # 原样给出，不做钳制——界面要按文件里的真实值回显，
