@@ -179,3 +179,43 @@
 - HttpOnly 签名 Cookie 会话，同 IP 连续失败 5 次锁定 10 分钟
 
 ---
+
+### 2026-10 迁移新增能力（codebuddy2api）
+
+本批能力全部由 feature flag 控制，**默认关闭**；关闭时行为与迁移前逐字一致。
+
+| 组件 | 作用 | 入口 |
+|---|---|---|
+| 模型路由 | 公开模型名 → 目标模型，可按版本/账号分组；无 priority | 设置 → 模型路由 |
+| 保留策略 | 请求/小时/任务/审计/IP 日志的保留天数与行数，支持稀疏 override | 设置 → 日志保留 |
+| 批量导入 | 一次最多 200 条 refresh token，逐条隔离、保留 profile/未知键 | 账号 → 批量导入 |
+| 产品 profile | cn-cli / cn-work / intl-cli / intl-work 四套端点族，按账号选择 | 密钥 / 账号列表 |
+| 图片策略 | `max_images` + `passthrough/truncate/error` + 能力预检 | 设置 → 上游 |
+| 搜索/MCP | `/v1/search` 与 `/v1/mcp`（`web_search`），manager 60/min、core 600/min | 设置 → 上游 |
+| Responses 增强 | 逐项历史投影 + 工具参数修复/recall；日志记 `tool_repair` | 设置 → 上游 |
+
+**19 个开关的默认值**（与 `docs/migration/codebuddy2api-contracts.md` §5 一致）：
+
+| flag | 仓库 | 默认 |
+|---|---|---|
+| `model_routes_enabled` | manager | `false` |
+| `log_retention_overrides` | manager | `{}` |
+| `responses_projection_mode` | manager | `passthrough` |
+| `responses_projection_max_item_bytes` | manager | `40000` |
+| `tool_repair` | manager | `false` |
+| `tool_repair_recall` | manager | `false` |
+| `billing_credit_price_usd` | manager | `0.03` |
+| `billing_usd_rate` | manager | `7.15` |
+| `billing_currency` | manager | `usd` |
+| `catalog_group_merge` | manager | `false` |
+| `tools_search_enabled` | manager | `false` |
+| `tools_mcp_enabled` | manager | `false` |
+| `upstream.max_images` | core | `0` |
+| `upstream.image_policy` | core | `passthrough` |
+| `upstream.capability_guard` | core | `false` |
+| `profiles.enabled` | core | `false` |
+| `profiles.detect_only` | core | `true` |
+| `search.enabled` | core | `false` |
+| `mcp.enabled` | core | `false` |
+
+回滚步骤见 `docs/migration/rollback.md`（仅运维文档，不在应用内导航）。
