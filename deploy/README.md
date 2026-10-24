@@ -599,6 +599,12 @@ grep api_key /opt/workbuddy2api/config.json
 >   （Windows / macOS）会把 `host.docker.internal` 转发到宿主回环、连得上；
 >   而 Linux 上容器访问宿主回环通常**不通**。
 >
+> 一键更新会自动处理这个差异：检测到 `WB2API_BASE` 用的是
+> `host.docker.internal` 时，把上游端口绑到宿主网桥地址（如 `172.17.0.1`），
+> 容器可达且不对公网开放；Docker Desktop 仍用 `127.0.0.1`。要指定别的地址
+> （例如只绑内网网卡），在管理端环境变量里设 `WB_UPSTREAM_BIND=192.168.1.10`
+> 后重新执行一次更新。
+>
 > 更可靠的做法有两条，按你的部署形态选：
 >
 > **① 让两个容器进同一个 Docker 网络（推荐，最干净）**

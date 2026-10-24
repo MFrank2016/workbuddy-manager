@@ -20,8 +20,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -372,6 +374,51 @@ class ComposeLocalCustomizationTest(unittest.TestCase):
         self.assertNotIn('"7863:7863"', out, '公网绑定不应残留')
         self.assertIn('1panel-network', out, '用户的网络配置被改了')
         self.assertIn('external: true', out, '用户的 external 声明被改了')
+
+    def test_container_gateway_bind_for_host_docker_internal(self) -> None:
+        """issue #243：容器经 host.docker.internal 连上游时不能绑宿主回环。
+
+        Linux 上容器访问不到宿主的 127.0.0.1；收敛到回环会让更新后上游
+        永远「不可用」。应绑定宿主网桥地址（容器可达、非公网）。
+        """
+        sample = 'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n'
+        env = {'WB2API_BASE': 'http://host.docker.internal:7863',
+               'WB_UPSTREAM_BIND': ''}
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(self.mod.socket, 'gethostbyname',
+                                  return_value='172.17.0.1'):
+            out = self.mod._port_converged(sample)
+        self.assertIn('"172.17.0.1:7863:7863"', out,
+                      '容器部署应绑宿主网桥地址，否则容器连不上上游')
+
+    def test_docker_desktop_gateway_stays_loopback(self) -> None:
+        """Docker Desktop 的 192.168.65.0/24 是虚拟机内部地址，宿主不拥有。"""
+        sample = 'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n'
+        env = {'WB2API_BASE': 'http://host.docker.internal:7863',
+               'WB_UPSTREAM_BIND': ''}
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch.object(self.mod.socket, 'gethostbyname',
+                                  return_value='192.168.65.254'):
+            out = self.mod._port_converged(sample)
+        self.assertIn('"127.0.0.1:7863:7863"', out,
+                      'Desktop 会转发宿主回环，不应绑虚拟机内部地址')
+
+    def test_service_name_keeps_loopback(self) -> None:
+        """同网络用服务名直连时，端口只留给宿主调试，回环即可。"""
+        sample = 'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n'
+        env = {'WB2API_BASE': 'http://workbuddy2api:7863',
+               'WB_UPSTREAM_BIND': ''}
+        with mock.patch.dict(os.environ, env, clear=False):
+            out = self.mod._port_converged(sample)
+        self.assertIn('"127.0.0.1:7863:7863"', out)
+
+    def test_explicit_bind_override(self) -> None:
+        sample = 'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n'
+        with mock.patch.dict(os.environ, {'WB_UPSTREAM_BIND': '192.168.1.10'},
+                             clear=False):
+            out = self.mod._port_converged(sample)
+        self.assertIn('"192.168.1.10:7863:7863"', out,
+                      'WB_UPSTREAM_BIND 应能覆盖自动判定')
 
     def test_bundled_sync_preserves_custom_compose(self) -> None:
         """随包同步只更新源码，用户对 compose 的网络/卷定制要原样保留。"""
@@ -1233,3 +1280,193 @@ class UpstreamHealthProbeAddressTest(unittest.TestCase):
                          f'现在有 {src.count(literal)} 处')
         self.assertIn('wait_health(upstream_health_url()', src,
                       '就绪等待要传派生地址')
+
+
+class UpdaterBootstrapPackagingTest(unittest.TestCase):
+    """更新器随 server 下发（issue #240）。
+
+    旧安装的根目录 `deploy/update.py` 可能不支持随包同步；它不会替换自己，
+    只靠根目录那份会让「随包上游与本机不一致」永远消不掉。server/ 每次更新
+    都会被整体替换，因此包内 `server/deploy/update.py` 是更新器的自举入口。
+    """
+
+    def test_release_stage_copies_updater_into_server(self) -> None:
+        wf = (_ROOT / '.github' / 'workflows' / 'release.yml').read_text(encoding='utf-8')
+        self.assertIn('cp deploy/update.py "$STAGE/server/deploy/update.py"', wf,
+                      '发布包没有把更新器放进 server/，旧部署的更新器永远换不掉')
+
+    def test_install_dir_survives_being_copied_under_server(self) -> None:
+        """`server/deploy/update.py` 不能把安装目录算成 `server/`。
+
+        复制一份真实的 update.py 到临时安装目录的 `server/deploy/` 下加载：
+        `INSTALL_DIR` 必须是安装根，否则备份/替换 server/写 .version 全部错位。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            install = Path(td) / 'workbuddy-manager'
+            (install / 'server' / 'deploy').mkdir(parents=True)
+            script = install / 'server' / 'deploy' / 'update.py'
+            shutil.copyfile(_ROOT / 'deploy' / 'update.py', script)
+            # 测试入口可能设了 WB_DATA_DIR：不清掉就测不到「默认安装目录」这条分支
+            drop = {'WB_INSTALL_DIR', 'WB_DATA_DIR', 'WB_UPDATE_STATUS'}
+            env = {k: v for k, v in os.environ.items() if k not in drop}
+            with mock.patch.dict(os.environ, env, clear=True):
+                spec = importlib.util.spec_from_file_location('upd_packaged', script)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+            self.assertEqual(mod.INSTALL_DIR, install.resolve(),
+                             '随 server 下发的更新器把安装目录算到了 server/')
+            self.assertEqual(mod.DATA_DIR, install.resolve() / 'data')
+
+    def _pkg_with_marker(self, pkg_root: Path, marker: str | None) -> Path:
+        """造一个最小的解压后发布包（`<pkg_root>/upstream/`），返回 `pkg_root`。
+
+        包内必须有 `docker-compose.yml`：它是 `_sync_bundled_upstream` 判断
+        「本包是否带上游源码」的存在性判据。
+        """
+        up = pkg_root / 'upstream'
+        up.mkdir(parents=True)
+        (up / 'docker-compose.yml').write_text(
+            'services:\n  wb2api:\n    ports:\n      - "7863:7863"\n', encoding='utf-8')
+        if marker is not None:
+            (up / '.upstream-id').write_text(marker + '\n', encoding='utf-8')
+        return pkg_root
+
+    def test_marker_mismatch_after_sync_is_reported(self) -> None:
+        """`.upstream-id` 没真正写进去时，同步后必须报错（不能只看文件数）。
+
+        现场：上游目录不是持久化挂载 / 容器用户不可写，源码看着同步完了，
+        界面却一直提示不一致（issue #240）。这里把本地 `.upstream-id` 换成
+        同名目录，让写入真的失败。
+        """
+        m = _load_update_mod()
+        rep = _Rep()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = self._pkg_with_marker(root / 'pkg', 'a' * 64)
+            dst = root / 'installed'
+            dst.mkdir()
+            (dst / '.upstream-id').mkdir()  # 写入必失败
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst):
+                m._sync_bundled_upstream(pkg / 'upstream', rep)
+                # 判定在重建之后、由 update_upstream 做；这里直接验同一函数
+                marker_error = m._check_upstream_marker(pkg / 'upstream')
+        self.assertTrue(marker_error, '标识没写进去却判定为成功')
+        self.assertTrue(any('上游标识未能更新' in e for e in rep.errors()),
+                        f'标识没写进去却没报错，日志：{rep.text()}')
+
+    def test_marker_mismatch_fails_the_update(self) -> None:
+        """包内与本机 marker **都存在但不同** → 更新必须失败（不是只打日志）。
+
+        审查意见：只写日志时 `main()` 仍然 `ok=True`、退出码 0，面板报
+        「更新完成」，而 issue #240 的现象原样保留。这里驱动真实的
+        `update_upstream()`，断言它把失败抛到 `main()` 的失败路径上。
+
+        现场用「写标记时 os.replace 失败」复现（只读挂载 / 权限不足）：源码
+        循环会打 warn 继续，旧 marker 留在原地，于是包内与本机两份都存在、
+        内容不同 —— 正是要判失败的那种状态。
+        """
+        m = _load_update_mod()
+        rep = _Rep()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = self._pkg_with_marker(root / 'pkg', 'a' * 64)
+            dst = root / 'installed'
+            dst.mkdir()
+            (dst / '.upstream-id').write_text('b' * 64 + '\n', encoding='utf-8')
+            real_replace = m.os.replace
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst), \
+                 mock.patch.object(m, '_release_root', return_value=(pkg, {})), \
+                 mock.patch.object(m, 'enforce_local_bind', return_value=None), \
+                 mock.patch.object(m, 'rebuild_upstream', return_value=None), \
+                 mock.patch.object(m.os, 'replace',
+                                   side_effect=lambda a, b: (_ for _ in ()).throw(
+                                       OSError(13, 'Permission denied'))
+                                   if Path(b).name == '.upstream-id' else real_replace(a, b)):
+                with self.assertRaises(RuntimeError) as ctx:
+                    m.update_upstream(rep)
+            self.assertEqual((dst / '.upstream-id').read_text(encoding='utf-8').strip(),
+                             'b' * 64, '本用例的前提是旧 marker 仍在原地')
+        self.assertIn('上游标识未能更新', str(ctx.exception))
+        self.assertIn('aaaaaaaa', str(ctx.exception), '失败信息要能定位到包内那 8 位')
+        self.assertTrue(any('上游标识未能更新' in e for e in rep.errors()),
+                        f'失败日志缺失，日志：{rep.text()}')
+
+    def test_marker_mismatch_exits_nonzero(self) -> None:
+        """端到端：`main()` 的退出码必须非 0，面板才不会当成「更新完成」。
+
+        `read_status()` 只信持久化的 `ok`，所以这里断言两件事：异常路径把
+        `ok` 落成 False，且进程退出码为 1。
+        """
+        m = _load_update_mod()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = self._pkg_with_marker(root / 'pkg', 'a' * 64)
+            dst = root / 'installed'
+            dst.mkdir()
+            (dst / '.upstream-id').write_text('b' * 64 + '\n', encoding='utf-8')
+            status = root / 'status.json'
+            real_replace = m.os.replace
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst), \
+                 mock.patch.object(m, 'STATUS_FILE', status), \
+                 mock.patch.object(m, '_release_root', return_value=(pkg, {})), \
+                 mock.patch.object(m, 'enforce_local_bind', return_value=None), \
+                 mock.patch.object(m, 'rebuild_upstream', return_value=None), \
+                 mock.patch.object(m.os, 'replace',
+                                   side_effect=lambda a, b: (_ for _ in ()).throw(
+                                       OSError(13, 'Permission denied'))
+                                   if Path(b).name == '.upstream-id' else real_replace(a, b)), \
+                 mock.patch.object(m.sys, 'argv', ['update.py', '--target', 'upstream']), \
+                 mock.patch.dict(os.environ, {'WB_SYNC_UPSTREAM': '0'}):
+                code = m.main()
+            self.assertEqual(code, 1, '标识不一致却退出码 0 = 面板会报「更新完成」')
+            data = json.loads(status.read_text(encoding='utf-8'))
+            self.assertIs(data.get('ok'), False, f'状态文件没落成失败：{data.get("ok")}')
+            self.assertFalse(data.get('running'))
+
+    def test_missing_packaged_marker_does_not_fail(self) -> None:
+        """包内没有 `.upstream-id`（老部署 / 首次同步）保持现状：warn，不失败。"""
+        m = _load_update_mod()
+        rep = _Rep()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = self._pkg_with_marker(root / 'pkg', None)
+            dst = root / 'installed'
+            dst.mkdir()
+            (dst / '.upstream-id').write_text('b' * 64 + '\n', encoding='utf-8')
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst):
+                n = m._sync_bundled_upstream(pkg / 'upstream', rep)
+                self.assertEqual(m._check_upstream_marker(pkg / 'upstream'), '',
+                                 '包内没有标记时不该判定失败')
+        self.assertGreater(n, 0)
+        self.assertEqual(rep.errors(), [])
+
+    def test_empty_packaged_marker_does_not_fail(self) -> None:
+        """包内标记为空 → warn，不失败（与缺失同等对待）。"""
+        m = _load_update_mod()
+        rep = _Rep()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = self._pkg_with_marker(root / 'pkg', '')
+            dst = root / 'installed'
+            dst.mkdir()
+            (dst / '.upstream-id').write_text('b' * 64 + '\n', encoding='utf-8')
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst):
+                self.assertEqual(m._check_upstream_marker(pkg / 'upstream', rep), '')
+        self.assertEqual(rep.errors(), [])
+        self.assertTrue(any('为空' in msg for lvl, msg in rep.lines if lvl == 'warn'),
+                        f'空标记该有一条 warn，日志：{rep.text()}')
+
+    def test_marker_sync_success_is_reported(self) -> None:
+        """正常同步后要有一条可核对的成功日志，且不判失败。"""
+        m = _load_update_mod()
+        rep = _Rep()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pkg = self._pkg_with_marker(root / 'pkg', 'a' * 64)
+            dst = root / 'installed'
+            dst.mkdir()
+            with mock.patch.object(m, 'UPSTREAM_DIR', dst):
+                m._sync_bundled_upstream(pkg / 'upstream', rep)
+                self.assertEqual(m._check_upstream_marker(pkg / 'upstream', rep), '')
+        self.assertIn('上游标识已同步：aaaaaaaa', rep.text())
+        self.assertEqual(rep.errors(), [])

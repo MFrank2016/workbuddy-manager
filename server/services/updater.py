@@ -124,7 +124,16 @@ LOCK_TTL = 3600
 
 
 def _updater_script() -> Path:
-    """定位更新脚本：优先仓库内 deploy/update.py。"""
+    """定位更新脚本。
+
+    **优先 `server/deploy/update.py`**：它随 `server/` 一起被替换，能保证
+    「面板代码已经是新版，但根目录 deploy/update.py 还是旧版」时，下一次更新
+    用的是新版更新器。旧版更新器没有随包同步逻辑，只靠根目录那份会让
+    「随包上游与本机不一致」永远消不掉（issue #240）。
+    """
+    packaged = config.ROOT / 'server' / 'deploy' / 'update.py'
+    if packaged.is_file():
+        return packaged
     candidate = config.ROOT / 'deploy' / 'update.py'
     if candidate.is_file():
         return candidate
@@ -331,13 +340,29 @@ def _pid_alive(pid: object) -> bool:
         return _pid_alive_windows(pid_int)
     try:
         os.kill(pid_int, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
     except Exception:  # noqa: BLE001
         return False
+    # Linux 额外判僵尸：os.kill(pid, 0) 对 zombie 进程**静默成功**（PID 槽位还在，
+    # 只是进程已退出、等待父进程回收）。若 update.lock 里记录的 pid 恰好变成
+    # zombie（更新进程退出后父进程未及时 wait），_lock_active() 会一直判活，
+    # read_status() 把状态强制拉回 running=true，前端永久显示「正在更新」，
+    # 而状态文件里其实早就写好了 running=false / step=更新完成。
+    # 因此读 /proc/<pid>/stat 的状态字段，'Z' 视为已死。
+    try:
+        with open(f'/proc/{pid_int}/stat', 'rb') as f:
+            raw = f.read()
+        # 格式：pid (comm) state ... —— comm 可含空格和右括号，故从最后一个 ')' 后切。
+        state = raw.rsplit(b')', 1)[1].split()[0]
+        if state == b'Z':
+            return False
+    except (OSError, IndexError):
+        # 读不到 /proc（非 Linux、容器限制等）时退回 os.kill 的结论，保持原行为。
+        pass
+    return True
 
 
 def _pid_alive_windows(pid_int: int) -> bool:
@@ -994,6 +1019,10 @@ def check_updates(force: bool = False) -> dict:
     # 只有远端确实更新才提示；不能只判「不相等」，否则当前版本领先于缓存里的
     # 旧 latest 时会冒出降级提示（如 v1.0.5 → v1.0.4）
     manager_has = bool(m_latest) and _version_newer(m_latest, current_manager)
+    # 这次检查失败、current 值是上次缓存时，不能拿它断言「上游不一致」：
+    # 缓存可能还是上一个 Release 的 upstream-id，会把已经同步好的机器一直
+    # 显示成「需要同步」。下次检查成功后再判断。
+    manager_stale = bool(cache.get('manager', {}).get('stale'))
     local_upstream_id = _local_upstream_id()
     release_upstream_id = str(cache.get('manager', {}).get('upstream_id') or '')
 
@@ -1011,12 +1040,15 @@ def check_updates(force: bool = False) -> dict:
             # 远端包内上游 id 与本机不一致（含老部署没有 .upstream-id）：
             # 界面把主按钮改成「全部更新」，避免面板升了、上游还是旧代码。
             'upstream_changed': bool(
-                release_upstream_id
+                release_upstream_id and not manager_stale
                 and (not local_upstream_id or release_upstream_id != local_upstream_id)),
+            # 本次检测用的是失败后的旧缓存：界面不能据此下任何结论，
+            # 也不该显示「需重启更新器」以外的同步指引（issue #240）。
+            'manager_stale': manager_stale,
             'error': str(cache.get('manager', {}).get('error') or ''),
             # stale=True：这一节的值来自**上一次**成功检测（本次失败了），
             # 界面不能据此下「已是最新」的结论（issue #204）。
-            'stale': bool(cache.get('manager', {}).get('stale')),
+            'stale': manager_stale,
             'stale_at': int(cache.get('manager', {}).get('stale_at') or 0),
             'repo': MANAGER_REPO,
         },

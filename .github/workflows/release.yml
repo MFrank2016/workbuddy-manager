@@ -97,6 +97,11 @@ jobs:
           cp -r server "$STAGE/"
           mkdir -p "$STAGE/web" && cp -r web/out "$STAGE/web/"
           cp -r deploy "$STAGE/"
+          # 更新器再放一份到 server/：一键更新必然整体替换 server/，而旧版
+          # 更新器可能不替换根目录 deploy/。放在 server/ 后，面板重启就能用
+          # 新版更新器，不必先「更新一次才会更新更新器」（issue #240）。
+          mkdir -p "$STAGE/server/deploy"
+          cp deploy/update.py "$STAGE/server/deploy/update.py"
           # ── 用户文档（白名单）────────────────────────────────────────
           # 只把**用户看得懂的文档**放进发布包：维护者手册（发布流程 / i18n /
           # 命名兼容 / 上游修复记录 / 提案 / 设计方案）留在仓库里做开发参考，
