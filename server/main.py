@@ -15,7 +15,7 @@ from . import config, db, redpacket, security
 from .iputil import client_ip
 from .stdio_utf8 import force_utf8_stdio
 from .routers import (
-    accounts, anthropic, auth, gateway, keys, logs, models, playground,
+    accounts, anthropic, auth, gateway, keys, logs, models, panel, playground,
     pgsync as pgsync_router, redpackets, responses, security as security_router,
     proxies, settings, stats, system, tokens, tools, upstreams,
 )
@@ -195,6 +195,7 @@ app.include_router(pgsync_router.router)
 app.include_router(upstreams.router)
 app.include_router(system.router)
 app.include_router(models.router)
+app.include_router(panel.router)
 app.include_router(playground.router)
 app.include_router(gateway.router)
 # Anthropic Messages API 兼容层（/v1/messages）——给只认该协议的客户端用
