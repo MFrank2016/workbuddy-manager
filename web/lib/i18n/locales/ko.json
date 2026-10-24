@@ -332,6 +332,20 @@
     "progress": "완료 {done}/{total}",
     "accounts": "계정"
   },
+  "panelObs": {
+    "packages": "크레딧 구성",
+    "vouchers": "개학 시즌 쿠폰",
+    "usage": "윈도우 사용량 / 잔여",
+    "remain": "잔여",
+    "packageCount": "{n}개 패키지",
+    "used": "사용",
+    "remaining": "잔여",
+    "cooling": "제한 중",
+    "estimated": "추정",
+    "voucherCode": "코드",
+    "empty": "데이터 없음",
+    "failed": "불러오기 실패"
+  },
   "accounts": {
     "colProfile": "프로필",
     "profileFilterLabel": "프로필로 필터",
@@ -910,6 +924,7 @@
     "notLoaded": "불러오지 못했습니다"
   },
   "models": {
+    "probeMeasured": "실측 {n}",
     "colGroups": "사용 가능한 그룹",
     "groupsHint": "카탈로그 그룹 통합이 켜진 경우에만 표시",
     "title": "모델",

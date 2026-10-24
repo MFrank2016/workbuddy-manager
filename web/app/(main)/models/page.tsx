@@ -29,13 +29,13 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import {modelApi, upstreamsApi} from '@/lib/api';
+import {modelApi, panelApi, upstreamsApi} from '@/lib/api';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {useRealm} from '@/lib/realm-context';
 import {notify} from '@/lib/toast';
 import {useT} from '@/lib/i18n/provider';
 import {cn} from '@/lib/utils';
-import type {CatalogModel, ModelCatalog, UpstreamEndpoint} from '@/lib/types';
+import type {CatalogModel, ModelCatalog, PanelModelProbes, UpstreamEndpoint} from '@/lib/types';
 
 /** 上下文窗口显示：131072 → 128K；1048576 → 1M；0 → — */
 function fmtCtx(n: number): string {
@@ -154,6 +154,18 @@ export default function ModelsPage() {
   }, [realm]);
 
   const data: ModelCatalog | null = values.catalog ?? null;
+  // 模型实测上限标注（core 面板 model_probes）：可选增强，失败静默。
+  const [probes, setProbes] = useState<PanelModelProbes | null>(null);
+  useEffect(() => {
+    let alive = true;
+    panelApi.modelProbes()
+      .then((r) => { if (alive) setProbes(r); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const probeOf = (id: string) =>
+    probes?.probes[`${realm}:${id}`] ?? probes?.probes[id] ??
+    probes?.probes[Object.keys(probes?.probes || {}).find((k) => k.endsWith(':' + id)) || ''];
   const groupName = useMemo(() => {
     const map = new Map<number, string>();
     for (const g of (values.groups?.items ?? []) as UpstreamEndpoint[]) {
@@ -458,6 +470,15 @@ export default function ModelsPage() {
                           ) : (
                             <span className="font-mono text-xs font-medium">{m.id}</span>
                           )}
+                          {probeOf(m.id)?.measured ? (
+                            <Badge
+                              variant="secondary"
+                              className="mt-0.5 w-fit rounded-md text-[10px]"
+                              title={probeOf(m.id)?.note || probeOf(m.id)?.tested_at || ''}
+                            >
+                              {t('models.probeMeasured', {n: fmtCtx(probeOf(m.id)?.measured || 0)})}
+                            </Badge>
+                          ) : null}
                         </div>
                       </TableCell>
                       <TableCell className="text-xs tabular-nums text-muted-foreground">

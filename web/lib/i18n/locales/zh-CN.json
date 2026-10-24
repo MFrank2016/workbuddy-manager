@@ -332,6 +332,20 @@
     "progress": "已完成 {done}/{total}",
     "accounts": "账号"
   },
+  "panelObs": {
+    "packages": "积分构成",
+    "vouchers": "开学季券码",
+    "usage": "窗口用量 / 剩余",
+    "remain": "剩余",
+    "packageCount": "{n} 个积分包",
+    "used": "已用",
+    "remaining": "剩余",
+    "cooling": "限流中",
+    "estimated": "估算",
+    "voucherCode": "券码",
+    "empty": "暂无数据",
+    "failed": "读取失败"
+  },
   "accounts": {
     "colProfile": "产品 Profile",
     "profileFilterLabel": "按 Profile 筛选",
@@ -910,6 +924,7 @@
     "notLoaded": "未取到"
   },
   "models": {
+    "probeMeasured": "实测 {n}",
     "colGroups": "可用分组",
     "groupsHint": "仅开启「目录按分组并集」后显示",
     "title": "模型中心",

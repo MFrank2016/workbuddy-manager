@@ -1656,3 +1656,93 @@ export interface PanelQueueStatus {
   seq: number;
   items: Array<Record<string, unknown>>;
 }
+
+/* ── core 面板只读观测（迁移 Phase 2）────────────────────── */
+
+export interface PanelCreditPackage {
+  name: string;
+  remain: number;
+  used: number;
+  size: number;
+  end_time?: string;
+  expires_at?: number;
+  created_at?: string;
+  package_code?: string;
+  sub_product_code?: string;
+  sub_product_name?: string;
+  cycle?: boolean;
+}
+
+export interface PanelPackageRow {
+  uid: string;
+  nickname: string;
+  realm: string;
+  remain: number;
+  size: number;
+  packages: PanelCreditPackage[];
+  error?: string;
+}
+
+export interface PanelPackages { accounts: PanelPackageRow[] }
+
+export interface PanelUsageBudget {
+  realm: string;
+  model: string;
+  avg: number;
+  min: number;
+  max: number;
+  samples: number;
+}
+
+export interface PanelUsageRow {
+  realm: string;
+  uid: string;
+  nickname?: string;
+  model: string;
+  used: number;
+  budget?: number | null;
+  remaining?: number | null;
+  cooling: boolean;
+  reset_at?: string | null;
+  estimated: boolean;
+}
+
+export interface PanelUsageRemaining {
+  window_hours: number;
+  budgets: PanelUsageBudget[];
+  rows: PanelUsageRow[];
+}
+
+export interface PanelVoucher {
+  grant_id: number;
+  draw_uuid?: string;
+  sku_code?: string;
+  prize_name?: string;
+  code: string;
+  valid_from?: string;
+  valid_to?: string;
+  granted_at?: string;
+}
+
+export interface PanelVoucherRow {
+  uid: string;
+  nickname: string;
+  vouchers: PanelVoucher[];
+  error?: string;
+}
+
+export interface PanelSchoolVouchers { accounts: PanelVoucherRow[] }
+
+export interface PanelModelProbe {
+  claimed?: number;
+  measured?: number;
+  verdict?: string;
+  note?: string;
+  tested_at?: string;
+}
+
+export interface PanelModelProbes {
+  probes: Record<string, PanelModelProbe>;
+  exists: boolean;
+  updated_at?: string;
+}

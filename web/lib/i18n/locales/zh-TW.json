@@ -332,6 +332,20 @@
     "progress": "已完成 {done}/{total}",
     "accounts": "帳號"
   },
+  "panelObs": {
+    "packages": "積分構成",
+    "vouchers": "開學季券碼",
+    "usage": "視窗用量 / 剩餘",
+    "remain": "剩餘",
+    "packageCount": "{n} 個積分包",
+    "used": "已用",
+    "remaining": "剩餘",
+    "cooling": "限流中",
+    "estimated": "估算",
+    "voucherCode": "券碼",
+    "empty": "暫無資料",
+    "failed": "讀取失敗"
+  },
   "accounts": {
     "colProfile": "產品 Profile",
     "profileFilterLabel": "依 Profile 篩選",
@@ -910,6 +924,7 @@
     "notLoaded": "未取得"
   },
   "models": {
+    "probeMeasured": "實測 {n}",
     "colGroups": "可用分組",
     "groupsHint": "僅開啟「目錄按分組聯集」後顯示",
     "title": "模型中心",

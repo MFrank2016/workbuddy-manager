@@ -359,6 +359,20 @@
     "progress": "{done}/{total} done",
     "accounts": "Accounts"
   },
+  "panelObs": {
+    "packages": "Credit composition",
+    "vouchers": "Back-to-school vouchers",
+    "usage": "Window usage / remaining",
+    "remain": "Remaining",
+    "packageCount": "{n} packages",
+    "used": "Used",
+    "remaining": "Remaining",
+    "cooling": "Rate limited",
+    "estimated": "Estimated",
+    "voucherCode": "Code",
+    "empty": "No data",
+    "failed": "Failed to load"
+  },
   "accounts": {
     "colProfile": "Profile",
     "profileFilterLabel": "Filter by profile",
@@ -937,6 +951,7 @@
     "notLoaded": "Not loaded"
   },
   "models": {
+    "probeMeasured": "measured {n}",
     "colGroups": "Available groups",
     "groupsHint": "Shown only when catalog group union is enabled",
     "title": "Models",

@@ -332,6 +332,20 @@
     "progress": "完了 {done}/{total}",
     "accounts": "アカウント"
   },
+  "panelObs": {
+    "packages": "クレジット構成",
+    "vouchers": "新学期クーポン",
+    "usage": "ウィンドウ使用量 / 残り",
+    "remain": "残り",
+    "packageCount": "{n} 個のパッケージ",
+    "used": "使用",
+    "remaining": "残り",
+    "cooling": "制限中",
+    "estimated": "推定",
+    "voucherCode": "コード",
+    "empty": "データなし",
+    "failed": "読み込み失敗"
+  },
   "accounts": {
     "colProfile": "プロファイル",
     "profileFilterLabel": "プロファイルで絞り込み",
@@ -910,6 +924,7 @@
     "notLoaded": "取得できませんでした"
   },
   "models": {
+    "probeMeasured": "実測 {n}",
     "colGroups": "利用可能なグループ",
     "groupsHint": "カタログのグループ統合が有効な場合のみ表示",
     "title": "モデル",

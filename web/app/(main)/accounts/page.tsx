@@ -76,6 +76,7 @@ import {UpstreamFormDialog} from '@/components/common/upstreams/UpstreamFormDial
 import {AccountCoolingDialog} from '@/components/common/accounts/AccountCoolingDialog';
 import {AccountTaskDialog} from '@/components/common/accounts/AccountTaskDialog';
 import {AccountTaskDrawer} from '@/components/common/accounts/AccountTaskDrawer';
+import {PanelObservabilityPanel} from '@/components/common/accounts/PanelObservabilityPanel';
 import {useAuth} from '@/lib/auth-context';
 import {realmLabel, useRealm} from '@/lib/realm-context';
 import {PROFILES, accountRealm, type Profile} from '@/lib/key-profile';
@@ -1715,6 +1716,7 @@ export default function AccountsPage() {
         onOpenChange={(open) => { if (!open) setTaskTarget(null); }}
         onFinished={reloadAll}
       />
+      <PanelObservabilityPanel upstreamId={groupId} />
       <AccountTaskDrawer
         account={taskListTarget}
         upstreamId={groupId}

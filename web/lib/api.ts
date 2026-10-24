@@ -43,9 +43,13 @@ import type {
   ModelRoute,
   ModelRouteList,
   Page,
+  PanelModelProbes,
+  PanelPackages,
   PanelQueueStatus,
+  PanelSchoolVouchers,
   PanelScanItem,
   PanelTaskList,
+  PanelUsageRemaining,
   PgSyncConfig,
   PgSyncConfigResponse,
   PgSyncStatus,
@@ -732,6 +736,14 @@ export const panelApi = {
       `/api/panel/tasks/run_queue${groupQs(upstreamId)}`, {concurrency, growth: true}),
   queue: (upstreamId?: number | null) =>
     get<PanelQueueStatus>(`/api/panel/tasks/queue${groupQs(upstreamId)}`),
+  packages: (upstreamId?: number | null) =>
+    get<PanelPackages>(`/api/panel/packages${groupQs(upstreamId)}`),
+  usageRemaining: (hours = 24, upstreamId?: number | null) =>
+    get<PanelUsageRemaining>(`/api/panel/usage/remaining?hours=${encodeURIComponent(String(hours))}${upstreamId == null ? '' : '&upstream_id=' + encodeURIComponent(String(upstreamId))}`),
+  schoolVouchers: (upstreamId?: number | null) =>
+    get<PanelSchoolVouchers>(`/api/panel/school/vouchers${groupQs(upstreamId)}`),
+  modelProbes: (upstreamId?: number | null) =>
+    get<PanelModelProbes>(`/api/panel/model_probes${groupQs(upstreamId)}`),
 };
 
 export const settingsApi = {
