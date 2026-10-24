@@ -43,6 +43,9 @@ import type {
   ModelRoute,
   ModelRouteList,
   Page,
+  PanelQueueStatus,
+  PanelScanItem,
+  PanelTaskList,
   PgSyncConfig,
   PgSyncConfigResponse,
   PgSyncStatus,
@@ -694,6 +697,41 @@ export const proxyApi = {
                            global_proxy_enabled?: boolean}) =>
     put<ProxySettings>('/api/settings/proxy', body),
   probeGlobal: () => post<ProxyProbe>('/api/settings/proxy/probe', {}),
+};
+
+/**
+ * core 内置面板能力的代理（迁移 Phase 1）。
+ *
+ * 所有方法都接受 `upstreamId`：null/undefined = 默认分组，非空 = 该分组自己的
+ * 面板 API（后端按分组解析 base_url + forward_api_key，前端不需要知道细节）。
+ */
+export const panelApi = {
+  tasks: (uid: string, upstreamId?: number | null) =>
+    get<PanelTaskList>(`/api/panel/accounts/${encodeURIComponent(uid)}/tasks${groupQs(upstreamId)}`),
+  accept: (uid: string, taskCodes: string[], upstreamId?: number | null) =>
+    post<{ok: boolean}>(`/api/panel/accounts/${encodeURIComponent(uid)}/tasks/accept${groupQs(upstreamId)}`,
+      {task_codes: taskCodes}),
+  acceptAll: (uid: string, upstreamId?: number | null) =>
+    post<{ok: boolean; accepted: number}>(`/api/panel/accounts/${encodeURIComponent(uid)}/tasks/accept_all${groupQs(upstreamId)}`,
+      {}),
+  claim: (uid: string, taskCode: string, upstreamId?: number | null) =>
+    post<{ok: boolean; credit?: number; energy?: number; already_claimed?: boolean}>(
+      `/api/panel/accounts/${encodeURIComponent(uid)}/tasks/claim${groupQs(upstreamId)}`,
+      {task_code: taskCode}),
+  auto: (uid: string, taskCode: string, upstreamId?: number | null) =>
+    post<{ok: boolean; message?: string}>(`/api/panel/accounts/${encodeURIComponent(uid)}/tasks/auto${groupQs(upstreamId)}`,
+      {task_code: taskCode}),
+  autoAll: (uid: string, taskCodes: string[], upstreamId?: number | null) =>
+    post<{ok: boolean}>(`/api/panel/accounts/${encodeURIComponent(uid)}/tasks/auto_all${groupQs(upstreamId)}`,
+      {task_codes: taskCodes}),
+  scanAll: (upstreamId?: number | null) =>
+    post<{ok: boolean; pending_count: number; accounts: PanelScanItem[]}>(
+      `/api/panel/tasks/scan_all${groupQs(upstreamId)}`, {}),
+  runQueue: (concurrency: number, upstreamId?: number | null) =>
+    post<{ok: boolean; started: boolean; total?: number; message?: string}>(
+      `/api/panel/tasks/run_queue${groupQs(upstreamId)}`, {concurrency, growth: true}),
+  queue: (upstreamId?: number | null) =>
+    get<PanelQueueStatus>(`/api/panel/tasks/queue${groupQs(upstreamId)}`),
 };
 
 export const settingsApi = {

@@ -1613,3 +1613,46 @@ export interface ModelRouteList {
   /** 总开关（`model_routes_enabled`，默认 false） */
   enabled: boolean;
 }
+
+/* ── core 面板能力代理（迁移 Phase 1）────────────────────── */
+
+/** core `upstream.Task` 的 JSON 形状（见 internal/upstream/tasks.go）。 */
+export interface PanelTask {
+  task_code: string;
+  title?: string;
+  description?: string;
+  task_desc?: string;
+  credit?: number;
+  energy?: number;
+  has_reward?: boolean;
+  reward_buddy?: boolean;
+  task_type?: string;
+  tag?: string;
+  jump_url?: string;
+  locked?: boolean;
+  target: number;
+  current: number;
+  accept_status?: string;
+  status?: string;
+  claimable?: boolean;
+  claimed?: boolean;
+}
+
+export interface PanelTaskList { ok: boolean; tasks: PanelTask[] }
+
+export interface PanelScanItem {
+  uid: string;
+  nickname: string;
+  growth?: PanelTask[];
+  growth_error?: string;
+}
+
+export interface PanelQueueStatus {
+  running: boolean;
+  total: number;
+  conc: number;
+  started: boolean;
+  started_at?: string;
+  seq: number;
+  items: Array<Record<string, unknown>>;
+}
