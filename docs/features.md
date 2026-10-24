@@ -218,4 +218,3 @@
 | `search.enabled` | core | `false` |
 | `mcp.enabled` | core | `false` |
 
-回滚步骤见 `docs/migration/rollback.md`（仅运维文档，不在应用内导航）。
