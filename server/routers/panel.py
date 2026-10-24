@@ -130,3 +130,48 @@ async def tasks_queue(upstream_id: int | None = Query(None),
         return await panelapi.call(up, 'GET', '/panel/api/tasks/queue')
     except panelapi.PanelAPIError as exc:
         _raise(exc)
+
+
+@router.get('/panel/packages')
+async def panel_packages(upstream_id: int | None = Query(None),
+                         user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `GET /panel/api/packages`（逐账号积分包构成）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'GET', '/panel/api/packages')
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+
+
+@router.get('/panel/usage/remaining')
+async def panel_usage_remaining(hours: int = Query(24), upstream_id: int | None = Query(None),
+                                user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `GET /panel/api/usage/remaining`（窗口用量/剩余估算）。"""
+    h = max(1, min(1440, int(hours or 24)))
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'GET', f'/panel/api/usage/remaining?hours={h}')
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+
+
+@router.get('/panel/school/vouchers')
+async def panel_school_vouchers(upstream_id: int | None = Query(None),
+                                user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `GET /panel/api/school/vouchers`（开学季券码）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'GET', '/panel/api/school/vouchers')
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+
+
+@router.get('/panel/model_probes')
+async def panel_model_probes(upstream_id: int | None = Query(None),
+                             user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `GET /panel/api/model_probes`（模型实测上限标注）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'GET', '/panel/api/model_probes')
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
