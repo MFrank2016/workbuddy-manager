@@ -304,6 +304,9 @@ class WriteEndpointScopeMatrixTest(unittest.TestCase):
         # Responses 投影与工具修复（迁移 Todo 14/15/16）：改投影预算或开启 recall 会
         # 改变上游请求内容并额外消耗积分，同样是服务级动作。
         'POST /api/settings/responses',
+        # 工具端点开关（迁移 Todo 29）：同时改 manager 代理与 core 端点是否存在，
+        # 属于服务级动作；写只对会话开放。
+        'POST /api/settings/tools',
         # 模型目录口径（迁移 Todo 18）：打开 `catalog_group_merge` 会让管理端目录
         # 去**所有分组**拉模型清单（消耗各组账号额度、暴露其它分组的模型名）。
         # 与改上游分组同级，泄露的管理令牌不该能改它。
