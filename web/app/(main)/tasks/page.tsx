@@ -472,11 +472,11 @@ export default function TasksPage() {
               <div className="space-y-1 px-3.5 pb-4 md:hidden">
                 {checkinLogs.map((l) => (
                   <div key={l.id} className="rounded-xl bg-background/60 px-3 py-1.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-xs font-medium">{l.nickname || l.uid || '—'}</span>
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium">{l.nickname || l.uid || '—'}</span>
                       <span
                         className={
-                          'shrink-0 text-[11px] font-medium ' +
+                          'min-w-0 break-words text-right text-[11px] font-medium ' +
                           (l.success
                             ? 'text-emerald-600 dark:text-emerald-400'
                             : 'text-red-600 dark:text-red-400')

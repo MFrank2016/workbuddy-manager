@@ -155,13 +155,13 @@ export function PanelCompensationPanel({
             <div key={row.uid} className="rounded-xl bg-background px-3 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-medium">{row.nickname || row.uid}</span>
-                <span className="flex flex-wrap items-center gap-2">
+                <span className="flex min-w-0 flex-wrap items-center justify-end gap-2">
                   {row.error ? (
-                    <span className="text-rose-600 dark:text-rose-400">
+                    <span className="min-w-0 break-words text-rose-600 dark:text-rose-400">
                       {t('panelComp.error')}: {row.error}
                     </span>
                   ) : row.skip ? (
-                    <span className="text-muted-foreground">
+                    <span className="min-w-0 break-words text-muted-foreground">
                       {row.skip_msg || row.skip}
                     </span>
                   ) : st.active && !st.claimed && st.credit_num > 0 ? (
@@ -181,7 +181,7 @@ export function PanelCompensationPanel({
                     </span>
                   )}
                   {canClaim && (
-                    <Button size="sm" disabled={acting !== null}
+                    <Button size="sm" className="shrink-0" disabled={acting !== null}
                             onClick={() => void claim(row.uid)}>
                       {acting === `one:${row.uid}` && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
                       {t('panelComp.claim')}

@@ -181,7 +181,7 @@ export function AccountTaskDrawer({
                   <span className="text-[11px] text-muted-foreground">{t('panelTasks.statusInProgress')}</span>
                 )}
                 {(x.credit || x.energy) ? (
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="min-w-0 break-words text-[11px] text-muted-foreground">
                     {t('panelTasks.reward', {credit: x.credit || 0, energy: x.energy || 0})}
                   </span>
                 ) : null}
