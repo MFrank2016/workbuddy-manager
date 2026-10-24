@@ -130,7 +130,7 @@ export function ResponsesPanel() {
             }
             disabled={!isAdmin}
           >
-            <SelectTrigger className="h-8 bg-background text-xs">
+            <SelectTrigger className="h-8 bg-background text-xs" aria-label={t('settings.responsesMode')}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -181,6 +181,7 @@ export function ResponsesPanel() {
             </span>
           </span>
           <Switch
+            aria-label={t('settings.responsesToolRepair')}
             checked={draft.tool_repair}
             disabled={!isAdmin}
             onCheckedChange={(v) => setDraft({...draft, tool_repair: v})}
@@ -194,6 +195,7 @@ export function ResponsesPanel() {
             </span>
           </span>
           <Switch
+            aria-label={t('settings.responsesRecall')}
             checked={draft.tool_repair_recall}
             disabled={!isAdmin || !draft.tool_repair}
             onCheckedChange={(v) => setDraft({...draft, tool_repair_recall: v})}

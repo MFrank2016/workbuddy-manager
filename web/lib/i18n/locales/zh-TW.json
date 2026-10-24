@@ -1705,9 +1705,22 @@
     "retentionLoadFailed": "暫時沒取到保留策略設定",
     "retentionInvalid": "有輸入不合法：天數須為 1–3650 的整數，行數須為 1–1000000 的整數。",
     "retentionNoChanges": "沒有改動需要儲存",
-    "retentionSaved": "保留策略已儲存"
+    "retentionSaved": "保留策略已儲存",
+    "toolsTitle": "工具端點（搜尋 / MCP）",
+    "toolsDesc": "控制 /v1/search 與 /v1/mcp。開關會同時寫入 manager 與本機預設上游的 core 設定；預設關閉。",
+    "toolsReadonly": "唯讀角色不能修改",
+    "toolsSearch": "啟用 /v1/search",
+    "toolsSearchDesc": "按次呼叫上游搜尋介面；manager 限 60 次/分鐘/金鑰，core 限 600 次/分鐘/上游金鑰。",
+    "toolsMcp": "啟用 /v1/mcp",
+    "toolsMcpDesc": "無狀態 JSON-RPC 2.0（initialize / tools/list / tools/call），工具只有 web_search。",
+    "toolsNonDefaultHint": "存在非預設上游分組（{groups}）：core 的開關需到該實例自己的面板或設定檔設定，這裡只能改預設分組。",
+    "toolsCostHint": "搜尋/MCP 不產生模型用量，但每次呼叫都會真實請求上游並佔用帳號額度。",
+    "toolsSaved": "工具端點設定已儲存",
+    "toolsLoadError": "讀取工具端點設定失敗，請重新整理後重試"
   },
   "phrases": {
+    "默认上游 · 出站标识与图片策略": "預設上游 · 出站識別與圖片策略",
+    "网关向腾讯发起请求时的客户端标识，以及图片数量/能力预检。这些字段只作用于**默认上游**；其它分组请到该实例自己的面板或配置文件里改": "向騰訊發起請求時的用戶端識別，以及圖片數量/能力預檢。這些欄位只作用於**預設上游**；其它分組請到該實例自己的面板或設定檔裡改",
     "单请求图片上限": "單次請求圖片上限",
     "一次请求最多保留多少张图片（0 = 不限）。truncate 保留最新的 N 张，error 直接拒绝。只作用于默认上游": "單次請求最多保留多少張圖片（0 = 不限）。truncate 保留最新的 N 張，error 直接拒絕。只作用於預設上游",
     "超限图片策略": "超限圖片策略",

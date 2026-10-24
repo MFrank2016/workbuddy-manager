@@ -1705,7 +1705,18 @@
     "retentionLoadFailed": "暂时没取到保留策略配置",
     "retentionInvalid": "有输入不合法：天数须为 1–3650 的整数，行数须为 1–1000000 的整数。",
     "retentionNoChanges": "没有改动需要保存",
-    "retentionSaved": "保留策略已保存"
+    "retentionSaved": "保留策略已保存",
+    "toolsTitle": "工具端点（搜索 / MCP）",
+    "toolsDesc": "控制 /v1/search 与 /v1/mcp。开关会同时写入 manager 与本机默认上游的 core 配置；默认关闭。",
+    "toolsReadonly": "只读角色不能修改",
+    "toolsSearch": "启用 /v1/search",
+    "toolsSearchDesc": "按次调用上游搜索接口；manager 限 60 次/分钟/密钥，core 限 600 次/分钟/上游密钥。",
+    "toolsMcp": "启用 /v1/mcp",
+    "toolsMcpDesc": "无状态 JSON-RPC 2.0（initialize / tools/list / tools/call），工具只有 web_search。",
+    "toolsNonDefaultHint": "存在非默认上游分组（{groups}）：core 的开关需到该实例自己的面板或配置文件设置，这里只能改默认分组。",
+    "toolsCostHint": "搜索/MCP 不产生模型用量，但每次调用都会真实请求上游并占用账号额度。",
+    "toolsSaved": "工具端点设置已保存",
+    "toolsLoadError": "读取工具端点设置失败，请刷新重试"
   },
   "redPacket": {
     "title": "红包",

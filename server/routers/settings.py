@@ -392,6 +392,101 @@ def save_responses_settings(body: dict, request: Request,
                    f"{changed or '（无改动）'}；来源 {client_ip(request)}")
     return _responses_view()
 
+# ── 工具端点开关（迁移 Todo 29，契约 §4）────────────────────
+#
+# 两个开关**双写**：manager 的 settings（决定 /v1/search、/v1/mcp 代理是否放行）
+# 与 core 的 `search.enabled` / `mcp.enabled`（决定 core 端点是否存在）。
+# 只写一边会出现「manager 放行但 core 404」或反之，用户看到的是随机 404。
+#
+# 非默认分组：manager 的开关是全局的，但 core 的配置在每个分组自己的实例上。
+# 面板只写默认 upstream；存在非默认分组时 `core_writable=false`，前端据此禁用
+# 并提示「到该实例自己的面板/配置文件设置」（契约 §5 / Todo 29）。
+_TOOLS_SETTING_KEYS = {
+    'search_enabled': 'tools_search_enabled',
+    'mcp_enabled': 'tools_mcp_enabled',
+}
+
+
+def _tools_view() -> dict:
+    from .. import upstreamsvc
+    others = [u for u in upstreamsvc.list_upstreams(include_default=False)]
+    return {
+        'search_enabled': db.get_setting('tools_search_enabled', False) is True,
+        'mcp_enabled': db.get_setting('tools_mcp_enabled', False) is True,
+        'core_writable': not others,
+        'non_default_upstreams': [str(u.get('name') or u.get('id')) for u in others],
+    }
+
+
+@router.get('/settings/tools')
+def get_tools_settings(user: dict = Depends(security.current_user)) -> dict:
+    """读工具端点开关（任何已登录用户）。"""
+    return _tools_view()
+
+
+@router.post('/settings/tools')
+async def save_tools_settings(body: dict, request: Request,
+                              user: dict = Depends(security.require_session_admin)) -> dict:
+    """保存工具端点开关：先写 manager，再写 core；core 失败则回滚 manager。
+
+    顺序是刻意的：manager 先写，core 后写 —— 若 core 写失败，回滚 manager 的
+    旧值即可恢复原状；反过来（先写 core）失败时要回滚远端实例，代价高得多。
+    """
+    unknown = sorted(set(body) - set(_TOOLS_SETTING_KEYS))
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"未知设置项：{', '.join(unknown)}")
+    updates: dict[str, bool] = {}
+    for field, setting_key in _TOOLS_SETTING_KEYS.items():
+        if field not in body:
+            continue
+        value = body[field]
+        if not isinstance(value, bool):
+            raise HTTPException(status_code=400, detail=f'{field} 必须是布尔值')
+        updates[setting_key] = value
+
+    view = _tools_view()
+    if updates and not view['core_writable']:
+        raise HTTPException(
+            status_code=400,
+            detail='存在非默认上游分组：core 的 search/mcp 开关请到该实例自己的面板或配置文件设置',
+        )
+
+    previous = {k: db.get_setting(k, False) for k in updates}
+    for key, value in updates.items():
+        db.set_setting(key, value)
+
+    core_applied = True
+    core_error = None
+    if updates:
+        patch: dict = {}
+        if 'tools_search_enabled' in updates:
+            patch.setdefault('search', {})['enabled'] = updates['tools_search_enabled']
+        if 'tools_mcp_enabled' in updates:
+            patch.setdefault('mcp', {})['enabled'] = updates['tools_mcp_enabled']
+        try:
+            written = wb2api.save_upstream_config(patch)
+            hot = await wb2api.apply_config_hot(written)
+            if not hot.get('ok'):
+                core_applied = False
+                core_error = hot.get('message') or '上游未确认保存'
+        except Exception as exc:  # noqa: BLE001 - 远端/磁盘错误都要回滚
+            core_applied = False
+            core_error = str(exc)
+        if not core_applied:
+            # 回滚 manager：否则会出现「manager 放行、core 仍 404」的半开状态。
+            for key, value in previous.items():
+                db.set_setting(key, value)
+            raise HTTPException(status_code=502, detail=f'core 配置写入失败：{core_error}')
+
+    changed = '，'.join(f'{k}={v}' for k, v in sorted(updates.items()))
+    security.audit(user, 'update_tools_settings', '',
+                   f"{changed or '（无改动）'}；来源 {client_ip(request)}")
+    result = _tools_view()
+    result['core_applied'] = core_applied
+    result['core_error'] = core_error
+    return result
+
+
 # ── 日志保留策略（迁移 C2：`log_retention_overrides`）───────
 @router.get('/settings/log-retention')
 def get_log_retention(user: dict = Depends(security.current_user)) -> dict:

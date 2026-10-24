@@ -1569,6 +1569,22 @@ export interface ResponsesSettings {
 }
 
 /**
+ * 工具端点开关（迁移 Todo 29，契约 §4）。
+ *
+ * `core_writable=false` 表示存在非默认上游分组：manager 的开关是全局的，但
+ * core 的 `search.enabled`/`mcp.enabled` 在每个分组自己的实例上，面板只能写
+ * 默认 upstream。此时前端必须禁用开关并提示到该实例自己的面板设置。
+ */
+export interface ToolsSettings {
+  search_enabled: boolean;
+  mcp_enabled: boolean;
+  core_writable: boolean;
+  non_default_upstreams: string[];
+  core_applied?: boolean;
+  core_error?: string | null;
+}
+
+/**
  * 模型路由（迁移 Todo 6，契约 §2）。
  *
  * 形状与后端 `modelrouteadmin.list_routes` 一一对应，**没有** `priority`、

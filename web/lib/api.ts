@@ -36,6 +36,7 @@ import type {
   KeyImportStatus,
   LogRetention,
   ResponsesSettings,
+  ToolsSettings,
   Me,
   ModelCatalog,
   ModelListResponse,
@@ -731,6 +732,9 @@ export const settingsApi = {
   responses: () => get<ResponsesSettings>('/api/settings/responses'),
   saveResponses: (body: Partial<ResponsesSettings>) =>
     post<ResponsesSettings>('/api/settings/responses', body),
+  tools: () => get<ToolsSettings>('/api/settings/tools'),
+  saveTools: (body: Partial<ToolsSettings>) =>
+    post<ToolsSettings>('/api/settings/tools', body),
   users: () => get<UserItem[]>('/api/users'),
   /** 管理端审计日志（登录/改密码/增删用户等，仅管理员可读） */
   auditLogs: (limit = 200) => get<AuditLogPage>('/api/audit-logs', {limit}),

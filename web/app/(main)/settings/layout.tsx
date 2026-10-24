@@ -58,6 +58,7 @@ import {ChangelogPanel} from '@/components/common/settings/ChangelogPanel';
 import {UpstreamReloadNotice} from '@/components/common/settings/UpstreamReloadNotice';
 import {ModelRoutesPanel} from '@/components/common/settings/ModelRoutesPanel';
 import {ResponsesPanel} from '@/components/common/settings/ResponsesPanel';
+import {ToolsPanel} from '@/components/common/settings/ToolsPanel';
 import {CopyButton} from '@/components/ui/copy-button';
 import {Button} from '@/components/ui/button';
 import {Badge} from '@/components/ui/badge';
@@ -1385,6 +1386,7 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
           {/* Responses 投影 / 工具修复是 manager 本地设置，走 /api/settings/responses；
               放在这里是因为它与「默认上游的出站行为」相邻，且默认 Tab 最容易找到。 */}
           <ResponsesPanel />
+          <ToolsPanel />
           {upstreamError && (
             <div className="flex items-start gap-2.5 rounded-[20px] border border-amber-500/30 bg-amber-500/10 p-4">
               <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />

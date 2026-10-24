@@ -1732,9 +1732,22 @@
     "retentionLoadFailed": "Could not load the retention settings",
     "retentionInvalid": "Invalid input: days must be integers from 1 to 3650, rows from 1 to 1000000.",
     "retentionNoChanges": "Nothing to save",
-    "retentionSaved": "Retention settings saved"
+    "retentionSaved": "Retention settings saved",
+    "toolsTitle": "Tool endpoints (search / MCP)",
+    "toolsDesc": "Controls /v1/search and /v1/mcp. The switches write both the manager settings and the default upstream core config. Off by default.",
+    "toolsReadonly": "Read-only role cannot change this",
+    "toolsSearch": "Enable /v1/search",
+    "toolsSearchDesc": "Calls the upstream search API per request; manager allows 60/min per key, core 600/min per upstream key.",
+    "toolsMcp": "Enable /v1/mcp",
+    "toolsMcpDesc": "Stateless JSON-RPC 2.0 (initialize / tools/list / tools/call) exposing only web_search.",
+    "toolsNonDefaultHint": "Non-default upstream groups exist ({groups}): set core flags on that instance’s own panel or config file. Only the default group can be changed here.",
+    "toolsCostHint": "Search/MCP produce no model usage, but every call hits the upstream and consumes account credit.",
+    "toolsSaved": "Tool endpoint settings saved",
+    "toolsLoadError": "Failed to load tool endpoint settings. Refresh and try again."
   },
   "phrases": {
+    "默认上游 · 出站标识与图片策略": "Default upstream · egress identity and image policy",
+    "网关向腾讯发起请求时的客户端标识，以及图片数量/能力预检。这些字段只作用于**默认上游**；其它分组请到该实例自己的面板或配置文件里改": "Client identity used when calling Tencent, plus image count and capability preflight. These fields apply to the **default upstream only**; edit other groups in their own panel or config file.",
     "单请求图片上限": "Max images per request",
     "一次请求最多保留多少张图片（0 = 不限）。truncate 保留最新的 N 张，error 直接拒绝。只作用于默认上游": "Maximum images kept per request (0 = unlimited). truncate keeps the newest N; error rejects with 413. Applies to the default upstream only.",
     "超限图片策略": "Over-limit image policy",
