@@ -316,6 +316,12 @@ class WriteEndpointScopeMatrixTest(unittest.TestCase):
         'POST /api/panel/accounts/{uid}/tasks/auto_all',
         'POST /api/panel/tasks/scan_all',
         'POST /api/panel/tasks/run_queue',
+        # 面板 Phase 3：补偿领取会真实写上游并消耗/领取账号额度；暂停/恢复会
+        # 改变账号是否参与转发选号——都属于服务级动作，API Token 一律 403。
+        'POST /api/panel/compensation/claim-all',
+        'POST /api/panel/compensation/{uid}/claim',
+        'POST /api/panel/accounts/{uid}/pause',
+        'POST /api/panel/accounts/{uid}/resume',
         # 模型目录口径（迁移 Todo 18）：打开 `catalog_group_merge` 会让管理端目录
         # 去**所有分组**拉模型清单（消耗各组账号额度、暴露其它分组的模型名）。
         # 与改上游分组同级，泄露的管理令牌不该能改它。
