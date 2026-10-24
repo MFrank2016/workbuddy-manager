@@ -8,6 +8,8 @@ import {
   KeyRound,
   Pause,
   Play,
+  CirclePause,
+  CirclePlay,
   Trash2,
   Plus,
   Users,
@@ -32,7 +34,7 @@ import {
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {notify} from '@/lib/toast';
-import {accountApi, upstreamApi, upstreamsApi, errText} from '@/lib/api';
+import {accountApi, upstreamApi, upstreamsApi, errText, panelApi} from '@/lib/api';
 import type {
   Account,
   CreditExpiry,
@@ -77,6 +79,7 @@ import {AccountCoolingDialog} from '@/components/common/accounts/AccountCoolingD
 import {AccountTaskDialog} from '@/components/common/accounts/AccountTaskDialog';
 import {AccountTaskDrawer} from '@/components/common/accounts/AccountTaskDrawer';
 import {PanelObservabilityPanel} from '@/components/common/accounts/PanelObservabilityPanel';
+import {PanelCompensationPanel} from '@/components/common/accounts/PanelCompensationPanel';
 import {useAuth} from '@/lib/auth-context';
 import {realmLabel, useRealm} from '@/lib/realm-context';
 import {PROFILES, accountRealm, type Profile} from '@/lib/key-profile';
@@ -581,6 +584,16 @@ export default function AccountsPage() {
    *  于是同一个账号首页说「在线」、这里说「未加载」）。
    *  这里只负责「怎么画」，不再自行判断。 */
   function renderStatus(a: Account) {
+    // 暂停选号是 core 面板的运行态：账号仍在线、任务照常，只是不参与转发。
+    // 先于其它档位展示，否则会被「在线」盖住，用户看不出它没在接流量。
+    if (a.paused === true) {
+      return (
+        <Badge variant="secondary" className="rounded-full text-sky-600 dark:text-sky-400"
+               title={t('accounts.selectionPausedTitle')}>
+          {t('accounts.selectionPaused')}
+        </Badge>
+      );
+    }
     const tier = availabilityOf(a);
     const label = t(availabilityLabelKey(tier, a));
 
@@ -960,6 +973,9 @@ export default function AccountsPage() {
     // 于是被禁用的号按钮显示成「停用」，点一下反而给**已被禁用**的号再加一层
     // manual_disabled（越弄越糟），而真正需要的「启用」根本没有入口。
     const stopped = paused || viaBit || autoDisabled;
+    // core 面板的「暂停选号」：与上面的改名停用/状态位停用是两套机制。
+    // 它只摘转发流量，签到/活跃/保活/刷新余额都继续，所以不隐藏其它操作。
+    const selectionPaused = a.paused === true;
     const hasClearableState =
       a.cooling === true ||
       rateLimitedModels(a).length > 0 ||
@@ -1125,6 +1141,26 @@ export default function AccountsPage() {
             onClick={() => setMoveTarget(a)}
           >
             <FolderInput className="h-3.5 w-3.5" />
+          </Button>
+        )}
+        {!paused && a.in_pool !== false && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className={'h-7 w-7 rounded-md ' + (selectionPaused
+              ? 'text-sky-600 hover:text-sky-700 dark:text-sky-400'
+              : 'text-sky-500 hover:text-sky-600')}
+            title={selectionPaused ? t('accounts.resumeSelectionTitle') : t('accounts.pauseSelectionTitle')}
+            disabled={busy}
+            onClick={() => run(
+              a.file,
+              () => selectionPaused
+                ? panelApi.resumeAccount(a.uid, groupId)
+                : panelApi.pauseAccount(a.uid, groupId),
+              selectionPaused ? t('accounts.resumedSelection') : t('accounts.pausedSelection'),
+            )}
+          >
+            {selectionPaused ? <CirclePlay className="h-3.5 w-3.5" /> : <CirclePause className="h-3.5 w-3.5" />}
           </Button>
         )}
         <Button
@@ -1716,6 +1752,7 @@ export default function AccountsPage() {
         onOpenChange={(open) => { if (!open) setTaskTarget(null); }}
         onFinished={reloadAll}
       />
+      <PanelCompensationPanel upstreamId={groupId} onChanged={reloadAll} />
       <PanelObservabilityPanel upstreamId={groupId} />
       <AccountTaskDrawer
         account={taskListTarget}

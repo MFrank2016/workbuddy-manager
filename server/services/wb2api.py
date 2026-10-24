@@ -363,6 +363,8 @@ def merge_pool_status(accounts: list[dict], status: dict) -> list[dict]:
         credits = p.get('credits')
         a['credits'] = int(credits) if isinstance(credits, (int, float)) else None
         a['cooling'] = bool(p.get('cooling'))
+        # 暂停选号（core 面板 pause）：退出转发选号，但签到/活跃/保活照常。
+        a['paused'] = bool(p.get('paused'))
         # 冷却剩余秒数：上游状态机给的是权威值（可能是它解析出的「上游重置时刻」，
         # 也可能是无时间文案时的有界退避）。展示出来，用户就知道还要等多久，
         # 而不是只看到一个「冷却中」干等。

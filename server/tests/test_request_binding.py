@@ -195,6 +195,11 @@ class PostParamLocationAuditTest(unittest.TestCase):
         '/api/panel/accounts/{uid}/tasks/auto_all': {'upstream_id'},
         '/api/panel/tasks/scan_all': {'upstream_id'},
         '/api/panel/tasks/run_queue': {'upstream_id'},
+        # 面板 Phase 3：补偿领取 / 暂停选号写端点同样按 query 指定分组。
+        '/api/panel/compensation/claim-all': {'upstream_id'},
+        '/api/panel/compensation/{uid}/claim': {'upstream_id'},
+        '/api/panel/accounts/{uid}/pause': {'upstream_id'},
+        '/api/panel/accounts/{uid}/resume': {'upstream_id'},
     }
 
     # 覆盖的方法：**所有带 body 的写方法**，不只是 POST。

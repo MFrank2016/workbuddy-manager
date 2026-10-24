@@ -93,6 +93,7 @@ export function mergePoolStatus(
       manual_reason: typeof p.manual_reason === 'string' ? p.manual_reason : '',
       in_flight: typeof p.in_flight === 'number' ? p.in_flight : null,
       cooling: typeof p.cooling === 'boolean' ? p.cooling : null,
+      paused: typeof p.paused === 'boolean' ? p.paused : null,
       degrade_until: typeof p.degrade_until === 'string' ? p.degrade_until : null,
       consecutive_fails:
         typeof p.consecutive_fails === 'number' ? p.consecutive_fails : null,

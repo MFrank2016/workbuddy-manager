@@ -1,7 +1,7 @@
 """core 内置面板能力的 manager 代理（迁移 Phase 1）。"""
 from __future__ import annotations
 
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
@@ -175,3 +175,97 @@ async def panel_model_probes(upstream_id: int | None = Query(None),
         return await panelapi.call(up, 'GET', '/panel/api/model_probes')
     except panelapi.PanelAPIError as exc:
         _raise(exc)
+
+
+# ── Phase 3：补偿状态 / 积分历史 / 暂停选号 ─────────────────────────────
+
+
+@router.get('/panel/compensation')
+async def panel_compensation(upstream_id: int | None = Query(None),
+                             user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `GET /panel/api/compensation`（逐账号补偿状态，只读）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'GET', '/panel/api/compensation')
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+
+
+@router.post('/panel/compensation/claim-all')
+async def panel_compensation_claim_all(upstream_id: int | None = Query(None),
+                                       user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/compensation_all`（逐号查状态后领取）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(up, 'POST', '/panel/api/compensation_all', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    summary = out.get('summary') if isinstance(out.get('summary'), dict) else {}
+    security.audit(
+        user, 'panel_compensation_claim_all', '',
+        f"claimed={summary.get('claimed', 0)} credit={summary.get('credit', 0)} "
+        f"skipped={summary.get('skipped', 0)} errored={summary.get('errored', 0)}",
+    )
+    return out
+
+
+@router.post('/panel/compensation/{uid}/claim')
+async def panel_compensation_claim(uid: str, upstream_id: int | None = Query(None),
+                                   user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/accounts/{uid}/compensation`（单号领取）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(
+            up, 'POST', f'/panel/api/accounts/{_uid(uid)}/compensation', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    result = out.get('result') if isinstance(out.get('result'), dict) else {}
+    security.audit(
+        user, 'panel_compensation_claim', uid,
+        f"claimed={bool(result.get('claimed'))} credit={result.get('credit', 0)} "
+        f"skip={result.get('skip', '')} error={result.get('error', '')}",
+    )
+    return out
+
+
+@router.get('/panel/credit_history')
+async def panel_credit_history(uid: str | None = Query(None),
+                               limit: int = Query(200),
+                               upstream_id: int | None = Query(None),
+                               user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `GET /panel/api/credit_history`（逐账号积分变动流水）。"""
+    lim = max(1, min(1000, int(limit or 200)))
+    params: dict[str, str] = {'limit': str(lim)}
+    if uid:
+        params['uid'] = uid
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'GET', f'/panel/api/credit_history?{urlencode(params)}')
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+
+
+@router.post('/panel/accounts/{uid}/pause')
+async def panel_account_pause(uid: str, upstream_id: int | None = Query(None),
+                              user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/accounts/{uid}/pause`（暂停选号，保号任务照常）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(up, 'POST', f'/panel/api/accounts/{_uid(uid)}/pause', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    security.audit(user, 'panel_account_pause', uid)
+    return out
+
+
+@router.post('/panel/accounts/{uid}/resume')
+async def panel_account_resume(uid: str, upstream_id: int | None = Query(None),
+                               user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/accounts/{uid}/resume`（恢复参与选号）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(up, 'POST', f'/panel/api/accounts/{_uid(uid)}/resume', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    security.audit(user, 'panel_account_resume', uid)
+    return out

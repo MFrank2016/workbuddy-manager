@@ -43,6 +43,10 @@ import type {
   ModelRoute,
   ModelRouteList,
   Page,
+  PanelCompensation,
+  PanelCompensationAll,
+  PanelCompensationClaim,
+  PanelCreditHistory,
   PanelModelProbes,
   PanelPackages,
   PanelQueueStatus,
@@ -744,6 +748,23 @@ export const panelApi = {
     get<PanelSchoolVouchers>(`/api/panel/school/vouchers${groupQs(upstreamId)}`),
   modelProbes: (upstreamId?: number | null) =>
     get<PanelModelProbes>(`/api/panel/model_probes${groupQs(upstreamId)}`),
+  compensation: (upstreamId?: number | null) =>
+    get<PanelCompensation>(`/api/panel/compensation${groupQs(upstreamId)}`),
+  claimCompensation: (uid: string, upstreamId?: number | null) =>
+    post<PanelCompensationClaim>(
+      `/api/panel/compensation/${encodeURIComponent(uid)}/claim${groupQs(upstreamId)}`, {}),
+  claimAllCompensation: (upstreamId?: number | null) =>
+    post<PanelCompensationAll>(`/api/panel/compensation/claim-all${groupQs(upstreamId)}`, {}),
+  creditHistory: (uid?: string | null, limit = 200, upstreamId?: number | null) => {
+    const params = new URLSearchParams({limit: String(limit)});
+    if (uid) params.set('uid', uid);
+    if (upstreamId != null) params.set('upstream_id', String(upstreamId));
+    return get<PanelCreditHistory>(`/api/panel/credit_history?${params.toString()}`);
+  },
+  pauseAccount: (uid: string, upstreamId?: number | null) =>
+    post<{ok: boolean}>(`/api/panel/accounts/${encodeURIComponent(uid)}/pause${groupQs(upstreamId)}`, {}),
+  resumeAccount: (uid: string, upstreamId?: number | null) =>
+    post<{ok: boolean}>(`/api/panel/accounts/${encodeURIComponent(uid)}/resume${groupQs(upstreamId)}`, {}),
 };
 
 export const settingsApi = {

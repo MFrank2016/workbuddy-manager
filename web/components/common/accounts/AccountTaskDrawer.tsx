@@ -7,7 +7,7 @@ import {errText, panelApi} from '@/lib/api';
 import {useAuth} from '@/lib/auth-context';
 import {useI18n} from '@/lib/i18n/provider';
 import {notify} from '@/lib/toast';
-import type {Account, PanelTask} from '@/lib/types';
+import type {Account, PanelCreditHistoryEntry, PanelTask} from '@/lib/types';
 import {Button} from '@/components/ui/button';
 import {
   Drawer,
@@ -45,6 +45,9 @@ export function AccountTaskDrawer({
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
+  const [history, setHistory] = useState<PanelCreditHistoryEntry[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyFailed, setHistoryFailed] = useState(false);
 
   const load = useCallback(async () => {
     if (!account) return;
@@ -63,6 +66,30 @@ export function AccountTaskDrawer({
   useEffect(() => {
     if (open) void load();
   }, [open, load]);
+
+  // 切换账号时清掉上一个号的流水，避免抽屉里短暂显示错人的历史。
+  useEffect(() => {
+    setHistory(null);
+    setHistoryFailed(false);
+  }, [account?.uid, upstreamId]);
+
+  const loadHistory = useCallback(async () => {
+    if (!account) return;
+    setHistoryLoading(true);
+    try {
+      const r = await panelApi.creditHistory(account.uid, 100, upstreamId);
+      setHistory(r.entries || []);
+      setHistoryFailed(false);
+    } catch {
+      setHistoryFailed(true);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [account, upstreamId]);
+
+  function onHistoryToggle(open: boolean) {
+    if (open && history === null && !historyLoading) void loadHistory();
+  }
 
   async function run(key: string, fn: () => Promise<unknown>, okKey: string) {
     setActing(key);
@@ -198,6 +225,43 @@ export function AccountTaskDrawer({
               </div>
             </div>
           ))}
+
+          <details className="rounded-xl bg-muted px-3 py-2.5"
+                   onToggle={(e) => onHistoryToggle(e.currentTarget.open)}>
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-xs font-medium">
+              <span>{t('panelHistory.title')}</span>
+              <span className="text-[11px] text-muted-foreground">{t('panelHistory.desc')}</span>
+            </summary>
+            <div className="mt-2 space-y-1.5">
+              {historyLoading && (
+                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {t('panelHistory.loading')}
+                </div>
+              )}
+              {historyFailed && (
+                <div className="text-[11px] text-amber-600 dark:text-amber-400">
+                  {t('panelHistory.failed')}
+                </div>
+              )}
+              {!historyLoading && !historyFailed && history?.length === 0 && (
+                <div className="text-[11px] text-muted-foreground">{t('panelHistory.empty')}</div>
+              )}
+              {(history || []).map((e, i) => (
+                <div key={`${e.time}-${e.uid}-${i}`}
+                     className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-background px-2 py-1.5 text-[11px]">
+                  <span className="text-muted-foreground">{e.time}</span>
+                  <span className="flex items-center gap-2 tabular-nums">
+                    <span className={e.delta > 0 ? 'text-emerald-600 dark:text-emerald-400'
+                      : e.delta < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'}>
+                      {e.delta > 0 ? '+' : ''}{e.delta}
+                    </span>
+                    <span className="text-muted-foreground">{e.before} → {e.after}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </details>
         </div>
       </DrawerContent>
     </Drawer>

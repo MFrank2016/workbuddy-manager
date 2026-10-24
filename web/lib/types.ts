@@ -32,6 +32,8 @@ export interface Account {
   disabled_reason?: string | null;
   in_flight?: number | null;
   cooling?: boolean | null;
+  /** 暂停选号（core 面板 pause）：退出转发选号，但签到/活跃/保活照常。 */
+  paused?: boolean | null;
   /** 冷却剩余秒数（上游权威值：可能是上游明说的重置时刻，也可能是有界退避）；null = 未在冷却 */
   cool_remaining_sec?: number | null;
   /**
@@ -1745,4 +1747,70 @@ export interface PanelModelProbes {
   probes: Record<string, PanelModelProbe>;
   exists: boolean;
   updated_at?: string;
+}
+
+
+/* ── core 面板 Phase 3：补偿 / 积分历史 / 暂停选号 ─────────────── */
+
+export interface PanelCompensationStatus {
+  active: boolean;
+  claimed: boolean;
+  credit_num: number;
+  validity_period?: number;
+  end_time?: string;
+}
+
+export interface PanelCompensationRow {
+  uid: string;
+  nickname?: string;
+  status: PanelCompensationStatus;
+  skip?: string;
+  skip_msg?: string;
+  error?: string;
+}
+
+export interface PanelCompensation { ok: boolean; accounts: PanelCompensationRow[] }
+
+export interface PanelCompensationResult {
+  uid: string;
+  nickname?: string;
+  status: PanelCompensationStatus;
+  claimed: boolean;
+  credit?: number;
+  skip?: string;
+  skip_msg?: string;
+  error?: string;
+}
+
+export interface PanelCompensationClaim {
+  ok: boolean;
+  result: PanelCompensationResult;
+}
+
+export interface PanelCompensationSummary {
+  total: number;
+  claimed: number;
+  skipped: number;
+  errored: number;
+  credit: number;
+}
+
+export interface PanelCompensationAll {
+  ok: boolean;
+  summary: PanelCompensationSummary;
+  results: PanelCompensationResult[];
+}
+
+export interface PanelCreditHistoryEntry {
+  time: string;
+  uid: string;
+  account?: string;
+  delta: number;
+  before: number;
+  after: number;
+}
+
+export interface PanelCreditHistory {
+  entries: PanelCreditHistoryEntry[];
+  limit: number;
 }
