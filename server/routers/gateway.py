@@ -1,6 +1,7 @@
 """对外反代网关：密钥鉴权 → IP 管控 → 模型映射 → 转发 → 计量落库。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from urllib.parse import urlsplit
@@ -13,7 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import config, db, iputil, keysvc, upstreamsvc
-from ..services import billing, modellisting, modelmap, modelroutes, proxyroutes
+from ..services import billing, modelcatalog, modellisting, modelmap, modelroutes, proxyroutes
 from ..config import _env_int
 from ..routers.security import get_config as get_security_config
 
@@ -968,6 +969,10 @@ async def list_models(request: Request):
         latency = int((time.time() - started) * 1000)
         _record(key, ip, '', '', resp.status_code, 0, 0, latency, request.headers.get('user-agent'), None, False)
         payload = _scope_models(resp.json(), key)
+        # 目录收缩（issue #239）：上游模型表可能仍列着腾讯已经下架的 id，
+        # 客户端选中后才 503。模型中心直连腾讯的目录是当前可用的权威清单，
+        # 取得到且来源是腾讯时按它裁一次；取不到就原样透传。
+        payload = await _drop_models_outside_catalog(payload, key)
         # 能力字段兜底（issue #211）：随包上游的版本可能比面板旧 —— 补丁只在上游
         # 侧时，下游经面板拿到的清单仍缺字段，客户端会整条跳过模型。
         payload = _listing_compat_models(payload)
@@ -1017,6 +1022,76 @@ def _as_anthropic_models(payload: object) -> object:
 def _alias_entries(items: list, allow: list[str]) -> list[dict]:
     """旧 `model_map` 的白名单别名补条目（薄包装，判据在 `services.modellisting`）。"""
     return modellisting.alias_entries(items, allow)
+
+
+def _catalog_model_key(model: object) -> str:
+    """模型名的跨源比对键：去掉 `cn:` / `global:` 前缀。
+
+    两个来源的前缀口径不同：上游清单国际版带 `global:`，模型中心直连腾讯
+    给的是裸名。同一把密钥只看一个版本，所以去掉前缀比对不会把两版同名
+    模型混在一起（版本维度由 `modellisting.realm_of` 先筛过）。
+    """
+    raw = keysvc._bare_model(model)
+    return raw[7:] if raw.lower().startswith('global:') else raw
+
+
+def _filter_catalog_models(payload: object, key: dict | None,
+                           realm: str, catalog_ids: set[str]) -> object:
+    """按模型中心的实时目录裁掉已下架的 id（issue #239）。
+
+    上游 `/v1/models` 的表里仍留着腾讯已经收缩掉的旧模型；下游把它当选择器，
+    选中后才 503。模型中心直连腾讯的目录是当前可用的权威清单，取得到时以它
+    为准。白名单里的**别名**要继续保留（它指向的模型仍在目录里）。
+    """
+    if not isinstance(payload, dict) or not catalog_ids:
+        return payload
+    items = payload.get('data')
+    if not isinstance(items, list):
+        return payload
+    key = key or {}
+    mapping = db.get_setting('model_map', {}) or {}
+    aliases: set[str] = set()
+    for raw in key.get('models') or []:
+        name = keysvc._bare_model(raw)
+        target = modelmap.target_for(mapping, name)
+        if target and _catalog_model_key(target) in catalog_ids:
+            aliases.add(_catalog_model_key(name))
+    kept: list = []
+    for m in items:
+        if not isinstance(m, dict) or not m.get('id'):
+            kept.append(m)
+            continue
+        if modellisting.realm_of(m.get('id')) != realm:
+            kept.append(m)
+            continue
+        mid = _catalog_model_key(m.get('id'))
+        if mid in catalog_ids or mid in aliases:
+            kept.append(m)
+    return {**payload, 'data': kept}
+
+
+async def _drop_models_outside_catalog(payload: object, key: dict | None) -> object:
+    """取该版本的模型中心目录并裁掉已下架模型；取不到就原样返回。
+
+    目录走 `modelcatalog.catalog()`（5 分钟缓存，来源可能是直连腾讯，也可能
+    是上游回退）。**只有来源是腾讯时才裁**：上游回退本身就是同一份旧表，
+    拿它裁等于没裁。超时/异常一律放弃裁剪，不能因为目录取不到就把列表清空。
+    """
+    if not isinstance(payload, dict):
+        return payload
+    realm = keysvc._norm_realm((key or {}).get('realm'))
+    if realm not in ('cn', 'global'):
+        return payload
+    try:
+        cat = await asyncio.wait_for(modelcatalog.catalog(realm), timeout=5)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug('模型目录裁剪跳过：%s', exc)
+        return payload
+    if cat.get('source') != 'tencent':
+        return payload
+    ids = {_catalog_model_key(m.get('id')) for m in (cat.get('models') or [])
+           if isinstance(m, dict) and m.get('id')}
+    return _filter_catalog_models(payload, key, realm, ids)
 
 
 def _scope_models(payload: object, key: dict | None) -> object:

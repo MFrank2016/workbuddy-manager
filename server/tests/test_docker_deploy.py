@@ -995,6 +995,79 @@ class MultiArchImageTest(unittest.TestCase):
         self.assertIn('exit 1', df, '不支持的架构应直接失败')
 
 
+class UpstreamImagePublishTest(unittest.TestCase):
+    """上游也要发预构建镜像（issue #241）。
+
+    用户要跑多个上游容器做分组时，此前只能自己 build：先拉 golang 基础镜像、
+    再编译 6 个二进制；国内网络常常卡在拉基础镜像那一步。于是有人拿第三方镜像
+    顶上，面板随即提示「与项目上游源码不一致」—— 版本漂移的根源不是用户乱来，
+    而是官方没给可拉的东西。
+
+    这里锁住三条：镜像必须**用发布包里那份源码**构建（= 资产 + 全部补丁，
+    与面板随包上游同源，否则又制造一次漂移）、必须多架构、取不到上游源码时
+    不能把发版带红。
+    """
+
+    def setUp(self) -> None:
+        self.wf = (_ROOT / '.github' / 'workflows' / 'release.yml').read_text(encoding='utf-8')
+
+    def _step(self, name: str) -> str:
+        start = self.wf.find('- name: ' + name)
+        self.assertGreater(start, 0, f'找不到步骤：{name}')
+        end = self.wf.find('- name:', start + 10)
+        return self.wf[start:end if end > 0 else len(self.wf)]
+
+    def test_builds_from_the_bundled_upstream(self) -> None:
+        block = self._step('构建并推送上游镜像')
+        self.assertIn('${{ steps.pack.outputs.stage }}/upstream', block,
+                      '上游镜像必须用发布包里那份源码构建，否则会与面板随包上游漂移')
+        self.assertIn('workbuddy2api', self.wf, '镜像名里没有上游项目名')
+
+    def test_upstream_image_is_multi_arch(self) -> None:
+        block = self._step('构建并推送上游镜像')
+        self.assertIn('linux/amd64', block)
+        self.assertIn('linux/arm64', block,
+                      '上游镜像也要 arm64 —— 否则 ARM 主机仍然只能自己 build')
+
+    def test_missing_upstream_does_not_break_release(self) -> None:
+        block = self._step('构建并推送上游镜像')
+        self.assertIn("steps.pack.outputs.has_upstream == '1'", block,
+                      '取不到上游源码时应跳过，不能让发版失败')
+        self.assertIn('continue-on-error: true', block,
+                      '镜像推不上去不该让发布作业标红')
+
+    def test_upstream_image_carries_version_and_upstream_id_labels(self) -> None:
+        """镜像必须自带版本与上游标识 label。
+
+        镜像部署（compose 用 image: 不用 build:）下，本机磁盘没有源码目录，
+        .upstream-id 文件不存在，面板会把「随包上游与本机不一致」永远挂在
+        界面上。镜像有了自描述 label，面板读容器镜像的 labels 就能判断
+        「镜像部署且与本次发布同源」。label 一丢，这条判定路径就断了。
+        """
+        block = self._step('构建并推送上游镜像')
+        self.assertIn('org.opencontainers.image.version=', block,
+                      '上游镜像缺少版本 label，镜像部署无法自报版本')
+        self.assertIn('dev.workbuddy.upstream-id=${{ steps.pack.outputs.upstream_id }}',
+                      block, '上游镜像缺少 upstream-id label，面板无法判定镜像与发布同源')
+        pack = self._step('组装发布目录')
+        self.assertIn('echo "upstream_id=$UPSTREAM_ID" >> $GITHUB_OUTPUT', pack,
+                      'pack 步骤没有产出 upstream_id，镜像 label 会渲染成空串')
+
+
+class UpdaterBootstrapPackagingTest(unittest.TestCase):
+    """发布包必须把更新器放一份到 server/（issue #240）。
+
+    旧安装的根目录 `deploy/update.py` 可能不支持随包同步；它不会替换自己，
+    只靠根目录那份会让「随包上游与本机不一致」永远消不掉。server/ 每次更新
+    都会被整体替换，因此包内 `server/deploy/update.py` 是更新器的自举入口。
+    """
+
+    def test_release_stage_copies_updater_into_server(self) -> None:
+        wf = (_ROOT / '.github' / 'workflows' / 'release.yml').read_text(encoding='utf-8')
+        self.assertIn('cp deploy/update.py "$STAGE/server/deploy/update.py"', wf,
+                      '发布包没有把更新器放进 server/，旧部署的更新器永远换不掉')
+
+
 # 模板**随仓库分发**（PR #58）：用户 fork 之后把它复制进自己 fork 的
 # `.github/workflows/` 才会生效。这里直接测模板本身，而不是等它在
 # `.github/workflows/build-image.yml` 下出现 —— 后者在本仓库永远不会出现
