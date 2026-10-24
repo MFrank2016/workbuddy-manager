@@ -187,6 +187,14 @@ class PostParamLocationAuditTest(unittest.TestCase):
         # 账号导入（PR #145）：前端把分组与「是否覆盖同 uid」都按 query 传
         '/api/accounts/upload': {'upstream_id', 'overwrite'},
         '/api/restart': {'upstream_id'},
+        # 面板任务代理（迁移 Phase 1）：写端点按 `?upstream_id=` 指定作用于哪个分组。
+        '/api/panel/accounts/{uid}/tasks/accept': {'upstream_id'},
+        '/api/panel/accounts/{uid}/tasks/accept_all': {'upstream_id'},
+        '/api/panel/accounts/{uid}/tasks/claim': {'upstream_id'},
+        '/api/panel/accounts/{uid}/tasks/auto': {'upstream_id'},
+        '/api/panel/accounts/{uid}/tasks/auto_all': {'upstream_id'},
+        '/api/panel/tasks/scan_all': {'upstream_id'},
+        '/api/panel/tasks/run_queue': {'upstream_id'},
     }
 
     # 覆盖的方法：**所有带 body 的写方法**，不只是 POST。

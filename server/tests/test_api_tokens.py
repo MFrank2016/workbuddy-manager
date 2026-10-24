@@ -307,6 +307,15 @@ class WriteEndpointScopeMatrixTest(unittest.TestCase):
         # 工具端点开关（迁移 Todo 29）：同时改 manager 代理与 core 端点是否存在，
         # 属于服务级动作；写只对会话开放。
         'POST /api/settings/tools',
+        # 面板任务代理（迁移 Phase 1）：accept/claim/auto/scan/run_queue 都会真实
+        # 写上游并消耗账号额度，只对会话管理员开放，API Token 一律 403。
+        'POST /api/panel/accounts/{uid}/tasks/accept',
+        'POST /api/panel/accounts/{uid}/tasks/accept_all',
+        'POST /api/panel/accounts/{uid}/tasks/claim',
+        'POST /api/panel/accounts/{uid}/tasks/auto',
+        'POST /api/panel/accounts/{uid}/tasks/auto_all',
+        'POST /api/panel/tasks/scan_all',
+        'POST /api/panel/tasks/run_queue',
         # 模型目录口径（迁移 Todo 18）：打开 `catalog_group_merge` 会让管理端目录
         # 去**所有分组**拉模型清单（消耗各组账号额度、暴露其它分组的模型名）。
         # 与改上游分组同级，泄露的管理令牌不该能改它。
