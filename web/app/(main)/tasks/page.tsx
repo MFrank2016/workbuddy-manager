@@ -27,6 +27,7 @@ import {ConfirmDialog} from '@/components/common/layout/ConfirmDialog';
 import {LoadError} from '@/components/common/states/LoadError';
 import {SkeletonBar} from '@/components/common/states/SkeletonBar';
 import {TaskRunnerPanel} from '@/components/common/tasks/TaskRunnerPanel';
+import {TaskCenterPanel} from '@/components/common/tasks/TaskCenterPanel';
 import {useAuth} from '@/lib/auth-context';
 import {useRealm} from '@/lib/realm-context';
 import {Button} from '@/components/ui/button';
@@ -334,6 +335,8 @@ export default function TasksPage() {
   // 成长任务一键执行（issue #19）。仅管理员：这些操作会对账号发起真实写请求，
   // 后端也以 require_admin 兜底。国际版无成长中心体系，故不显示。
   const runner = isAdmin && (realm ?? 'cn') === 'cn' ? <TaskRunnerPanel /> : null;
+  // core 面板的成长任务队列（扫描/执行/进度）；与脚本一键执行是两条路径。
+  const taskCenter = isAdmin ? <TaskCenterPanel /> : null;
 
   // 计划任务（令牌刷新计划 + 每日任务）：到点自动跑的东西放「任务」这一页才对 ——
   // 它跟「这个账号是谁」无关，只跟「什么时候做什么」有关（用户反馈：原先挂在账号页）
@@ -354,6 +357,7 @@ export default function TasksPage() {
       <div className="flex flex-col gap-4 md:gap-6">
         {header}
         {runner}
+        {taskCenter}
       {planCard}
         {isInitialFailed ? <LoadError variant="page" onRetry={reload} /> : <TasksSkeleton />}
       </div>
@@ -364,6 +368,7 @@ export default function TasksPage() {
     <div className="flex flex-col gap-4 md:gap-6" aria-busy={isRefreshing}>
       {header}
       {runner}
+      {taskCenter}
       {planCard}
 
       {/* 移动端：三块整合成一张卡片，用分段切换，避免又长又碎 */}

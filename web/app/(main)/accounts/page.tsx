@@ -23,6 +23,7 @@ import {
   RotateCcw,
   Snowflake,
   Sparkles,
+  ListChecks,
   StickyNote,
   Scale,
   FolderInput,
@@ -74,6 +75,7 @@ import {MoveAccountDialog} from '@/components/common/accounts/MoveAccountDialog'
 import {UpstreamFormDialog} from '@/components/common/upstreams/UpstreamFormDialog';
 import {AccountCoolingDialog} from '@/components/common/accounts/AccountCoolingDialog';
 import {AccountTaskDialog} from '@/components/common/accounts/AccountTaskDialog';
+import {AccountTaskDrawer} from '@/components/common/accounts/AccountTaskDrawer';
 import {useAuth} from '@/lib/auth-context';
 import {realmLabel, useRealm} from '@/lib/realm-context';
 import {PROFILES, accountRealm, type Profile} from '@/lib/key-profile';
@@ -130,6 +132,8 @@ export default function AccountsPage() {
   const [coolingTarget, setCoolingTarget] = useState<Account | null>(null);
   // 活动任务（单账号执行成长任务）的目标账号；null = 对话框关闭
   const [taskTarget, setTaskTarget] = useState<Account | null>(null);
+  // 逐项任务清单（core 面板 tasks 接口）；与上面的脚本一键执行是两条路径。
+  const [taskListTarget, setTaskListTarget] = useState<Account | null>(null);
   const [busyFile, setBusyFile] = useState<string | null>(null);
   /**
    * 列表的检索 / 状态筛选 / 排序 / 页码（P1-3）。
@@ -1039,6 +1043,20 @@ export default function AccountsPage() {
             <Sparkles className="h-3.5 w-3.5" />
           </Button>
         )}
+        {/* 逐项任务清单（core 面板）：看进度、接受、领取、自动完成。按分组走
+            对应实例的面板 API，所以非默认分组也显示（与脚本一键执行不同）。 */}
+        {!paused && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 rounded-md"
+            title={t('panelTasks.open')}
+            disabled={busy}
+            onClick={() => setTaskListTarget(a)}
+          >
+            <ListChecks className="h-3.5 w-3.5" />
+          </Button>
+        )}
         {(!off || viaBit) && (
           <>
             <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md" title={t('accounts.test')} disabled={busy}
@@ -1695,6 +1713,13 @@ export default function AccountsPage() {
         account={taskTarget}
         open={taskTarget !== null}
         onOpenChange={(open) => { if (!open) setTaskTarget(null); }}
+        onFinished={reloadAll}
+      />
+      <AccountTaskDrawer
+        account={taskListTarget}
+        upstreamId={groupId}
+        open={taskListTarget !== null}
+        onOpenChange={(open) => { if (!open) setTaskListTarget(null); }}
         onFinished={reloadAll}
       />
     </div>
