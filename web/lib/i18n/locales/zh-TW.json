@@ -167,7 +167,9 @@
     "expired": "已過期",
     "urgent": "即將過期",
     "soon": "偏緊",
-    "valid": "有效"
+    "valid": "有效",
+    "fold": "收合",
+    "unfold": "展開"
   },
   "credit": {
     "expired": "已到期",
@@ -292,6 +294,9 @@
     "hourlyAgg": "按小時（當日彙總）",
     "tokensPerSec": "輸出 tok/s",
     "throughputHint": "依 {n} 筆成功請求的生成耗時估算（僅涵蓋日誌保留期間）"
+  },
+  "panel": {
+    "expiryMoreBuckets": "隨後 {count} 批"
   },
     "panelTasks": {
       "title": "任務清單",
@@ -500,6 +505,7 @@
     "notePlaceholder": "例如：張叔叔（高中同學）",
     "noteSaved": "備註已儲存",
     "noteCleared": "備註已清除",
+    "noteSharedHint": "本部署共享",
     "weight": "權重",
     "weightTitle": "帳號權重",
     "weightDesc": "設定「{name}」的選號權重。",
@@ -553,6 +559,8 @@
     "modelLimitBadge": "模型受限 {models}",
     "modelLimited": "限流中",
     "modelLimitUntil": "預計 {at} 恢復",
+    "modelLimitDualClock": "上游重置 {reset}",
+    "modelLimitGatewayRetry": "閘道最快 {until} 重試",
     "modelMissing": "該帳號沒有這個模型",
     "creditsNoneTitle": "上游尚未回傳該帳號的積分（可能剛新增，或上游無法連線）",
     "snapshot": "上游快照",
@@ -976,6 +984,9 @@
     "fallbackNote": "騰訊模型介面未取到（通常是帳號憑證過期或網路問題），目前顯示的是上游回傳的簡表，缺少顯示名稱與推理檔位。可在「帳號」頁重新整理權杖後再重新拉取。",
     "emptyNote": "騰訊模型介面與上游均未取到模型，請確認帳號可用且上游容器正在執行。",
     "available": "可用模型",
+    "availabilityDenied": "無權限",
+    "availabilityBlocked": "被鎖",
+    "availabilityOk": "可用",
     "reasoning": "支援推理",
     "reasoningHint": "帶推理檔位（low/high/max）",
     "largeContext": "大上下文",

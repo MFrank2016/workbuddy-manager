@@ -179,7 +179,9 @@
     "expired": "Expired",
     "urgent": "Expiring soon",
     "soon": "Tight",
-    "valid": "Valid"
+    "valid": "Valid",
+    "fold": "Collapse",
+    "unfold": "Expand"
   },
   "credit": {
     "expired": "expired",
@@ -319,6 +321,9 @@
     "hourlyAgg": "Hourly (today)",
     "tokensPerSec": "Output tok/s",
     "throughputHint": "Estimated from {n} successful requests (request-log retention window only)"
+  },
+  "panel": {
+    "expiryMoreBuckets": "{count} more batches"
   },
     "panelTasks": {
       "title": "Task list",
@@ -527,6 +532,7 @@
     "notePlaceholder": "e.g. Uncle Zhang (high school)",
     "noteSaved": "Note saved",
     "noteCleared": "Note cleared",
+    "noteSharedHint": "Shared across this deployment",
     "weight": "Weight",
     "weightTitle": "Account weight",
     "weightDesc": "Set the selection weight for {name}.",
@@ -580,6 +586,8 @@
     "modelLimitBadge": "Models limited: {models}",
     "modelLimited": "rate limited",
     "modelLimitUntil": "expected back at {at}",
+    "modelLimitDualClock": "Upstream reset {reset}",
+    "modelLimitGatewayRetry": "Gateway retry as soon as {until}",
     "modelMissing": "this account does not have this model",
     "creditsNoneTitle": "Upstream has not returned credits for this account yet (recently added, or upstream unreachable)",
     "snapshot": "Upstream snapshot",
@@ -1003,6 +1011,9 @@
     "fallbackNote": "The Tencent model API returned nothing (usually an expired credential or a network problem), so the short list from upstream is shown — it lacks display names and reasoning tiers. Refresh the token on the Accounts page, then refetch.",
     "emptyNote": "Neither the Tencent model API nor upstream returned any model. Check that the account is usable and the upstream container is running.",
     "available": "Available models",
+    "availabilityDenied": "No permission",
+    "availabilityBlocked": "Locked",
+    "availabilityOk": "Available",
     "reasoning": "Reasoning",
     "reasoningHint": "with reasoning tiers (low/high/max)",
     "largeContext": "Large context",

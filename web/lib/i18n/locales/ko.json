@@ -167,7 +167,9 @@
     "expired": "만료됨",
     "urgent": "곧 만료",
     "soon": "촉박",
-    "valid": "유효"
+    "valid": "유효",
+    "fold": "접기",
+    "unfold": "펼치기"
   },
   "credit": {
     "expired": "만료됨",
@@ -292,6 +294,9 @@
     "hourlyAgg": "시간별(오늘)",
     "tokensPerSec": "출력 tok/s",
     "throughputHint": "성공한 요청 {n}건의 생성 시간으로 추정(로그 보존 기간만)"
+  },
+  "panel": {
+    "expiryMoreBuckets": "이어서 {count} 배치"
   },
     "panelTasks": {
       "title": "작업 목록",
@@ -500,6 +505,7 @@
     "notePlaceholder": "예: 장 아저씨(고등학교 동창)",
     "noteSaved": "메모를 저장했습니다",
     "noteCleared": "메모를 삭제했습니다",
+    "noteSharedHint": "이 배포에서 공유됨",
     "weight": "가중치",
     "weightTitle": "계정 가중치",
     "weightDesc": "「{name}」의 선택 가중치를 설정합니다.",
@@ -553,6 +559,8 @@
     "modelLimitBadge": "모델 제한 {models}",
     "modelLimited": "제한 중",
     "modelLimitUntil": "{at}경 복구 예상",
+    "modelLimitDualClock": "업스트림 재설정 {reset}",
+    "modelLimitGatewayRetry": "게이트웨이 최단 {until} 후 재시도",
     "modelMissing": "이 계정에는 이 모델이 없습니다",
     "creditsNoneTitle": "업스트림이 아직 이 계정의 크레딧을 반환하지 않았습니다 (방금 추가했거나 업스트림에 연결할 수 없음)",
     "snapshot": "업스트림 스냅샷",
@@ -976,6 +984,9 @@
     "fallbackNote": "Tencent 모델 API에서 가져오지 못했습니다(대개 자격 증명 만료 또는 네트워크 문제). 현재는 업스트림이 반환한 간략 목록을 표시하며 표시 이름과 추론 단계가 없습니다. 계정 페이지에서 토큰을 갱신한 뒤 다시 가져오세요.",
     "emptyNote": "Tencent 모델 API와 업스트림 모두에서 모델을 가져오지 못했습니다. 계정이 사용 가능하고 업스트림 컨테이너가 실행 중인지 확인하세요.",
     "available": "사용 가능한 모델",
+    "availabilityDenied": "권한 없음",
+    "availabilityBlocked": "잠김",
+    "availabilityOk": "사용 가능",
     "reasoning": "추론 지원",
     "reasoningHint": "추론 단계 포함(low/high/max)",
     "largeContext": "대용량 컨텍스트",

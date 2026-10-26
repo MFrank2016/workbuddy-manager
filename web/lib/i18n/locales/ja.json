@@ -167,7 +167,9 @@
     "expired": "期限切れ",
     "urgent": "まもなく期限切れ",
     "soon": "残りわずか",
-    "valid": "有効"
+    "valid": "有効",
+    "fold": "折りたたむ",
+    "unfold": "展開"
   },
   "credit": {
     "expired": "期限切れ",
@@ -292,6 +294,9 @@
     "hourlyAgg": "時間別（本日分）",
     "tokensPerSec": "出力 tok/s",
     "throughputHint": "{n} 件の成功リクエストの生成時間から推定（ログ保持期間内のみ）"
+  },
+  "panel": {
+    "expiryMoreBuckets": "続けて {count} バッチ"
   },
     "panelTasks": {
       "title": "タスク一覧",
@@ -500,6 +505,7 @@
     "notePlaceholder": "例：張さん（高校の同級生）",
     "noteSaved": "メモを保存しました",
     "noteCleared": "メモを削除しました",
+    "noteSharedHint": "このデプロイで共有",
     "weight": "重み",
     "weightTitle": "アカウントの重み",
     "weightDesc": "「{name}」の選択重みを設定します。",
@@ -553,6 +559,8 @@
     "modelLimitBadge": "モデル制限 {models}",
     "modelLimited": "制限中",
     "modelLimitUntil": "{at} 頃に復旧見込み",
+    "modelLimitDualClock": "上流リセット {reset}",
+    "modelLimitGatewayRetry": "ゲートウェイは最短 {until} 後に再試行",
     "modelMissing": "このアカウントにはこのモデルがありません",
     "creditsNoneTitle": "上流がこのアカウントのクレジットをまだ返していません（追加直後、または上流に到達できない可能性）",
     "snapshot": "上流スナップショット",
@@ -976,6 +984,9 @@
     "fallbackNote": "Tencent モデル API から取得できませんでした（多くの場合、認証情報の期限切れかネットワーク問題）。現在は上流が返す簡易一覧を表示しており、表示名と推論ティアが欠けています。「アカウント」ページでトークンを更新してから再取得してください。",
     "emptyNote": "Tencent モデル API と上流のどちらからもモデルを取得できませんでした。アカウントが利用可能で、上流コンテナが動作しているか確認してください。",
     "available": "利用可能なモデル",
+    "availabilityDenied": "権限なし",
+    "availabilityBlocked": "ロック中",
+    "availabilityOk": "利用可能",
     "reasoning": "推論対応",
     "reasoningHint": "推論ティアあり（low/high/max）",
     "largeContext": "大規模コンテキスト",

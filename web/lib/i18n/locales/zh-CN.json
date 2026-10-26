@@ -167,7 +167,9 @@
     "expired": "已过期",
     "urgent": "即将过期",
     "soon": "偏紧",
-    "valid": "有效"
+    "valid": "有效",
+    "fold": "收起",
+    "unfold": "展开"
   },
   "credit": {
     "expired": "已到期",
@@ -292,6 +294,9 @@
     "hourlyAgg": "按小时（当日汇总）",
     "tokensPerSec": "输出 tok/s",
     "throughputHint": "按 {n} 条成功请求的生成耗时估算（只覆盖日志保留期）"
+  },
+  "panel": {
+    "expiryMoreBuckets": "随后 {count} 批"
   },
     "panelTasks": {
       "title": "任务清单",
@@ -500,6 +505,7 @@
     "notePlaceholder": "例如：张叔叔（高中同学）",
     "noteSaved": "备注已保存",
     "noteCleared": "备注已清除",
+    "noteSharedHint": "本部署共享",
     "weight": "权重",
     "weightTitle": "账号权重",
     "weightDesc": "设置「{name}」的选号权重。",
@@ -553,6 +559,8 @@
     "modelLimitBadge": "模型受限 {models}",
     "modelLimited": "限流中",
     "modelLimitUntil": "预计 {at} 恢复",
+    "modelLimitDualClock": "上游重置 {reset}",
+    "modelLimitGatewayRetry": "网关最快 {until} 重试",
     "modelMissing": "该账号没有这个模型",
     "creditsNoneTitle": "上游尚未返回该账号的积分（可能是刚添加、或上游不可达）",
     "snapshot": "上游快照",
@@ -976,6 +984,9 @@
     "fallbackNote": "腾讯模型接口未取到（通常是账号凭证过期或网络问题），当前展示的是上游返回的简表，缺少显示名与推理档位。可在「账号」页刷新令牌后重新拉取。",
     "emptyNote": "腾讯模型接口与上游均未取到模型，请确认账号可用且上游容器在运行。",
     "available": "可用模型",
+    "availabilityDenied": "无权限",
+    "availabilityBlocked": "被锁",
+    "availabilityOk": "可用",
     "reasoning": "支持推理",
     "reasoningHint": "带推理档位（low/high/max）",
     "largeContext": "大上下文",
