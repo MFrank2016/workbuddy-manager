@@ -143,6 +143,28 @@ async def panel_packages(upstream_id: int | None = Query(None),
         _raise(exc)
 
 
+@router.get('/panel/overview')
+async def panel_overview(upstream_id: int | None = Query(None),
+                         user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `GET /panel/api/overview`（池计数 / 账号 / 模型锁，只读）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'GET', '/panel/api/overview')
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+
+
+@router.get('/panel/request_metrics')
+async def panel_request_metrics(upstream_id: int | None = Query(None),
+                                user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `GET /panel/api/request_metrics`（请求指标快照，只读）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'GET', '/panel/api/request_metrics')
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+
+
 @router.get('/panel/usage/remaining')
 async def panel_usage_remaining(hours: int = Query(24), upstream_id: int | None = Query(None),
                                 user: dict = Depends(security.current_user)) -> dict:

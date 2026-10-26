@@ -48,8 +48,10 @@ import type {
   PanelCompensationClaim,
   PanelCreditHistory,
   PanelModelProbes,
+  PanelOverview,
   PanelPackages,
   PanelQueueStatus,
+  PanelRequestMetrics,
   PanelSchoolVouchers,
   PanelScanItem,
   PanelTaskList,
@@ -748,6 +750,10 @@ export const panelApi = {
     get<PanelSchoolVouchers>(`/api/panel/school/vouchers${groupQs(upstreamId)}`),
   modelProbes: (upstreamId?: number | null) =>
     get<PanelModelProbes>(`/api/panel/model_probes${groupQs(upstreamId)}`),
+  overview: (upstreamId?: number | null) =>
+    get<PanelOverview>(`/api/panel/overview${groupQs(upstreamId)}`),
+  requestMetrics: (upstreamId?: number | null) =>
+    get<PanelRequestMetrics>(`/api/panel/request_metrics${groupQs(upstreamId)}`),
   compensation: (upstreamId?: number | null) =>
     get<PanelCompensation>(`/api/panel/compensation${groupQs(upstreamId)}`),
   claimCompensation: (uid: string, upstreamId?: number | null) =>

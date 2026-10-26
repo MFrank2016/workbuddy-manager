@@ -1659,6 +1659,87 @@ export interface PanelQueueStatus {
   items: Array<Record<string, unknown>>;
 }
 
+/* ── core 面板总览 / 请求指标（迁移 Phase 2）────────────── */
+
+/** core `internal/pool.ModelLockRow` 的 JSON 形状（单域单模型锁池画像）。 */
+export interface ModelLockRow {
+  model: string;
+  realm: string;
+  total: number;
+  servable: number;
+  locked: number;
+  state: 'locked' | 'starved' | 'partial';
+  unlock_at: string;
+  fully_unlock_at: string;
+  reason?: string;
+}
+
+/** core `internal/reqlog.Event` 的 JSON 形状（脱敏请求记录）。 */
+export interface RequestMetricEvent {
+  time: string;
+  request_id: string;
+  path: string;
+  account?: string;
+  model?: string;
+  status: number;
+  ok: boolean;
+  outcome: string;
+  duration_ms: number;
+  ttfb_ms?: number;
+  attempts?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  credit?: number;
+  credit_known: boolean;
+  cache_hit_tokens?: number;
+  cache_miss_tokens?: number;
+  client_ip?: string;
+  user_agent?: string;
+}
+
+export interface PanelRequestMetricsArchive {
+  enabled: boolean;
+  dir?: string;
+  files: number;
+  bytes: number;
+  dropped_writes: number;
+  last_error?: string;
+}
+
+/** core `GET /panel/api/overview`：池计数 + 账号 + 模型锁清单。 */
+export interface PanelOverview {
+  version: string;
+  balance_refresh_sec: number;
+  balance_refreshed_at: string | null;
+  uptime_sec: number;
+  auth_required: boolean;
+  redis_mode: string;
+  sticky_sessions: number;
+  total: number;
+  healthy: number;
+  cooling: number;
+  disabled: number;
+  paused: number;
+  in_flight_full: number;
+  accounts: Account[];
+  model_locks: ModelLockRow[];
+}
+
+/** core `GET /panel/api/request_metrics`：进程内指标快照 + 最近请求。 */
+export interface PanelRequestMetrics {
+  started_at: string;
+  completed: number;
+  in_flight: number;
+  succeeded: number;
+  failed: number;
+  success_rate: number;
+  http_success_rate: number;
+  avg_duration_ms: number;
+  recent: RequestMetricEvent[];
+  archive: PanelRequestMetricsArchive;
+}
+
 /* ── core 面板只读观测（迁移 Phase 2）────────────────────── */
 
 export interface PanelCreditPackage {
