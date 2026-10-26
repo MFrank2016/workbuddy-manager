@@ -622,6 +622,7 @@ export default function KeysPage() {
       </Tabs>
 
       <section className="overflow-hidden rounded-[20px] bg-muted">
+        <div className="hidden md:block">
         <Table>
           <TableHeader>
             <TableRow className="border-b border-border/60 hover:bg-transparent">
@@ -818,6 +819,174 @@ export default function KeysPage() {
             })}
           </TableBody>
         </Table>
+        </div>
+
+        <div className="md:hidden space-y-2 p-3">
+          {shownKeys.map((k) => {
+            const expired = !!k.expires_at && k.expires_at * 1000 < Date.now();
+            const usedTokens = k.used_tokens ?? 0;
+            const quota = k.quota ?? 0;
+            const usedCredit = k.used_credit ?? 0;
+            const quotaCredit = k.quota_credit ?? 0;
+            const overQuota =
+              (!!quota && usedTokens >= quota) ||
+              (!!quotaCredit && usedCredit >= quotaCredit);
+            const ratio = quota ? usedTokens / quota : 0;
+            const tone = !quota
+              ? 'text-muted-foreground'
+              : ratio >= 1
+                ? 'text-red-600 dark:text-red-400 font-medium'
+                : ratio >= 0.8
+                  ? 'text-amber-600 dark:text-amber-400 font-medium'
+                  : 'text-foreground';
+            const cRatio = quotaCredit ? usedCredit / quotaCredit : 0;
+            const cTone = cRatio >= 1
+              ? 'text-red-600 dark:text-red-400 font-medium'
+              : cRatio >= 0.8
+                ? 'text-amber-600 dark:text-amber-400 font-medium'
+                : 'text-muted-foreground';
+            return (
+              <div key={k.id} data-testid="keys-card" className="rounded-xl bg-background/60 px-3 py-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="break-words text-sm font-medium">{k.name}</div>
+                    <div className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">{k.prefix}…</div>
+                    {k.upstream_id ? (
+                      <div className="mt-1">
+                        <Badge variant="secondary" className="rounded-full text-[10px]">
+                          {t('keys.upstreamTag', {name: upstreamName(k.upstream_id)})}
+                        </Badge>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="shrink-0">
+                    {!k.enabled ? (
+                      <Badge variant="secondary" className="rounded-full text-muted-foreground">{t('keys.badgeDisabled')}</Badge>
+                    ) : expired ? (
+                      <Badge variant="destructive" className="rounded-full">{t('keys.badgeExpired')}</Badge>
+                    ) : overQuota ? (
+                      <Badge variant="destructive" className="rounded-full">{t('keys.badgeOverQuota')}</Badge>
+                    ) : (
+                      <Badge variant="secondary" className="rounded-full text-emerald-600 dark:text-emerald-400">{t('keys.badgeOk')}</Badge>
+                    )}
+                  </div>
+                </div>
+
+                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+                  <div className="min-w-0">
+                    <dt className="text-muted-foreground">{t('keys.realm')}</dt>
+                    <dd className="mt-0.5 break-words">
+                      {k.realm === 'global' ? (
+                        <Badge variant="secondary" className="rounded-full text-[10px]">{t('realm.global')}</Badge>
+                      ) : k.realm === 'cn' ? (
+                        <Badge variant="secondary" className="rounded-full text-[10px]">{t('realm.cn')}</Badge>
+                      ) : (
+                        <span className="text-[10px] text-amber-600 dark:text-amber-400" title={t('keys.realmUnsetTitle')}>
+                          {t('keys.realmUnset')}
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-muted-foreground">{t('keys.colProfile')}</dt>
+                    <dd className="mt-0.5 break-words">
+                      {k.profile ? (
+                        <Badge variant="secondary" className="rounded-full font-mono text-[10px]">{k.profile}</Badge>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground" title={t('keys.profileUnsetTitle')}>
+                          {t('keys.profileUnset')}
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-muted-foreground">{t('keys.expiry')}</dt>
+                    <dd className="mt-0.5 break-words text-muted-foreground">
+                      {k.expires_at ? fmtDateTime(k.expires_at) : t('keys.neverExpires')}
+                    </dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-muted-foreground">{t('keys.colUsedTokens')}</dt>
+                    <dd className="mt-0.5 break-words tabular-nums">
+                      <span className={tone}>
+                        {fmtNumber(usedTokens)}
+                        {quota ? ` / ${fmtNumber(quota)}` : ''}
+                      </span>
+                      {!!quotaCredit && (
+                        <span className={`block text-[10px] ${cTone}`} title={t('keys.quotaCredit')}>
+                          {t('keys.creditUsed', {used: String(usedCredit), quota: String(quotaCredit)})}
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-muted-foreground">{t('keys.colLastUsed')}</dt>
+                    <dd className="mt-0.5 break-words text-muted-foreground">
+                      {k.last_used_at ? fmtDateTime(k.last_used_at) : t('keys.neverUsed')}
+                    </dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-muted-foreground">{t('keys.colIpModels')}</dt>
+                    <dd className="mt-0.5 break-words text-muted-foreground">
+                      {k.max_ips ? t('keys.ipLimit', {n: k.max_ips}) : t('keys.ipUnlimited')} /{' '}
+                      {k.models?.length
+                        ? t('keys.modelsCount', {count: k.models.length, n: k.models.length})
+                        : t('keys.modelsAll')}
+                    </dd>
+                  </div>
+                </dl>
+
+                {isAdmin && (
+                  <div className="mt-2 flex flex-wrap justify-end gap-1">
+                    <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md" title={t('keys.edit')} onClick={() => openEdit(k)}>
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 rounded-md"
+                      title={k.enabled ? t('keys.disable') : t('keys.enable')}
+                      onClick={() => toggle(k)}
+                    >
+                      {k.enabled ? <Ban className="h-3.5 w-3.5" /> : <CircleCheck className="h-3.5 w-3.5" />}
+                    </Button>
+                    <ConfirmDialog
+                      title={t('keys.resetUsageTitle')}
+                      description={t('keys.resetUsageDesc', {name: k.name})}
+                      onConfirm={async () => {
+                        await keyApi.resetUsage(k.id);
+                        notify.ok(t('keys.resetDone'));
+                        reload();
+                      }}
+                      trigger={
+                        <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md" title={t('keys.resetUsage')}>
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        </Button>
+                      }
+                    />
+                    <ConfirmDialog
+                      title={t('keys.deleteTitle')}
+                      description={t('keys.deleteDesc', {name: k.name})}
+                      contentClassName="max-w-[min(380px,calc(100%-2rem))] sm:max-w-[380px]"
+                      confirmText={t('keys.delete')}
+                      destructive
+                      onConfirm={async () => {
+                        await keyApi.remove(k.id);
+                        notify.ok(t('keys.deleted'));
+                        reload();
+                      }}
+                      trigger={
+                        <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md text-red-500 hover:text-red-600" title={t('keys.delete')}>
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
 
         {/* 「暂无密钥」是**一条都没有**的断言，取不到时不能说这句（见上面首屏守卫的
             说明）。`keysFailed` 覆盖「另一份取到了、这一份没有」的部分失败：那时首屏
