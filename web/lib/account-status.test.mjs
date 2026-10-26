@@ -33,6 +33,7 @@ import {
   interleave,
   mergePoolStatus,
   poolTotals,
+  rateLimitedModels,
   tagGroup,
 } from './account-status.ts';
 
@@ -216,6 +217,45 @@ const dslice = {
 };
 check('只数当前版本、且窗口还没过的', degradedCount(dslice, 'cn'), 1);
 check('切到另一个版本时数的是另一条', degradedCount(dslice, 'global'), 1);
+
+console.log('\nrateLimitedModels：until 与 reset_at 任一仍在未来都要保留');
+const future2 = new Date(Date.now() + 7200_000).toISOString();
+const locksOf = (rows) => rateLimitedModels(acct('a.json', 'u1', {rate_limited_models: rows}));
+check(
+  'until + reset_at 都在未来 → 四个字段原样保留',
+  locksOf([{model: 'm', reason: '6004 rate limited', until: future, reset_at: future2}]),
+  [{model: 'm', reason: '6004 rate limited', until: future, reset_at: future2}],
+);
+check(
+  'until 已过期但 reset_at 仍在未来 → 必须保留（不能只看 until）',
+  locksOf([{model: 'm', reason: '6004 rate limited', until: past, reset_at: future}]),
+  [{model: 'm', reason: '6004 rate limited', until: past, reset_at: future}],
+);
+check(
+  'until 与 reset_at 都过期 → 过滤掉',
+  locksOf([{model: 'm', reason: '6004 rate limited', until: past, reset_at: past}]),
+  [],
+);
+check(
+  '只有 reset_at 且在未来 → 保留',
+  locksOf([{model: 'm', reason: '6004 rate limited', reset_at: future}]),
+  [{model: 'm', reason: '6004 rate limited', reset_at: future}],
+);
+check(
+  '只有 until 且在未来 → 保留',
+  locksOf([{model: 'm', reason: '6004 rate limited', until: future}]),
+  [{model: 'm', reason: '6004 rate limited', until: future}],
+);
+check(
+  '缺 reason → 归一为空串（不抛）',
+  locksOf([{model: 'm', until: future}]),
+  [{model: 'm', reason: '', until: future}],
+);
+check(
+  '非日期字符串不会抛，也不会被当成未来',
+  locksOf([{model: 'm', reason: 'x', until: 'not-a-date', reset_at: 'also-bad'}]),
+  [],
+);
 
 console.log('\npoolTotals：优先用按版本分好的计数，老上游退回顶层并如实标注');
 const withRealm = {

@@ -135,17 +135,31 @@ export function isDegraded(a: Account): boolean {
  * 并且与 `isDegraded` 同一口径——以「截止时间是否在未来」为准，而不是「字段是否
  * 存在」：前端拿到的快照可能已经过时，字段还在、窗口早过了。
  */
-export function rateLimitedModels(a: Account): {model: string; reason: string}[] {
+export function rateLimitedModels(
+  a: Account,
+): {model: string; reason: string; until?: string; reset_at?: string}[] {
   const rows = a.rate_limited_models ?? [];
   const now = Date.now();
   return rows
     .filter((m) => {
-      const until = m.until;
-      if (typeof until !== 'string' || !until) return false;
-      const at = Date.parse(until);
-      return Number.isFinite(at) && at > now;
+      // 两个时刻任一仍在未来都算还锁着：`until` 是网关截断后的最早重试，
+      // `reset_at` 是上游明说的重置时刻。只看 `until ?? reset_at` 会在
+      // `until` 已过期、`reset_at` 仍未来时把仍在锁着的模型藏掉。
+      const until = typeof m.until === 'string' && m.until ? Date.parse(m.until) : NaN;
+      const reset =
+        typeof m.reset_at === 'string' && m.reset_at ? Date.parse(m.reset_at) : NaN;
+      const latest = Math.max(
+        Number.isFinite(until) ? until : -Infinity,
+        Number.isFinite(reset) ? reset : -Infinity,
+      );
+      return latest > now;
     })
-    .map((m) => ({model: m.model, reason: String(m.reason ?? '')}));
+    .map((m) => ({
+      model: m.model,
+      reason: String(m.reason ?? ''),
+      until: m.until,
+      reset_at: m.reset_at,
+    }));
 }
 
 /**
