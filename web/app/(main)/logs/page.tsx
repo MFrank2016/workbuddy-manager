@@ -377,6 +377,46 @@ export default function LogsPage() {
       </section>
 
       <section className="overflow-hidden rounded-[20px] bg-muted">
+        {/* 手机端：卡片式；桌面：表格 */}
+        <div className="md:hidden space-y-2 p-3">
+          {logs.map((l) => (
+            <div
+              key={l.id}
+              data-testid="logs-card"
+              className="cursor-pointer rounded-xl bg-background/60 px-3 py-2"
+              onClick={() => setDetail(l)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-xs font-medium">
+                  {l.model || '—'}
+                  {l.mapped_model && l.mapped_model !== l.model && (
+                    <span className="ml-1 text-[11px] text-muted-foreground">→{l.mapped_model}</span>
+                  )}
+                </span>
+                {l.status >= 200 && l.status < 300 ? (
+                  <Badge variant="secondary" className="shrink-0 rounded-full text-emerald-600 dark:text-emerald-400">{l.status}</Badge>
+                ) : l.status >= 400 && l.status < 500 ? (
+                  <Badge variant="secondary" className="shrink-0 rounded-full bg-amber-500/12 text-amber-600 dark:text-amber-400">
+                    {l.status || 'ERR'}
+                  </Badge>
+                ) : (
+                  <Badge variant="destructive" className="shrink-0 rounded-full">{l.status || 'ERR'}</Badge>
+                )}
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                <span className="truncate">
+                  <AccountCell account={l.account} />
+                </span>
+                <span className="shrink-0 tabular-nums">{fmtDateTimeMarked(l.ts)}</span>
+              </div>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                {t('logs.colLatency')} <span className="tabular-nums">{fmtLatency(l.latency_ms)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="hidden md:block">
         <Table>
           <TableHeader>
             <TableRow className="border-b border-border/60 hover:bg-transparent">
@@ -486,6 +526,7 @@ export default function LogsPage() {
             ))}
           </TableBody>
         </Table>
+        </div>
 
         {/* 走到这里说明首屏已经就绪——还在取数时上面已经整块返回骨架了。
             所以「没有日志」是真的没有，不需要再拿「请求在不在飞」去兜一层
