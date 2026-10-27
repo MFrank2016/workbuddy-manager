@@ -244,7 +244,8 @@ class RateLimitedModelsTest(unittest.TestCase):
     看到「账号 A 的模型 X 还在限额中，预计 Z 时间恢复」）。本测试锁住：
       1. 台账在未来 → 算作受限；
       2. 台账已过期 → **不算**（快照可能过时，字段还在但窗口已过）；
-      3. 缺 until / 非字符串 → 保守不算（宁可不报，也别报一个说不清时间的）。
+      3. until 或 reset_at 任一在未来 → 算作受限；两者都过期/缺失 → 不算；
+         until 已过期但 reset_at 仍未来时必须保留。
     """
 
     def _src(self) -> str:
@@ -269,11 +270,22 @@ class RateLimitedModelsTest(unittest.TestCase):
         self.assertIn('Date.parse', body, '没用时间解析 —— 过期的条目也会被算成受限')
         self.assertIn('> now', body, '没有「截止在未来」的比较')
 
-    def test_requires_until_string(self) -> None:
-        """缺 until / 非字符串 → 不算（保守：宁可不报，也别报个说不清时间的）。"""
+    def test_keeps_rows_whose_either_instant_is_future(self) -> None:
+        """until 或 reset_at 任一在未来 → 算作受限（reset_at-only 行必须保留）。
+
+        只看 `until ?? reset_at` 会漏掉「until 已过期、reset_at 仍未来」的行：
+        网关截断的 until 到了，上游明说的 reset_at 还没到，模型其实仍锁着。
+        两者都过期/缺失才不算。
+        """
         body = self._helper_body()
-        self.assertIn("typeof until !== 'string'", body)
-        self.assertIn('return false', body)
+        self.assertIn('m.reset_at', body,
+                      '没有读 reset_at —— 只看 until 会漏掉仅带 reset_at 的行')
+        self.assertIn('Math.max', body,
+                      '没有取两个时刻的较晚者 —— until 过期但 reset_at 未到时会被误删')
+        self.assertIn('> now', body, '没有「最晚时刻仍在未来」的比较')
+        self.assertNotIn('return false', body,
+                         '仍有提前 return false 的短路 —— 会把 reset_at-only 的行判掉')
+        self.assertIn('reset_at: m.reset_at', body, '没有把 reset_at 透传出去')
 
     def test_reads_upstream_ledger_not_account_cooling(self) -> None:
         """读的是上游那本台账字段（rate_limited_models），不是账号级 cooling。
