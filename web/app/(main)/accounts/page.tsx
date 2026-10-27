@@ -962,6 +962,11 @@ export default function AccountsPage() {
     );
   }
 
+  /** 备注的主标签文本：缺失 / 空白一律视为没有备注。 */
+  function noteText(a: Account) {
+    return (a.note ?? '').trim();
+  }
+
   /** 单账号操作按钮组 */
   function renderActions(a: Account) {
     const busy = busyFile === a.file;
@@ -1012,12 +1017,17 @@ export default function AccountsPage() {
           variant="ghost"
           size="icon"
           className="h-7 w-7 rounded-md"
-          title={a.note ? t('accounts.noteEditTitle') : t('accounts.noteAdd')}
+          title={noteText(a) ? t('accounts.noteEditTitle') : t('accounts.noteAdd')}
           disabled={busy}
           onClick={() => setNoteTarget(a)}
         >
-          <StickyNote className={'h-3.5 w-3.5 ' + (a.note ? 'text-amber-600 dark:text-amber-400' : '')} />
+          <StickyNote className={'h-3.5 w-3.5 ' + (noteText(a) ? 'text-amber-600 dark:text-amber-400' : '')} />
         </Button>
+        {noteText(a) ? (
+          <span className="self-center whitespace-nowrap px-1 text-[10px] text-muted-foreground">
+            {t('accounts.noteSharedHint')}
+          </span>
+        ) : null}
         {/* 手写权重（issue #187）：上游选号的乘数，默认 1。
             与备注同一类「账号元数据」，所以挨着放；但它是**写上游账号文件**的，
             改完要重载上游才生效——弹窗里写清了这一点。设过权重（≠1）时图标染成
@@ -1529,19 +1539,33 @@ export default function AccountsPage() {
                 <div className="flex min-w-0 items-center gap-2.5">
                   {renderAvatar(a)}
                   <div className="min-w-0">
-                    <div
-                      className={
-                        'truncate text-sm font-medium ' + (a.is_expired ? 'text-muted-foreground' : '')
-                      }
-                    >
-                      {a.nickname || t('accounts.unnamed')}
-                    </div>
-                    <div className="truncate font-mono text-[11px] text-muted-foreground">{a.uid}</div>
-                    {a.note ? (
-                      <div className="truncate text-[11px] text-muted-foreground" title={a.note}>
-                        {t('accounts.noteLabel')}{a.note}
-                      </div>
-                    ) : null}
+                    {noteText(a) ? (
+                      <>
+                        <div
+                          className={
+                            'truncate text-sm font-medium ' + (a.is_expired ? 'text-muted-foreground' : '')
+                          }
+                          title={noteText(a)}
+                        >
+                          {noteText(a)}
+                        </div>
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {a.nickname || t('accounts.unnamed')}
+                          <span className="ml-1.5 font-mono opacity-80">{a.uid}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div
+                          className={
+                            'truncate text-sm font-medium ' + (a.is_expired ? 'text-muted-foreground' : '')
+                          }
+                        >
+                          {a.nickname || t('accounts.unnamed')}
+                        </div>
+                        <div className="truncate font-mono text-[11px] text-muted-foreground">{a.uid}</div>
+                      </>
+                    )}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -1588,14 +1612,21 @@ export default function AccountsPage() {
                   <div className="flex items-center gap-2.5">
                     {renderAvatar(a)}
                     <div className="min-w-0">
-                      <div className={'truncate text-sm font-medium ' + (a.is_expired ? 'text-muted-foreground' : '')}>
-                        {a.nickname || t('accounts.unnamed')}
-                      </div>
-                      {a.note ? (
-                        <div className="truncate text-[11px] text-muted-foreground" title={a.note}>
-                          {t('accounts.noteLabel')}{a.note}
+                      {noteText(a) ? (
+                        <>
+                          <div className={'truncate text-sm font-medium ' + (a.is_expired ? 'text-muted-foreground' : '')} title={noteText(a)}>
+                            {noteText(a)}
+                          </div>
+                          <div className="truncate text-[11px] text-muted-foreground">
+                            {a.nickname || t('accounts.unnamed')}
+                            <span className="ml-1.5 font-mono opacity-80">{a.uid}</span>
+                          </div>
+                        </>
+                      ) : (
+                        <div className={'truncate text-sm font-medium ' + (a.is_expired ? 'text-muted-foreground' : '')}>
+                          {a.nickname || t('accounts.unnamed')}
                         </div>
-                      ) : null}
+                      )}
                     </div>
                     <Badge
                       variant="secondary"
