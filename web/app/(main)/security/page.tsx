@@ -346,6 +346,55 @@ export default function SecurityPage() {
           </div>
 
           <div className="mt-4 overflow-hidden rounded-2xl bg-background/60">
+            <div className="space-y-2 p-2 md:hidden">
+              {rules.map((r) => (
+                <div key={r.id} data-testid="security-user-card" className="rounded-xl bg-background/80 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    {r.kind === 'allow' ? (
+                      <Badge variant="secondary" className="rounded-full text-emerald-600 dark:text-emerald-400">
+                        <CircleCheck className="h-3 w-3" />{t('security.allow')}
+                      </Badge>
+                    ) : (
+                      <Badge variant="destructive" className="rounded-full">
+                        <Ban className="h-3 w-3" />{t('security.deny')}
+                      </Badge>
+                    )}
+                    {isAdmin && (
+                      <ConfirmDialog
+                        title={t('security.deleteRuleTitle')}
+                        description={t('security.deleteRuleDesc')}
+                        confirmText={t('keys.delete')}
+                        destructive
+                        onConfirm={async () => {
+                          try {
+                            await securityApi.removeRule(r.id);
+                            notify.ok(t('keys.deleted'));
+                            await reload();
+                          } catch (e) {
+                            notify.err(errText(e));
+                          }
+                        }}
+                        trigger={
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 rounded-md text-red-500 hover:text-red-600"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        }
+                      />
+                    )}
+                  </div>
+                  <div className="mt-1 break-all font-mono text-xs">{r.cidr || '—'}</div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                    <span className="truncate">{r.note || '—'}</span>
+                    <span className="shrink-0 tabular-nums">{fmtDateTime(r.created_at)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="hidden md:block">
             <Table>
               <TableHeader>
                 <TableRow className="border-b border-border/60 hover:bg-transparent">
@@ -410,6 +459,7 @@ export default function SecurityPage() {
                 ))}
               </TableBody>
             </Table>
+            </div>
             {!rules.length && (
               /* 空表有两种截然不同的含义，不能共用一句话：`noRules` 断言的是
                  「一条规则都没有」（在这一页等于说没有任何网段被放行或拦截），
@@ -453,6 +503,29 @@ export default function SecurityPage() {
             />
           )}
         </div>
+        <div className="space-y-2 px-2 pb-2 md:hidden">
+          {logs.map((l) => (
+            <div key={l.id} data-testid="security-role-card" className="rounded-xl bg-background/60 px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate font-mono text-xs">{l.ip || '—'}</span>
+                {l.blocked ? (
+                  <Badge variant="destructive" className="rounded-full">{t('security.blocked')}</Badge>
+                ) : (
+                  <Badge variant="secondary" className="rounded-full text-emerald-600 dark:text-emerald-400">{t('security.allowed')}</Badge>
+                )}
+              </div>
+              <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground" title={l.path}>{l.path || '—'}</div>
+              {l.blocked && l.reason && (
+                <div className="mt-1 text-[11px] text-muted-foreground">{reasonText(t, l.reason)}</div>
+              )}
+              <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                <span className="truncate" title={l.ua || undefined}>{l.ua || '—'}</span>
+                <span className="shrink-0 tabular-nums">{fmtDateTime(l.ts)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="hidden md:block">
         <Table>
           <TableHeader>
             <TableRow className="border-b border-border/60 hover:bg-transparent">
@@ -492,6 +565,7 @@ export default function SecurityPage() {
             ))}
           </TableBody>
         </Table>
+        </div>
         {!logs.length &&
           (logsFailed ? (
             <div className="py-14 text-center text-xs text-muted-foreground">{t('security.notLoaded')}</div>
@@ -522,6 +596,37 @@ export default function SecurityPage() {
           </Badge>
         </div>
         {audit.length ? (
+          <>
+            <div className="space-y-2 px-2 pb-2 md:hidden">
+              {audit.map((a) => (
+                <div key={a.id} data-testid="security-session-card" className="rounded-xl bg-background/60 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-xs">
+                      {a.actor === '(空)' ? t('security.actorEmpty') : a.actor || '—'}
+                    </span>
+                    <Badge
+                      variant="secondary"
+                      className={
+                        'rounded-full text-[10px] ' +
+                        (a.action === 'login_failed'
+                          ? 'bg-red-500/12 text-red-600 dark:text-red-400'
+                          : a.action === 'login'
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : '')
+                      }
+                    >
+                      {AUDIT_LABEL_KEYS[a.action] ? t(AUDIT_LABEL_KEYS[a.action]) : a.action}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">{a.target || '—'}</div>
+                  <div className="mt-1 break-words text-[11px] text-muted-foreground" title={a.detail || undefined}>
+                    {auditDetail(a.detail, t)}
+                  </div>
+                  <div className="mt-1 text-[11px] tabular-nums text-muted-foreground">{fmtDateTime(a.ts)}</div>
+                </div>
+              ))}
+            </div>
+            <div className="hidden md:block">
           <Table>
             <TableHeader>
               <TableRow className="border-b border-border/60 hover:bg-transparent">
@@ -565,6 +670,8 @@ export default function SecurityPage() {
               ))}
             </TableBody>
           </Table>
+            </div>
+          </>
         ) : auditFailed ? (
           <div className="py-14 text-center text-xs text-muted-foreground">{t('security.notLoaded')}</div>
         ) : (
