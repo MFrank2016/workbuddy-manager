@@ -35,7 +35,8 @@ import {useRealm} from '@/lib/realm-context';
 import {notify} from '@/lib/toast';
 import {useT} from '@/lib/i18n/provider';
 import {cn} from '@/lib/utils';
-import type {CatalogModel, ModelCatalog, PanelModelProbes, UpstreamEndpoint} from '@/lib/types';
+import type {CatalogModel, ModelCatalog, ModelLockRow, PanelModelProbes, RequestMetricEvent, UpstreamEndpoint} from '@/lib/types';
+import {modelAvailabilityOf, type ModelAvailability} from '@/lib/model-availability';
 
 /** 上下文窗口显示：131072 → 128K；1048576 → 1M；0 → — */
 function fmtCtx(n: number): string {
@@ -112,6 +113,22 @@ function sourceLabel(source: string, fallback: string, t: (key: string) => strin
   return key ? t(key) : fallback;
 }
 
+/** 可用性徽标：文案键与配色（与模型中心其它小徽标同一尺寸）。 */
+const AVAILABILITY_META: Record<ModelAvailability, {label: string; className: string}> = {
+  ok: {
+    label: 'models.availabilityOk',
+    className: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+  },
+  blocked: {
+    label: 'models.availabilityBlocked',
+    className: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+  },
+  denied: {
+    label: 'models.availabilityDenied',
+    className: 'border-destructive/30 bg-destructive/10 text-destructive',
+  },
+};
+
 /** 一张统计卡（统一的 StatCard）：模型页只关心数值与副文案。 */
 
 export default function ModelsPage() {
@@ -173,6 +190,81 @@ export default function ModelsPage() {
     }
     return map;
   }, [values.groups]);
+
+  /**
+   * 模型可用性（core 面板 overview + request_metrics）：可选增强，失败静默。
+   *
+   * 多分组语义：每个分组各拉一份锁池与最近请求，在本地合并。任一分组判定 ok
+   * 即 ok；只有**每一组**都锁住时才显示 denied/blocked；任一分组无数据（或请求
+   * 失败）都不把「部分锁住」误报成「全部锁住」。分组列表为空时退回一次不带
+   * `upstreamId` 的调用。
+   */
+  const [availabilityGroups, setAvailabilityGroups] = useState<
+    Array<{locks: ModelLockRow[]; recent: RequestMetricEvent[]} | null>
+  >([]);
+  const availabilityGroupIds = useMemo(() => {
+    const items = (values.groups?.items ?? []) as UpstreamEndpoint[];
+    return items
+      .map((g) => g.id)
+      .filter((id): id is number => typeof id === 'number');
+  }, [values.groups]);
+  useEffect(() => {
+    let alive = true;
+    // 分组变了就先清掉旧徽标：宁可短暂不显示，也不拿上一组的数据冒充本组。
+    setAvailabilityGroups([]);
+    const targets: Array<number | null> = availabilityGroupIds.length
+      ? availabilityGroupIds
+      : [null];
+    Promise.all(
+      targets.map(async (upstreamId) => {
+        try {
+          const [overview, metrics] = await Promise.all([
+            panelApi.overview(upstreamId),
+            panelApi.requestMetrics(upstreamId),
+          ]);
+          return {
+            locks: Array.isArray(overview?.model_locks) ? overview.model_locks : [],
+            recent: Array.isArray(metrics?.recent) ? metrics.recent : [],
+          };
+        } catch {
+          // 观测接口是可选增强：不提示、不写控制台，表格照常渲染。
+          return null;
+        }
+      }),
+    ).then((rows) => {
+      if (alive) setAvailabilityGroups(rows);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [availabilityGroupIds]);
+
+  const availabilityOf = (id: string): ModelAvailability | null => {
+    if (!availabilityGroups.length) return null;
+    const states = availabilityGroups.map((group) => (
+      group ? modelAvailabilityOf(id, realm, group.locks, group.recent) : null
+    ));
+    if (states.includes('ok')) return 'ok';
+    // 只有每一组都判定为锁住才下「被锁/无权限」的结论。
+    if (states.every((state) => state === 'denied' || state === 'blocked')) {
+      return states.includes('denied') ? 'denied' : 'blocked';
+    }
+    return null;
+  };
+
+  const renderModelAvailability = (m: CatalogModel) => {
+    const state = availabilityOf(m.id);
+    if (!state) return null;
+    const meta = AVAILABILITY_META[state];
+    return (
+      <Badge
+        variant="secondary"
+        className={cn('mt-0.5 w-fit rounded-md text-[10px]', meta.className)}
+      >
+        {t(meta.label)}
+      </Badge>
+    );
+  };
 
   /**
    * 切版本时清掉筛选状态，避免「上一版的系列筛选把新版过滤成空」。
@@ -479,6 +571,7 @@ export default function ModelsPage() {
                               {t('models.probeMeasured', {n: fmtCtx(probeOf(m.id)?.measured || 0)})}
                             </Badge>
                           ) : null}
+                          {renderModelAvailability(m)}
                         </div>
                       </TableCell>
                       <TableCell className="text-xs tabular-nums text-muted-foreground">
