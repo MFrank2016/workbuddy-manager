@@ -388,6 +388,98 @@ export default function RedPacketsPage() {
             description={t('redPacket.emptyDesc')}
           />
         ) : (
+          <>
+            {/* 手机端：卡片式；桌面：表格 */}
+            <div className="space-y-2 p-2 md:hidden">
+              {rows.map((p) => {
+                const total = Number(p.total_amount);
+                const shares = Number(p.shares);
+                const claimed = Number(p.claimed);
+                return (
+                  <div
+                    key={p.id}
+                    data-testid="red-packets-card"
+                    className="cursor-pointer rounded-xl bg-background/60 px-3 py-2"
+                    onClick={() => openDetail(p)}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-sm font-medium">{p.title || '—'}</span>
+                      <span className="shrink-0 text-xs font-semibold tabular-nums">
+                        {Number.isFinite(total) ? fmtAmount(total, p.quota_kind) : '—'}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                      <span className="truncate">
+                        {p.quota_kind === 'token' ? t('redPacket.kindTokenShort') : t('redPacket.kindCreditShort')}
+                        {' · '}
+                        {p.mode === 'lucky' ? t('redPacket.modeLuckyShort') : t('redPacket.modeEvenShort')}
+                      </span>
+                      <span className="shrink-0 tabular-nums">{fmtDateTime(p.expires_at)}</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="shrink-0 rounded-full bg-background px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground"
+                          title={t('redPacket.claimedTip', {
+                            n: Number.isFinite(claimed) ? claimed : 0,
+                            total: Number.isFinite(shares) ? shares : 0,
+                          })}
+                        >
+                          {Number.isFinite(claimed) ? claimed : 0}/{Number.isFinite(shares) ? shares : 0}
+                        </span>
+                        {p.revoked ? (
+                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                            {t('redPacket.revokedTag')}
+                          </span>
+                        ) : null}
+                      </div>
+                      {!p.revoked && isAdmin ? (
+                        <div className="flex items-center gap-1">
+                          {p.code ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 rounded-full px-2 text-xs"
+                              title={t('redPacket.copyLink')}
+                              onClick={(e) => { e.stopPropagation(); void copyLink(p.code); }}
+                            >
+                              <Link2 className="h-3 w-3" />
+                              <span className="ml-1">{t('redPacket.copyLink')}</span>
+                            </Button>
+                          ) : null}
+                          <span onClick={(e) => e.stopPropagation()}>
+                            <ConfirmDialog
+                              destructive
+                              trigger={
+                                <Button size="sm" variant="ghost"
+                                        className="h-6 rounded-full text-xs">
+                                  <Undo2 className="mr-1 h-3 w-3" />{t('redPacket.revoke')}
+                                </Button>
+                              }
+                              title={t('redPacket.confirmRevoke')}
+                              description={t('redPacket.confirmRevokeDesc', {n: Number.isFinite(shares) ? shares : 0})}
+                              confirmText={t('redPacket.revoke')}
+                              onConfirm={async () => {
+                                try {
+                                  const r = await redPacketApi.revoke(p.id);
+                                  notify.ok(t('redPacket.revoked'),
+                                            t('redPacket.revokedDetail', {n: r.revoked}));
+                                  await reload();
+                                } catch (e) {
+                                  notify.err(t('redPacket.revokeFailed'), errText(e));
+                                }
+                              }}
+                            />
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="hidden md:block">
           <Table>
             <TableHeader>
               <TableRow className="border-b border-border/60 hover:bg-transparent">
@@ -489,6 +581,8 @@ export default function RedPacketsPage() {
               ))}
             </TableBody>
           </Table>
+            </div>
+          </>
         )}
       </section>
 
