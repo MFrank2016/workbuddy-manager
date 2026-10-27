@@ -535,7 +535,7 @@ export default function ModelsPage() {
           <EmptyState icon={Search} title={t('models.noMatch')} description={t('models.noMatchDesc')} />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="hidden overflow-x-auto md:block">
               <Table>
                 <TableHeader>
                   <TableRow className="border-b border-border/60 hover:bg-transparent">
@@ -656,6 +656,63 @@ export default function ModelsPage() {
                   ))}
                 </TableBody>
               </Table>
+            </div>
+            <div className="space-y-2 p-3 md:hidden">
+              {filtered.map((m: CatalogModel) => (
+                <div
+                  key={m.id}
+                  data-testid="models-card"
+                  className="rounded-xl bg-background/60 px-3 py-2.5"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      {m.name ? (
+                        <span className="truncate text-xs font-medium">{m.name}</span>
+                      ) : null}
+                      <span className="truncate font-mono text-[11px] text-muted-foreground">
+                        {m.id}
+                      </span>
+                    </div>
+                    {m.credits ? (
+                      <Badge
+                        variant="secondary"
+                        className="shrink-0 rounded-md font-mono text-[10px]"
+                        title={t('models.creditRatioTitle')}
+                      >
+                        {m.credits}
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                    {m.efforts?.length
+                      ? m.efforts.map((e) => (
+                          <Badge key={e} variant="secondary" className="rounded-md font-mono text-[10px]">
+                            {e}
+                          </Badge>
+                        ))
+                      : null}
+                    <Badge
+                      variant="secondary"
+                      className="rounded-md text-[10px]"
+                      title={t('models.visionTitle') + ' · ' + (m.native_modality_source || '') + ' ' + (m.native_modality_verified_at || '')}
+                    >
+                      {t(m.native_modality === 'multimodal' ? 'models.vision' : m.native_modality === 'text' ? 'models.visionNo' : m.native_modality === 'router' ? 'models.visionRouter' : 'models.visionUnknown')}
+                    </Badge>
+                    {m.only_reasoning ? (
+                      <Badge variant="secondary" className="rounded-md text-[10px]" title={t('models.onlyReasoningTitle')}>
+                        {t('models.onlyReasoning')}
+                      </Badge>
+                    ) : null}
+                    {m.is_default ? (
+                      <Badge variant="secondary" className="rounded-md text-[10px]" title={t('models.defaultTitle')}>
+                        {t('models.default')}
+                      </Badge>
+                    ) : null}
+                    <SeriesBadge series={m.series} />
+                  </div>
+                  {renderModelAvailability(m)}
+                </div>
+              ))}
             </div>
             {(filtered.length !== models.length || q.trim() || series !== 'all' || cap !== 'all') && (
               <div className="border-t border-border/40 px-4 py-2 text-[11px] text-muted-foreground">
