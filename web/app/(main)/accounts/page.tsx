@@ -756,18 +756,37 @@ export default function AccountsPage() {
     const limited = rateLimitedModels(a);
     if (!limited.length) return null;
     const sep = t('common.listSeparator');
+    // `now` 在渲染时取：列表可能停留很久，模块级常量会让已过期的 `until`
+    // 仍被当成「最快重试」时刻。
+    const now = Date.now();
     const lines = limited.map((m) => {
-      const until = a.rate_limited_models?.find((x) => x.model === m.model)?.until;
+      // todo 1 的投影已带 `until` / `reset_at`，不再回查原始台账：
+      // 原先的内联 find 在同名模型有多行时会取错行。
+      const untilMs = m.until ? Date.parse(m.until) : NaN;
+      const resetMs = m.reset_at ? Date.parse(m.reset_at) : NaN;
+      const untilOk = Number.isFinite(untilMs) && untilMs > now;
+      const resetOk = Number.isFinite(resetMs) && resetMs > now;
       // 用统一格式化（跟随界面语言，并带日期）：只给时分秒时跨天就分不清
       // 「今晚恢复」还是「明晚恢复」。
-      const at = until ? fmtDateTime(Date.parse(until) / 1000) : '';
+      const at = (ms: number) => fmtDateTime(ms / 1000);
       // 11102（该账号没有这个模型）与 6004（限流）含义不同：前者等多久都不会好，
       // 该换模型；后者等一会儿就恢复。上游的 reason 前缀就是判据。
-      const why = m.reason.startsWith('11102')
-        ? t('accounts.modelMissing')
-        : at
-          ? t('accounts.modelLimitUntil', {at})
-          : t('accounts.modelLimited');
+      let why: string;
+      if (m.reason.startsWith('11102')) {
+        why = t('accounts.modelMissing');
+      } else if (untilOk && resetOk && untilMs < resetMs) {
+        // 双时钟：上游重置更晚，网关可能更早放行。两个时刻都给，
+        // 让用户知道「现在重试也许能过，但真正恢复要等到上游重置」。
+        why = `${t('accounts.modelLimitDualClock', {reset: at(resetMs)})} / ${t('accounts.modelLimitGatewayRetry', {until: at(untilMs)})}`;
+      } else if (resetOk) {
+        // `until` 已过期（或缺失/晚于 reset_at）时只显示上游重置；
+        // 绝不能把过期时刻当成「最快重试」。
+        why = t('accounts.modelLimitDualClock', {reset: at(resetMs)});
+      } else if (untilOk) {
+        why = t('accounts.modelLimitGatewayRetry', {until: at(untilMs)});
+      } else {
+        why = t('accounts.modelLimited');
+      }
       return `${m.model} · ${why}`;
     });
     // 徽章里**直接给出模型名**（用户反馈：只知道「有 2 个模型受限」不够用，得知道
