@@ -494,8 +494,8 @@ export default function StatsPage() {
       </section>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <BreakdownPanel title={t('stats.byModel')} icon={Cpu} items={byModel} throughput />
-        <BreakdownPanel title={t('stats.byKey')} icon={KeyRound} items={byKey} />
+        <BreakdownPanel title={t('stats.byModel')} icon={Cpu} items={byModel} throughput cardTestId="stats-model-card" />
+        <BreakdownPanel title={t('stats.byKey')} icon={KeyRound} items={byKey} cardTestId="stats-key-card" />
       </section>
 
       {/* 上游自己那份统计（issue #59）。**单独一段、口径写明**：它含直连上游的
@@ -588,12 +588,14 @@ function BreakdownPanel({
   icon: Icon,
   items,
   throughput = false,
+  cardTestId,
 }: {
   title: string;
   icon: typeof Cpu;
   items: UsageBreakdown[];
   /** 显示「输出 tok/s」列（只有按模型表需要，按密钥没有这项） */
   throughput?: boolean;
+  cardTestId: 'stats-model-card' | 'stats-key-card';
 }) {
   const t = useT();
   const max = Math.max(1, ...items.map((i) => i.prompt_tokens + i.completion_tokens));
@@ -604,7 +606,70 @@ function BreakdownPanel({
         {title}
       </div>
       {items.length ? (
-        <Table>
+        <>
+          <div className="space-y-2 md:hidden">
+            {items.map((it, i) => {
+              const tokens =
+                (Number.isFinite(it.prompt_tokens) ? it.prompt_tokens : 0) +
+                (Number.isFinite(it.completion_tokens) ? it.completion_tokens : 0);
+              const body = (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full"
+                        style={{background: CHART_COLORS[i % CHART_COLORS.length]}}
+                      />
+                      <span className="truncate text-xs font-medium">{it.name || t('metric.unknown')}</span>
+                    </div>
+                    <span className="shrink-0 text-xs font-semibold tabular-nums">
+                      {Number.isFinite(it.credit) && it.credit > 0 ? (
+                        fmtCredit(it.credit)
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                    <span>
+                      {t('metric.requestsShort')}{' '}
+                      <span className="tabular-nums text-foreground">{fmtNumber(it.requests)}</span>
+                    </span>
+                    <span>
+                      Token <span className="tabular-nums text-foreground">{fmtCompact(tokens)}</span>
+                    </span>
+                    {throughput && (
+                      <span>
+                        {t('stats.tokensPerSec')}{' '}
+                        <span className="tabular-nums text-foreground">
+                          {typeof it.tokens_per_sec === 'number' ? it.tokens_per_sec.toFixed(1) : '—'}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                </>
+              );
+              return cardTestId === 'stats-model-card' ? (
+                <div
+                  key={`${it.name}-${i}`}
+                  data-testid="stats-model-card"
+                  className="rounded-xl bg-background/60 px-3 py-2"
+                >
+                  {body}
+                </div>
+              ) : (
+                <div
+                  key={`${it.name}-${i}`}
+                  data-testid="stats-key-card"
+                  className="rounded-xl bg-background/60 px-3 py-2"
+                >
+                  {body}
+                </div>
+              );
+            })}
+          </div>
+          <div className="hidden md:block">
+            <Table>
           <TableHeader>
             <TableRow className="border-b border-border/60 hover:bg-transparent">
               <TableHead className="pl-0 text-[11px] text-muted-foreground">{t('metric.name')}</TableHead>
@@ -658,7 +723,9 @@ function BreakdownPanel({
               );
             })}
           </TableBody>
-        </Table>
+            </Table>
+          </div>
+        </>
       ) : (
         <EmptyState
           icon={Activity}
