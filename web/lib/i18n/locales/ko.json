@@ -296,7 +296,8 @@
     "throughputHint": "성공한 요청 {n}건의 생성 시간으로 추정(로그 보존 기간만)"
   },
   "panel": {
-    "expiryMoreBuckets": "이어서 {count} 배치"
+    "expiryMoreBuckets": "이어서 {count} 배치",
+    "noUpcomingExpiry": "최근 만료 예정 배치가 없습니다"
   },
     "panelTasks": {
       "title": "작업 목록",

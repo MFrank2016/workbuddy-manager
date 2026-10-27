@@ -375,6 +375,20 @@ def merge_pool_status(accounts: list[dict], status: dict) -> list[dict]:
         # 只透传列表形态（前端直接 .map()）；异常类型归空列表，避免整页崩掉。
         _rl = p.get('rate_limited_models')
         a['rate_limited_models'] = _rl if isinstance(_rl, list) else []
+        # 按日到期分桶（core 98e9f5b）：面板每个账号一行、按最早到期排序，
+        # 其余折叠成「随后 N 批」。缺失/类型不符时给空列表，前端直接遍历不会炸。
+        _buckets = p.get('credits_expiry_buckets')
+        a['credits_expiry_buckets'] = _buckets if isinstance(_buckets, list) else []
+        # 回落字段：没有分桶（或分桶全空）时才用。Go 的 time.Time + omitempty
+        # 仍会输出 0001-01-01T00:00:00Z 这种零值，前端按年份 > 1970 守卫；
+        # 这里只做类型归一，非空字符串之外一律 None。
+        _ee = p.get('credits_earliest_expiry')
+        a['credits_earliest_expiry'] = _ee if isinstance(_ee, str) and _ee else None
+        # 正整数才透传（bool 是 int 的子类，必须排除）；0/负数/浮点/字符串归 None。
+        _er = p.get('credits_earliest_remaining')
+        a['credits_earliest_remaining'] = (
+            _er if isinstance(_er, int) and not isinstance(_er, bool) and _er > 0 else None
+        )
         a['disabled'] = bool(p.get('disabled'))
         # 运维手动停用（上游 issue #138/#118，本面板 issue #45）。与 `disabled`
         # **并列独立**：那个是上游按错误分类自动禁的（11140 需重新登录），

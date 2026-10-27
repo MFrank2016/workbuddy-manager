@@ -322,3 +322,55 @@ class RateLimitedModelsTest(unittest.TestCase):
         seg = seg[:seg.index('\n  }')]
         self.assertIn('if (!limited.length) return null', seg,
                       '没有「无受限模型则不渲染」的保护')
+
+
+class ExpiryBucketsPassthroughTest(unittest.TestCase):
+    """按日到期分桶与回落字段要透传（core 98e9f5b）。
+
+    面板每个账号一行、按最早到期排序，其余折叠成「随后 N 批」；没有分桶时
+    才回落到 earliest_expiry/remaining。三个字段任何一层丢掉，界面要么整块
+    空白、要么回落到死代码。
+    """
+
+    def _merge(self, pool_item: dict) -> dict:
+        accounts = [{'uid': 'u1'}]
+        wb2api.merge_pool_status(accounts, {'accounts': [dict(pool_item, uid='u1')]})
+        return accounts[0]
+
+    def test_all_three_fields_pass_through(self) -> None:
+        buckets = [
+            {'date': '2030-01-02', 'expire_at': '2030-01-02T12:00:00Z', 'remain': 120},
+            {'date': '2030-01-05', 'expire_at': '2030-01-05T12:00:00Z', 'remain': 80},
+        ]
+        a = self._merge({
+            'credits_expiry_buckets': buckets,
+            'credits_earliest_expiry': '2030-01-02T12:00:00Z',
+            'credits_earliest_remaining': 120,
+        })
+        self.assertEqual(a['credits_expiry_buckets'], buckets)
+        self.assertEqual(a['credits_earliest_expiry'], '2030-01-02T12:00:00Z')
+        self.assertEqual(a['credits_earliest_remaining'], 120)
+
+    def test_missing_buckets_is_empty_list(self) -> None:
+        """缺失时给空列表而非 None —— 前端直接遍历不会炸。"""
+        a = self._merge({})
+        self.assertEqual(a['credits_expiry_buckets'], [])
+
+    def test_non_list_buckets_is_empty_list(self) -> None:
+        for v in ('x', None, 5, {}):
+            a = self._merge({'credits_expiry_buckets': v})
+            self.assertEqual(a['credits_expiry_buckets'], [], f'{v!r} 应归一为 []')
+
+    def test_earliest_expiry_only_non_empty_string(self) -> None:
+        a = self._merge({'credits_earliest_expiry': '2030-01-02T12:00:00Z'})
+        self.assertEqual(a['credits_earliest_expiry'], '2030-01-02T12:00:00Z')
+        for v in ('', None, 123, [], {}):
+            a = self._merge({'credits_earliest_expiry': v})
+            self.assertIsNone(a['credits_earliest_expiry'], f'{v!r} 应归一为 None')
+
+    def test_earliest_remaining_only_positive_int(self) -> None:
+        a = self._merge({'credits_earliest_remaining': 120})
+        self.assertEqual(a['credits_earliest_remaining'], 120)
+        for v in (0, -5, True, False, 1.5, '120', None):
+            a = self._merge({'credits_earliest_remaining': v})
+            self.assertIsNone(a['credits_earliest_remaining'], f'{v!r} 应归一为 None')

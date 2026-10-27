@@ -11,7 +11,7 @@
  */
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {collectScopedExpiries} from './dashboard-credits.ts';
+import {collectAccountExpiries, collectScopedExpiries} from './dashboard-credits.ts';
 import {groupExpiriesByDay} from './display-prefs.ts';
 
 let failed = 0;
@@ -127,6 +127,132 @@ check(
   collectScopedExpiries(scopedTo(pool, 'intl'), unrelated),
   intl,
 );
+
+console.log('collectAccountExpiries:');
+
+/** ISO 时刻 → epoch 秒（与 CreditExpiry.at 同单位）。 */
+function isoAt(iso) {
+  return Math.floor(Date.parse(iso) / 1000);
+}
+
+// (i) 2 个账号各带分桶 → 2 行，不能被拍平成 1 行；行按最早到期升序。
+const twoAccounts = collectAccountExpiries([
+  {
+    uid: 'b',
+    nickname: 'Beta',
+    credits_expiry_buckets: [
+      {date: '2030-02-01', expire_at: '2030-02-01T00:00:00Z', remain: 5},
+    ],
+  },
+  {
+    uid: 'a',
+    nickname: 'Alpha',
+    credits_expiry_buckets: [
+      {date: '2030-01-01', expire_at: '2030-01-01T00:00:00Z', remain: 9},
+    ],
+  },
+]);
+check('case i: two accounts keep two rows', twoAccounts.length, 2);
+check('case i: rows sorted by earliest expiry', twoAccounts.map((r) => r.uid), ['a', 'b']);
+check('case i: buckets converted to {at, amount}', twoAccounts[0], {
+  uid: 'a',
+  name: 'Alpha',
+  buckets: [{at: isoAt('2030-01-01T00:00:00Z'), amount: 9}],
+});
+
+// (ii) 单账号 3 个乱序分桶 → 1 行，批次升序，其余 2 批折叠。
+const threeBuckets = collectAccountExpiries([{
+  uid: 'solo',
+  nickname: 'Solo',
+  note: '主力号',
+  credits_expiry_buckets: [
+    {date: '2030-03-03', expire_at: '2030-03-03T00:00:00Z', remain: 3},
+    {date: '2030-01-01', expire_at: '2030-01-01T00:00:00Z', remain: 1},
+    {date: '2030-02-02', expire_at: '2030-02-02T00:00:00Z', remain: 2},
+  ],
+}]);
+check('case ii: three buckets collapse to one row', threeBuckets.length, 1);
+check('case ii: buckets sorted ascending', threeBuckets[0].buckets.map((b) => b.amount), [1, 2, 3]);
+check('case ii: two batches fold behind the first', threeBuckets[0].buckets.length - 1, 2);
+check('case ii: note is carried for the row label', threeBuckets[0].note, '主力号');
+
+// (iii) 无分桶但 remaining > 0 → 回落单批单行；非列表/全无效分桶同样回落。
+const fallback = collectAccountExpiries([{
+  uid: 'fallback',
+  nickname: 'Fallback',
+  credits_expiry_buckets: [],
+  credits_earliest_expiry: '2030-05-01T00:00:00Z',
+  credits_earliest_remaining: 42,
+}]);
+check('case iii: fallback yields one row', fallback, [{
+  uid: 'fallback',
+  name: 'Fallback',
+  buckets: [{at: isoAt('2030-05-01T00:00:00Z'), amount: 42}],
+}]);
+const malformedFallback = collectAccountExpiries([{
+  uid: 'malformed',
+  nickname: 'Malformed',
+  credits_expiry_buckets: [
+    {date: 'x'},
+    {expire_at: '2030-01-01T00:00:00Z', remain: 0},
+    {expire_at: 'not-a-date', remain: 5},
+    null,
+  ],
+  credits_earliest_expiry: '2030-06-01T00:00:00Z',
+  credits_earliest_remaining: 7,
+}]);
+check('case iii: malformed buckets fall back', malformedFallback, [{
+  uid: 'malformed',
+  name: 'Malformed',
+  buckets: [{at: isoAt('2030-06-01T00:00:00Z'), amount: 7}],
+}]);
+check('case iii: non-list buckets fall back', collectAccountExpiries([{
+  uid: 'stringy',
+  nickname: 'Stringy',
+  credits_expiry_buckets: 'nope',
+  credits_earliest_expiry: '2030-06-01T00:00:00Z',
+  credits_earliest_remaining: 3,
+}]), [{
+  uid: 'stringy',
+  name: 'Stringy',
+  buckets: [{at: isoAt('2030-06-01T00:00:00Z'), amount: 3}],
+}]);
+
+// (iv) 零值时间（公元 1 年）或 remaining == 0 → 不出假行 / 空结果。
+const zeroTime = collectAccountExpiries([{
+  uid: 'zero-time',
+  nickname: 'ZeroTime',
+  credits_expiry_buckets: [],
+  credits_earliest_expiry: '0001-01-01T00:00:00Z',
+  credits_earliest_remaining: 10,
+}]);
+check('case iv: zero-time earliest yields no row', zeroTime, []);
+check(
+  'case iv: no year-1 date ever rendered',
+  zeroTime.some((r) => r.buckets.some((b) => new Date(b.at * 1000).getUTCFullYear() === 1)),
+  false,
+);
+check('case iv: zero remaining yields no row', collectAccountExpiries([{
+  uid: 'zero-remain',
+  nickname: 'ZeroRemain',
+  credits_earliest_expiry: '2030-01-01T00:00:00Z',
+  credits_earliest_remaining: 0,
+}]), []);
+check('case iv: negative remaining yields no row', collectAccountExpiries([{
+  uid: 'negative',
+  nickname: 'Negative',
+  credits_earliest_expiry: '2030-01-01T00:00:00Z',
+  credits_earliest_remaining: -5,
+}]), []);
+
+// 同一 uid 只出一行，且不修改传入的账号。
+const dupRowAccounts = [
+  {uid: 'dup', nickname: 'Dup', credits_expiry_buckets: [{expire_at: '2030-01-01T00:00:00Z', remain: 1}]},
+  {uid: 'dup', nickname: 'Dup', credits_expiry_buckets: [{expire_at: '2030-02-01T00:00:00Z', remain: 2}]},
+];
+const dupRowBefore = JSON.stringify(dupRowAccounts);
+check('duplicate uid yields one row', collectAccountExpiries(dupRowAccounts).length, 1);
+check('does not mutate accounts with buckets', JSON.stringify(dupRowAccounts), dupRowBefore);
 
 if (process.env.WB_TZ_CHILD !== '1') {
   const self = fileURLToPath(import.meta.url);

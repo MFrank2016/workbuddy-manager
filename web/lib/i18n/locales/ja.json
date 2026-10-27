@@ -296,7 +296,8 @@
     "throughputHint": "{n} 件の成功リクエストの生成時間から推定（ログ保持期間内のみ）"
   },
   "panel": {
-    "expiryMoreBuckets": "続けて {count} バッチ"
+    "expiryMoreBuckets": "続けて {count} バッチ",
+    "noUpcomingExpiry": "近日中の有効期限バッチはありません"
   },
     "panelTasks": {
       "title": "タスク一覧",

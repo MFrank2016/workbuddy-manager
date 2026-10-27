@@ -25,6 +25,15 @@ export interface Account {
   remain_seconds: number;
   /** 当前可花费积分余额（上游聚合套餐剩余额度），null 表示尚未同步 */
   credits?: number | null;
+  /**
+   * 按日聚合的积分到期批次（上游 core 98e9f5b）。
+   * 每个批次是该日最早到期时刻与当日剩余额度；缺失/类型不符时后端归一为 []。
+   */
+  credits_expiry_buckets?: CreditExpiryBucket[] | null;
+  /** 最早未来到期时刻（RFC3339）；零值时间 "0001-01-01T00:00:00Z" 需前端守卫 */
+  credits_earliest_expiry?: string | null;
+  /** 最早到期批次的剩余额度；仅正整数有效，0/负数/缺省 = 无 */
+  credits_earliest_remaining?: number | null;
   /** 来自 workbuddy2api /status 的运行时字段，可能为空 */
   healthy?: boolean | null;
   disabled?: boolean | null;
@@ -971,6 +980,16 @@ export interface UpstreamConfig {
    */
   admin?: Record<string, unknown>;
   upstash?: UpstashConfig;
+}
+
+/** 上游按日聚合的积分到期批次（`{date, expire_at, remain}`，见 core internal/pool/bucket.go） */
+export interface CreditExpiryBucket {
+  /** 本地日期（YYYY-MM-DD） */
+  date: string;
+  /** 该批最早到期时刻（RFC3339，UTC） */
+  expire_at: string;
+  /** 该日剩余额度 */
+  remain: number;
 }
 
 /** 一个套餐的到期时刻与它名下的可用额度 */

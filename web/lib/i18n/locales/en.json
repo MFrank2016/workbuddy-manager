@@ -323,7 +323,8 @@
     "throughputHint": "Estimated from {n} successful requests (request-log retention window only)"
   },
   "panel": {
-    "expiryMoreBuckets": "{count} more batches"
+    "expiryMoreBuckets": "{count} more batches",
+    "noUpcomingExpiry": "No upcoming expiry batches"
   },
     "panelTasks": {
       "title": "Task list",

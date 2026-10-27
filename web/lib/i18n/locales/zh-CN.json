@@ -296,7 +296,8 @@
     "throughputHint": "按 {n} 条成功请求的生成耗时估算（只覆盖日志保留期）"
   },
   "panel": {
-    "expiryMoreBuckets": "随后 {count} 批"
+    "expiryMoreBuckets": "随后 {count} 批",
+    "noUpcomingExpiry": "无近期到期批次"
   },
     "panelTasks": {
       "title": "任务清单",

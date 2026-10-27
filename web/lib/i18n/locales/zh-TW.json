@@ -296,7 +296,8 @@
     "throughputHint": "依 {n} 筆成功請求的生成耗時估算（僅涵蓋日誌保留期間）"
   },
   "panel": {
-    "expiryMoreBuckets": "隨後 {count} 批"
+    "expiryMoreBuckets": "隨後 {count} 批",
+    "noUpcomingExpiry": "無近期到期批次"
   },
     "panelTasks": {
       "title": "任務清單",

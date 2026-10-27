@@ -18,7 +18,7 @@ import {
 } from 'recharts';
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {useAsyncAll} from '@/lib/use-async-data';
-import {collectScopedExpiries} from '@/lib/dashboard-credits';
+import {collectAccountExpiries, collectScopedExpiries} from '@/lib/dashboard-credits';
 import {getExpiryDailyGroup, groupExpiriesByDay} from '@/lib/display-prefs';
 import {accountApi, statsApi, upstreamApi, upstreamsApi} from '@/lib/api';
 import {useRealm} from '@/lib/realm-context';
@@ -80,6 +80,9 @@ const EMPTY_POINTS: UsagePoint[] = [];
 const EMPTY_CREDITS: Record<string, CreditsMeta> = {};
 const EMPTY_LIVE_CREDITS: Record<string, number> = {};
 const EMPTY_SLICES: GroupSlice[] = [];
+
+/** 仪表盘到期明细的折叠状态（浏览器本地；缺省 = 展开）。 */
+const EXPIRY_FOLD_KEY = 'wb2a.expfold.v1';
 
 /** 积分收支的取数前空值（理由同 EMPTY_POINTS：必须是稳定引用） */
 const EMPTY_FLOW: CreditsFlow = {
@@ -388,6 +391,42 @@ export default function DashboardPage() {
     [dailyGroup, scopedExpiries, nextExpiry],
   );
 
+  /**
+   * 到期明细：每账号一行，最早批次在前。与汇总卡片共用 `scoped`——切版本、
+   * 刷新元数据都会重算；不能扫 `creditsMeta` 全表，否则切到国际版仍会显示
+   * 国内版更早的那一笔。
+   */
+  const accountExpiries = useMemo(() => collectAccountExpiries(scoped), [scoped]);
+  /** 明细区标题里的合计：所有账号、所有有效批次的额度之和。 */
+  const expiryTotal = useMemo(
+    () => accountExpiries.reduce(
+      (sum, row) => sum + row.buckets.reduce((s, b) => s + b.amount, 0),
+      0,
+    ),
+    [accountExpiries],
+  );
+
+  /** 明细区折叠：默认展开，状态存浏览器本地，刷新后保持。 */
+  const [expiryExpanded, setExpiryExpanded] = useState(true);
+  useEffect(() => {
+    try {
+      setExpiryExpanded(window.localStorage.getItem(EXPIRY_FOLD_KEY) !== '0');
+    } catch {
+      /* 隐私模式读不到就保持默认展开 */
+    }
+  }, []);
+  const toggleExpiryFold = () => {
+    setExpiryExpanded((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(EXPIRY_FOLD_KEY, next ? '1' : '0');
+      } catch {
+        /* 写不进去只影响下次打开，本次仍按选择渲染 */
+      }
+      return next;
+    });
+  };
+
   const chartData = daily.map((d) => ({
     day: d.day.slice(5),
     requests: d.requests,
@@ -562,6 +601,68 @@ export default function DashboardPage() {
           hintTone={todayFailed > 0 ? 'warning' : undefined}
           delay={0.2}
         />
+      </section>
+
+      {/* 按日到期明细：每个账号一行，最早批次为主，其余折叠成「随后 N 批」。
+          汇总卡片只报「最近一笔」，看不到同一账号还有几批在后面；这里补齐，
+          同时用本地偏好控制整块是否展开（默认展开）。 */}
+      <section className="rounded-[20px] bg-muted p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Coins className="h-4 w-4" />
+            {t('credit.expiryTipTitle', {total: fmtNumber(expiryTotal)})}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="rounded-full"
+            aria-expanded={expiryExpanded}
+            onClick={toggleExpiryFold}
+          >
+            {t(expiryExpanded ? 'expiry.fold' : 'expiry.unfold')}
+          </Button>
+        </div>
+        {expiryExpanded && (
+          accountExpiries.length ? (
+            <ul className="space-y-2">
+              {accountExpiries.map((row) => {
+                const [primary, ...rest] = row.buckets;
+                const urgent = primary.at - Date.now() / 1000 < 7 * 86400;
+                return (
+                  <li
+                    key={row.uid}
+                    className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 rounded-xl bg-background/60 px-3 py-2"
+                  >
+                    <span
+                      className="min-w-0 truncate text-xs font-medium"
+                      title={row.note || row.name}
+                    >
+                      {row.name}
+                    </span>
+                    <span className="shrink-0 text-[11px] tabular-nums">
+                      <span className={urgent ? 'text-amber-600 dark:text-amber-400' : undefined}>
+                        {fmtDateTime(primary.at)}
+                      </span>
+                      {' · '}
+                      {t('metric.creditAmount', {
+                        n: fmtNumber(primary.amount),
+                        count: Math.round(primary.amount),
+                      })}
+                      {rest.length > 0 && (
+                        <span className="ml-1.5 text-muted-foreground">
+                          {t('panel.expiryMoreBuckets', {count: rest.length})}
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <div className="text-xs text-muted-foreground">{t('panel.noUpcomingExpiry')}</div>
+          )
+        )}
       </section>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
