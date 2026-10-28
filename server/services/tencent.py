@@ -1312,6 +1312,56 @@ async def probe_account(auth: dict, model: str = 'glm-5.2') -> tuple[bool, str]:
         return False, f'请求异常: {err_text(exc)}'
 
 
+_PROBE_CODE_RE = re.compile(r'code=([0-9][0-9-]*)')
+# 额度不足文案（与上游 ErrHardCredit 的关键词同口径，大小写不敏感）
+_PROBE_CREDIT_HINTS = ('积分不足', '额度不足', '余额不足', '积分耗尽', '积分用完',
+                       'insufficient credit', 'no credit', 'quota exceeded')
+
+
+def classify_probe_result(ok: bool, message: str) -> tuple[str, str | None]:
+    """把 `probe_account` 的 (ok, message) 映射成结构化状态（issue #270）。
+
+    状态：ok / rate / credit / auth / no_model / error。
+
+    为什么从 message 里回读业务码而不是另起一套请求实现：`probe_account`
+    已经是**唯一**的探测请求构造点（渠道校验、路径回落、请求头都在那里），
+    再复制一份必然漂移。`_explain_code` 的输出格式固定含 `code=X`，回读稳。
+    """
+    if ok:
+        return 'ok', None
+    m = _PROBE_CODE_RE.search(message or '')
+    code = m.group(1) if m else None
+    text = (message or '').lower()
+    if code == '11102':
+        return 'no_model', code
+    if code in ('12153', '401'):
+        return 'auth', code
+    if code in ('6004', '429'):
+        return 'rate', code
+    if code in ('402', '14018'):
+        return 'credit', code
+    if any(h in message for h in _PROBE_CREDIT_HINTS) or 'credit' in text:
+        return 'credit', code
+    return 'error', code
+
+
+async def probe_model(auth: dict, model: str) -> dict:
+    """账号 × 模型探测（issue #270）：在 `probe_account` 之上补结构化分类。
+
+    返回 `{status, code, message, latency_ms}`。`status='no_model'` 表示
+    「该账号没有这个模型」——账号本身没问题，不计入错误。
+    """
+    started = time.time()
+    ok, message = await probe_account(auth, model)
+    status, code = classify_probe_result(ok, message)
+    return {
+        'status': status,
+        'code': code,
+        'message': message,
+        'latency_ms': int((time.time() - started) * 1000),
+    }
+
+
 
 def _is_channel_check(code: object, raw: str) -> bool:
     """判上游的「渠道校验」拒绝（与上游 `IsChannelCheck` 同一口径）。

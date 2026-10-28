@@ -170,6 +170,27 @@ export interface AccountsResponse {
   manageable?: boolean;
 }
 
+/** 账号 × 模型探测的单条结果（issue #270） */
+export type ProbeStatus = 'ok' | 'rate' | 'credit' | 'auth' | 'no_model' | 'error';
+
+export interface ProbeModelResult {
+  file: string;
+  uid: string;
+  nickname: string;
+  realm: string;
+  model: string;
+  status: ProbeStatus;
+  code: string | null;
+  message: string;
+  latency_ms: number;
+}
+
+export interface ProbeModelsResponse {
+  results: ProbeModelResult[];
+  summary: Record<ProbeStatus, number>;
+  requests: number;
+}
+
 /**
  * 批量 refresh token 导入的逐条结果（`POST /api/accounts/import-tokens`）。
  *

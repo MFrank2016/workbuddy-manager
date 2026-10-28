@@ -61,6 +61,7 @@ import type {
   PgSyncStatus,
   PgSyncTestResult,
   PlaygroundModels,
+  ProbeModelsResponse,
   RedPacket,
   RedPacketDetail,
   RedPacketKind,
@@ -360,6 +361,13 @@ export const accountApi = {
   test: (file: string, upstreamId?: number | null) =>
     post<{ok: boolean; message: string}>(
       `/api/accounts/${encodeURIComponent(file)}/test${groupQs(upstreamId)}`),
+  /** 账号 × 模型主动探测（issue #270）：files 为账号文件名，models 为模型 id。 */
+  probeModels: (files: string[], models: string[], upstreamId?: number | null) =>
+    post<ProbeModelsResponse>(`/api/accounts/probe-models${groupQs(upstreamId)}`,
+                              {accounts: files, models}),
+  /** 上游「账号管理接口」（admin.enabled）开关状态；null = 未知（非默认分组）。 */
+  adminApiStatus: (upstreamId?: number | null) =>
+    get<{enabled: boolean | null}>('/api/accounts/admin-api-status' + groupQs(upstreamId)),
   refresh: (file: string, upstreamId?: number | null) =>
     post<{ok: boolean; message: string}>(
       `/api/accounts/${encodeURIComponent(file)}/refresh${groupQs(upstreamId)}`),
