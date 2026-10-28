@@ -330,7 +330,21 @@ def _atomic_write_json(target: Path, payload: dict) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         if original is not None and hasattr(os, 'chown'):
-            os.chown(tmp_name, original.st_uid, original.st_gid)
+            # 属主先对齐：跨 uid 部署（面板以 root 写、上游以 uid 10001 读）时上游
+            # 正是靠属主读文件的，这一步失败必须让调用方知道，不能静默写出一个
+            # 上游读不到的账号文件（表现为「账号加进去了但池里没有」）。
+            os.chown(tmp_name, original.st_uid, -1)
+            try:
+                # 属组只影响附加的组可读性。非 root 只能把文件改到自己所属的组，
+                # 而账号文件的属组常常是上游容器内的 gid（典型 10001）——面板在
+                # 宿主机上属于 workbuddy 组，这一行必然 EPERM。2026-10-26 实测：
+                # 目录属主、权限都正常（mkstemp 与写入都成功），只有这句失败，
+                # 用户看到「账号已授权成功，但写入账号文件失败：Operation not
+                # permitted」并被引去检查一个没问题的目录。属主已经对齐，属组失败
+                # 不影响上游读取（0600 同 uid 即可读），忽略。
+                os.chown(tmp_name, -1, original.st_gid)
+            except PermissionError:
+                pass
         new_mode = getattr(config, 'AUTH_FILE_MODE', 0) or 0o644
         os.chmod(tmp_name, (original.st_mode & 0o777) if original is not None else new_mode)
         os.replace(tmp_name, target)
