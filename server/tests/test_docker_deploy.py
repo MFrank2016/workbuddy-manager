@@ -1186,18 +1186,21 @@ class UpstreamSourceFallbackTest(unittest.TestCase):
                       '检测到了包内源码却没接到 UPSTREAM_SRC —— 等于没检测')
 
     def test_release_workflow_embeds_upstream_source(self) -> None:
-        """发布流程必须把上游源码塞进包里，取不到时直接失败。
+        """发布流程必须把 core tag 的源码塞进包里，取不到时直接失败。
 
-        上游已由本项目维护，管理端 Release 是唯一更新源；缺 upstream/ 或
-        `.upstream-id` 的包不能发出去。
+        上游由 core 仓库（MFrank2016/workbuddy2api）的 tag 维护；管理端 Release
+        是唯一更新源，缺 upstream/、`.core-tag` 或 `.upstream-id` 的包不能发出去。
         """
         import yaml
         wf = (_ROOT / '.github' / 'workflows' / 'release.yml').read_text(encoding='utf-8')
         yaml.safe_load(wf)   # 先确保 YAML 没写坏
-        self.assertIn('releases/download/upstream-src/workbuddy2api-src.tar.gz', wf,
-                      '没有从载体 Release 取上游源码')
+        self.assertIn('CORE_TAG: manager-core-2026.10.27', wf,
+                      '没有固定 core tag')
+        self.assertIn('releases/download/${CORE_TAG}/workbuddy2api-src.tar.gz', wf,
+                      '没有从 core tag 的 Release 取上游源码')
         self.assertIn("$STAGE/upstream", wf, '取回来的源码没有放进发布目录')
         self.assertIn('::error::', wf, '取不到源码时应让发布失败')
+        self.assertIn('.core-tag', wf, '没有校验包内 core-tag')
         self.assertIn('.upstream-id', wf, '没有校验包内 upstream-id')
 
     def test_no_external_git_clone_left(self) -> None:

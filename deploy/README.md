@@ -60,11 +60,11 @@ cd /opt/workbuddy2api && docker compose up -d --build
 ### 直接用预构建的上游镜像（不想本地构建时）
 
 每次发版也会把**上游**构建成镜像推到 GHCR。它和管理端镜像**同源**：都用发布包里
-那份源码（= `upstream-src` 资产 + 我们的全部补丁），所以不会出现「第三方上游镜像
-与项目上游源码不一致」的版本漂移。
+那份源码（= core 仓库 `manager-core-2026.10.27` tag 的源码资产），所以不会出现
+「第三方上游镜像与项目上游源码不一致」的版本漂移。
 
 ```bash
-docker pull ghcr.io/ithtelab/workbuddy2api:<版本>
+docker pull ghcr.io/mfrank2016/workbuddy2api:<版本>
 # latest 指向最近一次发布；长期跑建议钉版本号（理由同管理端镜像）
 ```
 
@@ -74,7 +74,7 @@ docker pull ghcr.io/ithtelab/workbuddy2api:<版本>
 ```yaml
 services:
   wb2api:
-    image: ghcr.io/ithtelab/workbuddy2api:2.8.0
+    image: ghcr.io/mfrank2016/workbuddy2api:<版本>
     container_name: workbuddy2api
     restart: unless-stopped
     environment:

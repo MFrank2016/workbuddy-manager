@@ -5,6 +5,16 @@
 #
 # 产物为可直接部署的压缩包（含 server/ 与已构建的 web/out/）。
 #
+# ── 上游源码（core tag，重要）──────────────────────────────────
+#   上游 workbuddy2api 由 core 仓库（MFrank2016/workbuddy2api）维护，每个 core
+#   tag（默认 manager-core-2026.10.27）发布一份源码资产。本流程直接取该资产
+#   塞进发布包的 upstream/，**不再应用 dev/upstream-patches/*.patch**。
+#   * 前置条件：core tag 与源码资产必须先 push/publish；本地 tag 没推上去时
+#     这里会 404，发版失败。
+#   * 可用仓库变量 UPSTREAM_SRC_URL 覆盖源码地址（演练 / 镜像源）。
+#   * 旧的「upstream-src 资产 + 本地补丁」路径保留在 release-patches.yml，仅
+#     workflow_dispatch 手动触发，不会与 tag 发布同时运行（R3）。
+#
 # ── 关于产物与发布（重要）────────────────────────────────────
 #   * 产物是 GitHub Release 资产（HTTPS），发布说明里附了 tar.gz 的 sha256；
 #     用户侧 deploy/update.py 会用它自动核对（大小 + 摘要），不符即拒绝安装。
@@ -33,6 +43,10 @@ permissions:
   # 推容器镜像到 GHCR 需要显式声明 packages: write —— 只给 contents 会被拒
   # （实测报错：denied: installation not allowed to Create organization package）。
   packages: write
+
+env:
+  # core 仓库 tag；升级上游时同步修改。release-patches.yml 不读取这个值。
+  CORE_TAG: manager-core-2026.10.27
 
 jobs:
   release:
@@ -90,6 +104,9 @@ jobs:
 
       - name: 组装发布目录
         id: pack
+        env:
+          # 仓库变量可覆盖源码地址（本地演练可指向 file://）
+          UPSTREAM_SRC_URL: ${{ vars.UPSTREAM_SRC_URL }}
         run: |
           TAG="${{ steps.vars.outputs.tag }}"
           STAGE="workbuddy-manager-${TAG}"
@@ -134,15 +151,14 @@ jobs:
           # 不替换根目录文件。放进 server/ 后，任何部署（含从旧版升上来的）
           # 都拿得到更新日志，避免界面报「未找到更新日志文件」。
           cp CHANGELOG.md "$STAGE/server/CHANGELOG.md"
-          # ── 上游源码随包分发 ─────────────────────────────────────────
-          # 上游源码不放进本仓库（不是我们的代码），其公开地址也已不可用。
-          # 用户要能装，所以源码从固定的载体 Release（tag upstream-src，
-          # 标为 pre-release 以免影响 releases/latest）取回来塞进包里：
-          #   · 新装：install.sh 见到 upstream/ 直接用（离线可装）
-          #   · 升级：update.py 把它同步进上游目录（保留 config/auths/data）
-          # 上游已由本项目维护，管理端 Release 是唯一更新源：取不到源码或缺少
-          # `.upstream-id` 时必须让发布失败，不能发出一个用户无法更新上游的包。
-          UPSTREAM_SRC_URL="${UPSTREAM_SRC_URL:-https://github.com/${{ github.repository }}/releases/download/upstream-src/workbuddy2api-src.tar.gz}"
+          # ── 上游源码随包分发（core tag 资产）──────────────────────────
+          # 上游 workbuddy2api 由 core 仓库（MFrank2016/workbuddy2api）维护。
+          # 每个 core tag 发布一份源码资产；本流程直接消费该资产，**不再**应用
+          # dev/upstream-patches/*.patch（补丁已迁入 core tag）。
+          # 前置条件：core tag 与源码资产必须先 push/publish，否则这里会 404。
+          # 本地演练 / 镜像源可用仓库变量 UPSTREAM_SRC_URL 覆盖。
+          CORE_TAG="${CORE_TAG:-manager-core-2026.10.27}"
+          UPSTREAM_SRC_URL="${UPSTREAM_SRC_URL:-https://github.com/MFrank2016/workbuddy2api/releases/download/${CORE_TAG}/workbuddy2api-src.tar.gz}"
           mkdir -p "$STAGE/upstream"
           if curl -fsSL --retry 3 --retry-delay 2 --max-time 120 \
                  "$UPSTREAM_SRC_URL" -o /tmp/upstream-src.tar.gz \
@@ -151,17 +167,49 @@ jobs:
             echo "已内嵌上游源码：$(find "$STAGE/upstream" -type f | wc -l) 个文件"
             echo "has_upstream=1" >> $GITHUB_OUTPUT
           else
-            echo "::error::取不到上游源码包（$UPSTREAM_SRC_URL）。上游已由本项目维护，不能再发布不含 upstream/ 的包。"
+            echo "::error::取不到 core tag 源码包（$UPSTREAM_SRC_URL）。core tag 与源码资产必须先 push/publish。"
             exit 1
           fi
-          if [ ! -s "$STAGE/upstream/.upstream-id" ]; then
-            echo "::error::包内 upstream/.upstream-id 缺失或为空；更新器无法判断是否需要同步上游。"
+          # 来源标记：资产自带 `.core-tag` 时以它为准，缺失则由打包步骤写入。
+          # 无论哪种来源，最终都必须等于本流程期望的 CORE_TAG。
+          if [ -f "$STAGE/upstream/.core-tag" ]; then
+            GOT_CORE_TAG="$(cat "$STAGE/upstream/.core-tag")"
+          else
+            printf '%s\n' "$CORE_TAG" > "$STAGE/upstream/.core-tag"
+            GOT_CORE_TAG="$CORE_TAG"
+          fi
+          if [ "$GOT_CORE_TAG" != "$CORE_TAG" ]; then
+            echo "::error::随包上游来自 core tag $GOT_CORE_TAG，与预期 $CORE_TAG 不一致"
             exit 1
           fi
+          # `.upstream-id`：按统一算法重算（路径 + 内容），确保发布包与 core tag
+          # 内容一一对应；面板据此判断是否需要同步上游。排除元数据文件本身。
+          UPSTREAM_ID=$(python3 - "$STAGE/upstream" <<'PY'
+          import hashlib, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          skip_parts = {'.git', '__pycache__', 'node_modules'}
+          skip_names = {'.upstream-id', '.core-tag', 'UPSTREAM-SRC.txt'}
+          h = hashlib.sha256()
+          for p in sorted(root.rglob('*')):
+              if not p.is_file():
+                  continue
+              rel = p.relative_to(root)
+              if skip_parts.intersection(rel.parts) or rel.as_posix() in skip_names:
+                  continue
+              h.update(rel.as_posix().encode('utf-8')); h.update(b'\0')
+              h.update(p.read_bytes()); h.update(b'\0')
+          print(h.hexdigest())
+          PY
+          )
+          if [ -z "$UPSTREAM_ID" ]; then
+            echo "::error::无法为随包上游生成 .upstream-id"
+            exit 1
+          fi
+          printf '%s\n' "$UPSTREAM_ID" > "$STAGE/upstream/.upstream-id"
           # 上游镜像的稳定标识随镜像 label 下发（dev.workbuddy.upstream-id）：
           # 面板读本机容器的镜像 label 即可判断「镜像部署且与本次发布同源」，
           # 不再要求镜像部署用户的磁盘上有源码目录（issue #254）。
-          UPSTREAM_ID="$(cat "$STAGE/upstream/.upstream-id")"
           echo "upstream_id=$UPSTREAM_ID" >> $GITHUB_OUTPUT
           # 写入版本标记：管理端「系统更新」页与安装流程据此显示当前版本
           echo "${TAG}" > "$STAGE/.version"
@@ -191,9 +239,9 @@ jobs:
           go-version-file: ${{ steps.pack.outputs.stage }}/upstream/go.mod
           cache: false
 
-      # 发布前把「随包上游」当成一次真正的构建来验：补丁是否齐全、能否编译、
-      # 单测是否通过、我们自己的改动是否 gofmt 干净。补丁是上游改动的唯一事实
-      # 来源，而 CI 以前只跑 Python 测试 —— 补丁出错会一路带进 Release。
+      # 发布前把「随包上游」当成一次真正的构建来验：core tag 标记是否一致、
+      # 能否编译、单测是否通过。补丁不再在本地应用 —— core tag 就是上游改动的
+      # 唯一事实来源，CI 只消费并验证它。
       - name: 校验随包上游与版本一致性
         run: |
           set -eu
@@ -222,47 +270,15 @@ jobs:
           # 在副本上验，避免把 __pycache__ / 测试缓存写进要发布的目录
           TMP=$(mktemp -d)
           cp -a "$STAGE/upstream/." "$TMP/"
-          OUT=$(python3 dev/apply_upstream_patches.py "$TMP")
-          echo "$OUT"
-          if echo "$OUT" | grep -q '^applied:'; then
-            echo "::error::随包上游不是最新资产：仍有补丁需要现场应用"
+          GOT_CORE_TAG="$(cat "$TMP/.core-tag")"
+          if [ "$GOT_CORE_TAG" != "$CORE_TAG" ]; then
+            echo "::error::随包上游的 .core-tag=$GOT_CORE_TAG 与预期 $CORE_TAG 不一致"
             exit 1
           fi
-          N=$(ls dev/upstream-patches/*.patch | wc -l)
-          GOT=$(echo "$OUT" | grep -c '^already applied:' || true)
-          if [ "$GOT" -ne "$N" ]; then
-            echo "::error::随包上游的补丁数不符：已应用 $GOT / 共 $N"
-            exit 1
-          fi
-
           ( cd "$TMP" && go build ./... )
           ( cd "$TMP" && go test ./... )
-          # 只检查**补丁新增的 Go 文件**（整份都是我们写的，格式该由我们负责）。
-          # 改动过的既有文件里夹着上游自己的历史格式问题，整文件 gofmt 会误报；
-          # 而补丁里的 Python 脚本也不能喂给 gofmt。
-          NEWFILES=$(python3 - <<'PY'
-          import glob
-          out = set()
-          for path in glob.glob('dev/upstream-patches/*.patch'):
-              lines = open(path, encoding='utf-8').read().splitlines()
-              for i, line in enumerate(lines):
-                  if (line.startswith('--- /dev/null') and i + 1 < len(lines)
-                          and lines[i + 1].startswith('+++ b/')):
-                      name = lines[i + 1][6:].strip()
-                      if name.endswith('.go'):
-                          out.add(name)
-          print('\n'.join(sorted(out)))
-          PY
-          )
-          if [ -n "$NEWFILES" ]; then
-            FMT=$(cd "$TMP" && gofmt -l $NEWFILES || true)
-            if [ -n "$FMT" ]; then
-              echo "::error::补丁新增的 Go 文件未通过 gofmt：$FMT"
-              exit 1
-            fi
-          fi
           rm -rf "$TMP"
-          echo "随包上游校验通过（$N 条补丁、build/test/gofmt）"
+          echo "随包上游校验通过（core tag $CORE_TAG、build/test）"
 
       - name: 生成发布说明
         run: |
@@ -439,18 +455,18 @@ jobs:
       # 网络常常卡在拉基础镜像那一步，或者被拿到的第三方镜像版本拖偏（issue #241
       # 的现场：「更新 2.8.0 之后显示与项目上游源码不一致」）。
       #
-      # 这里用**发布包里那份源码**（= upstream-src 资产 + 全部补丁，前面已校验
-      # 过补丁一条不少）原样构建，镜像与面板随包上游是同一份代码，不存在版本漂移。
+      # 这里用**发布包里那份源码**（= core tag 源码资产，前面已校验 `.core-tag`
+      # 与 build/test）原样构建，镜像与面板随包上游是同一份代码，不存在版本漂移。
       # 取不到上游源码（has_upstream=0）时整段跳过，不阻断发布。
       #
       # 首次发布后要在仓库 Packages 里把该包设为 **public**：GHCR 新建包默认私有，
       # 用户在未登录状态下 `docker pull` 会 401（管理端镜像当年也踩过这一步）。
       - name: 解析上游镜像名
-        # GHCR 仓库名必须全小写（与上面管理端镜像同理）
+        # 上游镜像固定发布到 core 仓库的 GHCR namespace（小写）
         if: steps.pack.outputs.has_upstream == '1' && (github.event_name == 'push' || inputs.tag != '')
         id: upstream_image
         run: |
-          IMAGE="ghcr.io/${{ github.repository_owner }}/workbuddy2api"
+          IMAGE="ghcr.io/mfrank2016/workbuddy2api"
           echo "name=${IMAGE,,}" >> $GITHUB_OUTPUT
 
       - name: 构建并推送上游镜像（amd64 + arm64）
@@ -518,7 +534,7 @@ jobs:
 
           上游也可以直接用预构建镜像（可选，省掉本地编译）：
           ```bash
-          docker pull ghcr.io/${{ github.repository_owner }}/workbuddy2api:${{ steps.vars.outputs.version }}
+          docker pull ghcr.io/mfrank2016/workbuddy2api:${{ steps.vars.outputs.version }}
           ```
           EOF
 
