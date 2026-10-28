@@ -439,7 +439,7 @@ def _usage_cache(usage: dict | None) -> tuple[int | None, int | None, int | None
             _one('prompt_cache_write_tokens'))
 
 
-def _record(key: dict | None, ip: str, model: str, mapped: str, status: int, pt: int, ct: int, latency: int, ua: str | None, error: str | None, stream: bool, *, credit: float | None = None, first_token: int | None = None, usage: dict | None = None, tool_repair: str = 'none') -> None:
+def _record(key: dict | None, ip: str, model: str, mapped: str, status: int, pt: int, ct: int, latency: int, ua: str | None, error: str | None, stream: bool, *, credit: float | None = None, first_token: int | None = None, usage: dict | None = None, tool_repair: str = 'none', effort: str | None = None) -> None:
     """记录调用日志与用量。
 
     credit 为上游返回的真实扣费（usage.credit）。None 表示上游没给，
@@ -456,6 +456,9 @@ def _record(key: dict | None, ip: str, model: str, mapped: str, status: int, pt:
     tool_repair 是工具参数修复的结果（契约 §5：none / fixed / failed /
     recalled）。默认 `none`——既表示没开修复，也表示参数本来就合法；
     只有 Responses / Anthropic 的聚合路径会传别的值（流式不动参数）。
+
+    effort 是客户端显式传的 `reasoning_effort`（low / medium / high / max…）。
+    None = 没传或旧记录，界面显示「—」；**不按模型默认档推断**，也不改写请求体。
 
     注意：日志/统计属于旁路，任何异常都不能影响用户请求本身
     （曾因统计函数缺失导致流式响应在收尾阶段中断，客户端看到
@@ -503,6 +506,8 @@ def _record(key: dict | None, ip: str, model: str, mapped: str, status: int, pt:
             cache_miss_tokens=cache_miss,
             cache_write_tokens=cache_write,
             tool_repair=tool_repair,
+            # 思考强度只作展示：客户端传什么记什么，不做推断（NULL=没传/旧记录）。
+            effort=db._clean(effort, 16) if effort else None,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning('写入请求日志失败（不影响请求）: %s', exc)
@@ -1174,6 +1179,14 @@ async def _chat(request: Request, upstream_path: str):
     # 鉴权后、转发前压回上限。
     clamp_max_tokens(body)
 
+    # 思考强度（reasoning_effort）：仅用于日志展示，**不改写请求体**——
+    # 档位归一化/降级由上游网关负责，面板只记录客户端实际传了什么。
+    effort = None
+    if isinstance(body, dict):
+        raw_effort = body.get('reasoning_effort')
+        if isinstance(raw_effort, str) and raw_effort.strip():
+            effort = raw_effort.strip()[:16]
+
     stream = bool(isinstance(body, dict) and body.get('stream'))
     if stream:
         # 让上游在最后一个 chunk 返回 usage，便于精确计量
@@ -1206,7 +1219,7 @@ async def _chat(request: Request, upstream_path: str):
             error = None if resp.status_code < 400 else (str(data)[:500] if data is not None else resp.text[:500])
             _record(
                 key, ip, requested_model or '', mapped or '', resp.status_code, pt, ct,
-                latency, ua, error, False, usage=usage,
+                latency, ua, error, False, usage=usage, effort=effort,
             )
             if data is not None:
                 return JSONResponse(data, status_code=resp.status_code)
@@ -1225,7 +1238,7 @@ async def _chat(request: Request, upstream_path: str):
     except Exception as exc:  # noqa: BLE001
         await client.aclose()
         latency = int((time.time() - started) * 1000)
-        _record(key, ip, requested_model or '', mapped or '', 502, 0, 0, latency, ua, str(exc), True)
+        _record(key, ip, requested_model or '', mapped or '', 502, 0, 0, latency, ua, str(exc), True, effort=effort)
         return _oai_error(f'上游不可用: {exc}' + _upstream_hint(upstream), 502, 'api_error', 'upstream_unavailable')
 
     status_code = resp.status_code
@@ -1264,7 +1277,7 @@ async def _chat(request: Request, upstream_path: str):
             _record(
                 key, ip, requested_model or '', mapped or '', status_code, pt, ct,
                 latency, ua, error_text, True, usage=usage,
-                first_token=first_token_ms,
+                first_token=first_token_ms, effort=effort,
             )
 
     return StreamingResponse(generator(), status_code=status_code, media_type=content_type)
