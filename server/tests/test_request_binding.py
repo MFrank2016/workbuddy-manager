@@ -169,6 +169,8 @@ class PostParamLocationAuditTest(unittest.TestCase):
         '/api/accounts/claim-compensation': {'upstream_id'},
         # 一键刷新令牌：同 checkin-all，按 `?upstream_id=` 指定作用于哪个分组。
         '/api/accounts/refresh-tokens': {'upstream_id'},
+        # 账号 × 模型主动探测（issue #270）：前端按 `?upstream_id=` 指定分组。
+        '/api/accounts/probe-models': {'upstream_id'},
         '/api/accounts/{filename}/checkin': {'upstream_id'},
         '/api/accounts/{filename}/test': {'upstream_id'},
         '/api/accounts/{filename}/refresh': {'upstream_id'},
