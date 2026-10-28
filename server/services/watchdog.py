@@ -43,8 +43,10 @@
 
   · 目标 URL 只允许 http/https，默认拒绝解析到内网/回环/链路本地地址的域名
     （SSRF：监控目标由管理员填，但一台被拿下的面板不该能探内网）；
-  · 邮件密码 / LLM API Key 读取时打码，保存时回传 `********` 表示「不改」；
-  · 所有写操作（改配置、立即运行、发测试邮件）都是管理员接口并写审计日志。
+  · 邮件密码 / LLM API Key / AstrBot 密钥读取时打码，保存时回传
+    `********` 表示「不改」；
+  · 所有写操作（改配置、立即运行、发测试邮件 / QQ 消息）都是管理员接口并写
+    审计日志。
 """
 from __future__ import annotations
 
@@ -65,6 +67,7 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 from .. import config, db, upstreamsvc
+from . import qq as qqsvc
 from . import tencent, wb2api
 from .realm import realm_of
 
@@ -141,6 +144,15 @@ def _default_config() -> dict:
             'to': [],
             'subject_prefix': '[WorkBuddy 监控]',
         },
+        # QQ / AstrBot：管理端只负责 HTTP 调用，QQ 官方机器人的 AppID、
+        # IP 白名单与主动消息限制都在 AstrBot 侧（见 docs/qq-bot.md）。
+        'qq': {
+            'enabled': False,
+            'base_url': '',      # 例：https://astrbot.example.com（自动补 /api/v1）
+            'api_key': '',       # AstrBot「设置 → OpenAPI」创建的 abk_ 密钥
+            'umo': '',           # 平台:消息类型:会话ID
+            'timeout_seconds': 15,
+        },
     }
 
 
@@ -216,7 +228,7 @@ async def save_config(raw: object, *, actor: dict | None = None) -> dict:
     merged = _merge_dict(dict(current), raw)
 
     # 打码值 = 保持原密码/密钥不变（前端不需要、也不应该拿到明文）
-    for section, key in (('mail', 'password'), ('llm', 'api_key')):
+    for section, key in (('mail', 'password'), ('llm', 'api_key'), ('qq', 'api_key')):
         value = merged[section].get(key)
         if value == '********':
             merged[section][key] = current[section].get(key, '')
@@ -257,6 +269,23 @@ async def save_config(raw: object, *, actor: dict | None = None) -> dict:
         if not str(llm.get('base_url') or '').strip() or not str(llm.get('model') or '').strip():
             raise ValueError('启用 LLM 时必须填 base_url 与 model')
 
+    qq = merged['qq']
+    for key in ('base_url', 'api_key', 'umo'):
+        if isinstance(qq.get(key), str):
+            qq[key] = qq[key].strip()
+    if not isinstance(qq.get('timeout_seconds'), int) or not 3 <= qq['timeout_seconds'] <= 120:
+        raise ValueError('qq.timeout_seconds 必须在 3-120 之间')
+    if qq.get('enabled'):
+        parsed_qq = urlparse(qq.get('base_url') or '')
+        if parsed_qq.scheme not in ('http', 'https') or not parsed_qq.netloc:
+            raise ValueError('启用 QQ 通知时 base_url 必须是 http(s) 绝对地址')
+        if not qq.get('api_key'):
+            raise ValueError('启用 QQ 通知时必须填开发者访问密钥（abk_...）')
+        # UMO 是「平台:消息类型:会话ID」；不校验平台名，因为适配器 id 由用户在
+        # AstrBot 里自定义（不一定叫 qq_official），校验太死反而挡住可用配置。
+        if str(qq.get('umo') or '').count(':') < 2:
+            raise ValueError('qq.umo 必须形如「平台:消息类型:会话ID」')
+
     warning = ''
     egress = None
     if mail.get('enabled'):
@@ -292,6 +321,9 @@ def public_config(cfg: dict | None = None) -> dict:
     out = json.loads(json.dumps(cfg if cfg is not None else load_config()))
     out['mail']['password'] = '********' if out['mail'].get('password') else ''
     out['llm']['api_key'] = '********' if out['llm'].get('api_key') else ''
+    # setdefault：兼容升级前落库、还没有 qq 段的配置，避免界面读取时 500
+    qq_out = out.setdefault('qq', {})
+    qq_out['api_key'] = '********' if qq_out.get('api_key') else ''
     return out
 
 
@@ -979,6 +1011,37 @@ async def test_mail(cfg: dict) -> dict:
     return {**result, 'egress': egress}
 
 
+async def send_qq(text: str, *, cfg: dict | None = None) -> dict:
+    """QQ 通知：把 AstrBot 的调用隔离在一个薄包装后面。
+
+    这样 `run_once` 与测试代码都只依赖本模块，替换实现（例如将来直连别的
+    推送服务）不需要改调用点；单测也只需要 mock 这一个名字。
+    """
+    cfg = cfg or load_config()
+    return await qqsvc.send_message(cfg['qq'], text)
+
+
+async def test_qq(cfg: dict) -> dict:
+    """「发送测试消息」：先验密钥/scope，再真发一条。
+
+    分两步而不是直接发：`/im/bots` 的失败能确定是「地址/密钥/scope」的问题，
+    而发送失败还可能是 UMO 写错。把 stage 带回去，界面才能给出可操作的提示。
+    测试发消息**不看 `enabled`**：用户正是在还没开启通知时来验证配置。
+    """
+    qq = {**cfg['qq'], 'enabled': True}
+    bots = await qqsvc.list_bots(qq)
+    if not bots.get('ok'):
+        return {**bots, 'stage': 'auth'}
+    text = (
+        '【WorkBuddy 监控】QQ 通知通道测试\n'
+        f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        '收到这条消息说明管理端 → AstrBot 的 OpenAPI 调用正常，'
+        '后续页面变化告警会发到这个会话。\n'
+    )
+    result = await qqsvc.send_message(qq, text)
+    return {**result, 'stage': 'send', 'bots': bots.get('bots') or []}
+
+
 # ── 主流程 ──────────────────────────────────────────────────────────────
 def _should_notify(cfg: dict, verdict: dict, scan: dict | None) -> bool:
     mode = cfg.get('notify_on') or 'change'
@@ -1196,6 +1259,7 @@ async def run_once(trigger: str = 'manual') -> dict:
             except Exception as exc:  # noqa: BLE001
                 claim_result = {'ok': False, 'message': f'自动领取异常: {exc}'}
 
+        qq_result = None
         if changed:
             for item in changed:
                 if not _should_notify(cfg, item['verdict'], scan):
@@ -1206,6 +1270,10 @@ async def run_once(trigger: str = 'manual') -> dict:
                 # 每个变化的目标各发一封：只发第一封会让第二个目标的变化
                 # 完全没有出口（状态里有、邮件里没有），而邮件正是告警通道。
                 mail_result = await send_mail(subject, body, cfg=cfg)
+                # 未启用时不调用：否则每轮都会在状态里留一条「QQ 未启用」，
+                # 界面会一直显示一个「QQ 未发送」的徽标，像是出了问题。
+                if cfg['qq'].get('enabled'):
+                    qq_result = await send_qq(f'{subject}\n\n{body}', cfg=cfg)
 
         state_result = {
             'trigger': trigger,
@@ -1218,12 +1286,14 @@ async def run_once(trigger: str = 'manual') -> dict:
                      if isinstance(scan, dict) else None),
             'claim': claim_result,
             'mail': mail_result,
+            'qq': qq_result,
         }
         _save_state(last_run_at=state_result['finished_at'], last_result=state_result,
                     last_error='; '.join(f"{e['name']}: {e['error']}" for e in errors))
-        logger.info('监控检测完成 trigger=%s changed=%d errors=%d mail=%s',
+        logger.info('监控检测完成 trigger=%s changed=%d errors=%d mail=%s qq=%s',
                     trigger, len(changed), len(errors),
-                    'sent' if (mail_result or {}).get('ok') else 'no')
+                    'sent' if (mail_result or {}).get('ok') else 'no',
+                    'sent' if (qq_result or {}).get('ok') else 'no')
         return {'ok': not errors, **state_result}
 
 

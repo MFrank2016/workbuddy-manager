@@ -21,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from server.services import qq as qqsvc  # noqa: E402
 from server.services import watchdog  # noqa: E402
 
 
@@ -341,6 +342,36 @@ class RunOnceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('t', sent[0][0])
         self.assertIn('领取', sent[0][1])
 
+    async def test_changed_target_sends_qq_alongside_mail(self) -> None:
+        """两个通道互相独立：邮件发失败不影响 QQ，反之亦然。"""
+        cfg = watchdog._default_config()  # noqa: SLF001
+        cfg['targets'] = [{'name': 't', 'url': 'https://a.example/', 'kind': 'html',
+                           'enabled': True}]
+        cfg['scan_compensation'] = False
+        cfg['qq'].update({'enabled': True, 'base_url': 'https://h',
+                          'api_key': 'abk', 'umo': 'a:b:c'})
+        self.snapshots['https://a.example/'] = {
+            'digest': watchdog.digest_of(['TAG div']), 'lines': ['TAG div']}
+        patches = self._patch_env(cfg, ['<div>领取</div>'])
+        qq_sent: list[str] = []
+
+        async def fake_qq(text: str, *, cfg=None):
+            qq_sent.append(text)
+            return {'ok': True, 'umo': 'a:b:c'}
+
+        patches.append(mock.patch.object(watchdog, 'send_mail',
+                                         new=mock.AsyncMock(return_value={'ok': False})))
+        patches.append(mock.patch.object(watchdog, 'send_qq',
+                                         new=mock.AsyncMock(side_effect=fake_qq)))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+        result = await watchdog.run_once('test')
+        self.assertEqual(len(qq_sent), 1)
+        self.assertIn('领取', qq_sent[0])
+        self.assertTrue(result['qq']['ok'])
+        self.assertFalse(result['mail']['ok'])
 
 
 class StateTargetTest(unittest.TestCase):
@@ -568,6 +599,269 @@ class SsrfGuardTest(unittest.TestCase):
         self.assertIn('活动', out)
         self.assertEqual(client.calls, ['https://public.test/', 'https://cdn.test/final'])
 
+class _FakeResp:
+    def __init__(self, status_code: int = 200, payload: object = None,
+                 text: str = '') -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self) -> object:
+        if self._payload is None:
+            raise ValueError('no json')
+        return self._payload
+
+
+class _FakeClient:
+    """替身 httpx 客户端：记录调用并按预设返回。"""
+
+    def __init__(self, resp: _FakeResp) -> None:
+        self.resp = resp
+        self.calls: list[tuple[str, str, dict]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+    async def post(self, url: str, **kwargs):
+        self.calls.append(('post', url, kwargs))
+        return self.resp
+
+    async def get(self, url: str, **kwargs):
+        self.calls.append(('get', url, kwargs))
+        return self.resp
+
+
+class QqServiceTest(unittest.IsolatedAsyncioTestCase):
+    def _patch_client(self, resp: _FakeResp) -> _FakeClient:
+        fake = _FakeClient(resp)
+        patcher = mock.patch.object(qqsvc.config, 'http_client',
+                                    side_effect=lambda *a, **k: fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return fake
+
+    async def test_api_base_normalizes_paths(self) -> None:
+        self.assertEqual(qqsvc.api_base('https://h:6185'), 'https://h:6185/api/v1')
+        self.assertEqual(qqsvc.api_base('https://h:6185/'), 'https://h:6185/api/v1')
+        self.assertEqual(qqsvc.api_base('https://h:6185/api'), 'https://h:6185/api/v1')
+        self.assertEqual(qqsvc.api_base('https://h:6185/api/v1/'), 'https://h:6185/api/v1')
+        # 整段端点粘进来也要能用
+        self.assertEqual(qqsvc.api_base('https://h:6185/api/v1/im/message'),
+                         'https://h:6185/api/v1')
+        self.assertEqual(qqsvc.api_base('https://h:6185/api/v1/im/bots'),
+                         'https://h:6185/api/v1')
+        self.assertEqual(qqsvc.api_base(''), '')
+
+    async def test_send_message_posts_umo_and_plain_text(self) -> None:
+        fake = self._patch_client(_FakeResp(payload={'status': 'ok'}, text='ok'))
+        result = await qqsvc.send_message({
+            'enabled': True, 'base_url': 'https://astrbot.example.com',
+            'api_key': 'abk_secret', 'umo': 'qq_official:GroupMessage:G1',
+            'timeout_seconds': 15,
+        }, 'hello')
+        self.assertTrue(result['ok'])
+        method, url, kwargs = fake.calls[0]
+        self.assertEqual(method, 'post')
+        self.assertEqual(url, 'https://astrbot.example.com/api/v1/im/message')
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer abk_secret')
+        self.assertEqual(kwargs['json']['umo'], 'qq_official:GroupMessage:G1')
+        self.assertEqual(kwargs['json']['message'][0]['text'], 'hello')
+        self.assertEqual(kwargs['json']['message'][0]['type'], 'plain')
+
+    async def test_send_message_truncates_long_text(self) -> None:
+        fake = self._patch_client(_FakeResp(payload={'status': 'ok'}, text='ok'))
+        await qqsvc.send_message({
+            'enabled': True, 'base_url': 'https://h', 'api_key': 'abk',
+            'umo': 'a:b:c',
+        }, 'x' * (qqsvc.MAX_TEXT + 100))
+        text = fake.calls[0][2]['json']['message'][0]['text']
+        self.assertLessEqual(len(text), qqsvc.MAX_TEXT)
+        self.assertIn('已截断', text)
+
+    async def test_error_text_never_echoes_api_key(self) -> None:
+        key = 'abk_do_not_leak'
+        self._patch_client(_FakeResp(status_code=403, text=f'denied {key}'))
+        result = await qqsvc.send_message({
+            'enabled': True, 'base_url': 'https://h', 'api_key': key,
+            'umo': 'a:b:c',
+        }, 'hi')
+        self.assertFalse(result['ok'])
+        self.assertIn('403', result['error'])
+        self.assertNotIn(key, result['error'])
+
+    async def test_disabled_returns_skipped(self) -> None:
+        result = await qqsvc.send_message({'enabled': False}, 'hi')
+        self.assertFalse(result['ok'])
+        self.assertIn('未启用', result['skipped'])
+
+    async def test_list_bots_accepts_data_list(self) -> None:
+        self._patch_client(_FakeResp(payload={'data': [{'id': 'qq_official'}]}))
+        result = await qqsvc.list_bots({'base_url': 'https://h', 'api_key': 'abk'})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['bots'][0]['id'], 'qq_official')
+
+
+class QqConfigTest(unittest.IsolatedAsyncioTestCase):
+    async def test_enabled_requires_url_key_and_umo(self) -> None:
+        with mock.patch.object(watchdog.db, 'get_setting', return_value=None):
+            with self.assertRaises(ValueError):
+                await watchdog.save_config({'qq': {'enabled': True}})
+            with self.assertRaises(ValueError):
+                await watchdog.save_config({'qq': {
+                    'enabled': True, 'base_url': 'https://h', 'api_key': 'abk',
+                    'umo': 'no-colons'}})
+
+    async def test_masked_qq_key_keeps_old_value(self) -> None:
+        current = watchdog._default_config()  # noqa: SLF001
+        current['qq'].update({'enabled': True, 'base_url': 'https://h',
+                              'api_key': 'abk-old', 'umo': 'a:b:c'})
+        stored: dict = {}
+        with mock.patch.object(watchdog.db, 'get_setting', return_value=current), \
+             mock.patch.object(watchdog.db, 'set_setting',
+                               side_effect=lambda k, v: stored.__setitem__(k, v)):
+            result = await watchdog.save_config({'qq': {'api_key': '********'}})
+        self.assertEqual(stored[watchdog.CONFIG_KEY]['qq']['api_key'], 'abk-old')
+        self.assertEqual(result['config']['qq']['api_key'], '********')
+
+    def test_public_config_tolerates_legacy_config_without_qq(self) -> None:
+        """升级前落库的配置没有 qq 段，读取时不能 500。"""
+        cfg = watchdog._default_config()  # noqa: SLF001
+        cfg.pop('qq')
+        out = watchdog.public_config(cfg)
+        self.assertEqual(out['qq']['api_key'], '')
+
+    async def test_partial_save_keeps_qq_section(self) -> None:
+        current = watchdog._default_config()  # noqa: SLF001
+        current['qq'].update({'enabled': True, 'base_url': 'https://h',
+                              'api_key': 'abk-old', 'umo': 'a:b:c'})
+        stored: dict = {}
+        with mock.patch.object(watchdog.db, 'get_setting', return_value=current), \
+             mock.patch.object(watchdog.db, 'set_setting',
+                               side_effect=lambda k, v: stored.__setitem__(k, v)):
+            await watchdog.save_config({'interval_minutes': 60})
+        self.assertEqual(stored[watchdog.CONFIG_KEY]['qq']['umo'], 'a:b:c')
+
+
+class QqRouterOverrideTest(unittest.TestCase):
+    def test_merge_qq_prefers_form_values_and_forces_enabled(self) -> None:
+        from server.routers import watchdog as router  # noqa: PLC0415
+
+        base = {'enabled': False, 'base_url': '', 'api_key': 'abk-old',
+                'umo': '', 'timeout_seconds': 15}
+        out = router._merge_qq(base, {  # noqa: SLF001
+            'base_url': ' https://astrbot.example.com ', 'api_key': '********',
+            'umo': ' qq_official:GroupMessage:G1 ', 'timeout_seconds': 20,
+        })
+        self.assertTrue(out['enabled'])
+        self.assertEqual(out['base_url'], 'https://astrbot.example.com')
+        self.assertEqual(out['api_key'], 'abk-old')
+        self.assertEqual(out['umo'], 'qq_official:GroupMessage:G1')
+        self.assertEqual(out['timeout_seconds'], 20)
+
+
+class QqEndpointTest(unittest.IsolatedAsyncioTestCase):
+    """端点层：缺字段要 400，成功时把表单覆盖值传到服务层。"""
+
+    def _cfg(self) -> dict:
+        return {'qq': {'enabled': False, 'base_url': '', 'api_key': '',
+                       'umo': '', 'timeout_seconds': 15}}
+
+    async def test_bots_requires_url_and_key(self) -> None:
+        from fastapi import HTTPException  # noqa: PLC0415
+        from server.routers import watchdog as router  # noqa: PLC0415
+
+        with mock.patch.object(router.watchdog, 'load_config', return_value=self._cfg()):
+            with self.assertRaises(HTTPException) as ctx:
+                await router.qq_bots(mock.Mock(), None, {'username': 'a'})
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_bots_passes_form_values(self) -> None:
+        from server.routers import watchdog as router  # noqa: PLC0415
+
+        calls: list[dict] = []
+
+        async def fake_bots(qq: dict, **kwargs) -> dict:
+            calls.append(qq)
+            return {'ok': True, 'bots': [{'id': 'qq_official'}]}
+
+        with mock.patch.object(router.watchdog, 'load_config', return_value=self._cfg()), \
+             mock.patch.object(router.qqsvc, 'list_bots', new=mock.AsyncMock(side_effect=fake_bots)), \
+             mock.patch.object(router, 'client_ip', return_value='1.2.3.4'), \
+             mock.patch.object(router.security, 'audit'):
+            result = await router.qq_bots(
+                mock.Mock(), {'base_url': ' https://h ', 'api_key': 'abk'},
+                {'username': 'a'})
+        self.assertTrue(result['ok'])
+        self.assertEqual(calls[0]['base_url'], 'https://h')
+        self.assertTrue(calls[0]['enabled'])
+
+    async def test_test_qq_merges_and_requires_umo(self) -> None:
+        from fastapi import HTTPException  # noqa: PLC0415
+        from server.routers import watchdog as router  # noqa: PLC0415
+
+        cfg = self._cfg()
+        with mock.patch.object(router.watchdog, 'load_config', return_value=cfg):
+            with self.assertRaises(HTTPException) as ctx:
+                await router.test_qq(mock.Mock(), {'base_url': 'https://h'},
+                                     {'username': 'a'})
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        seen: list[dict] = []
+
+        async def fake_test(c: dict) -> dict:
+            seen.append(c['qq'])
+            return {'ok': True, 'stage': 'send'}
+
+        with mock.patch.object(router.watchdog, 'load_config', return_value=cfg), \
+             mock.patch.object(router.watchdog, 'test_qq',
+                              new=mock.AsyncMock(side_effect=fake_test)), \
+             mock.patch.object(router, 'client_ip', return_value='1.2.3.4'), \
+             mock.patch.object(router.security, 'audit'):
+            result = await router.test_qq(
+                mock.Mock(), {'base_url': 'https://h', 'api_key': 'abk',
+                              'umo': 'a:b:c'}, {'username': 'a'})
+        self.assertTrue(result['ok'])
+        self.assertEqual(seen[0]['umo'], 'a:b:c')
+
+
+class QqNotifyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_test_qq_probes_then_sends(self) -> None:
+        cfg = {'qq': {'enabled': False, 'base_url': 'https://h',
+                      'api_key': 'abk', 'umo': 'a:b:c', 'timeout_seconds': 15}}
+        probes: list[dict] = []
+        sends: list[str] = []
+
+        async def fake_bots(qq: dict, **kwargs) -> dict:
+            probes.append(qq)
+            return {'ok': True, 'bots': [{'id': 'qq_official'}]}
+
+        async def fake_send(qq: dict, text: str, **kwargs) -> dict:
+            sends.append(text)
+            return {'ok': True}
+
+        with mock.patch.object(qqsvc, 'list_bots', new=mock.AsyncMock(side_effect=fake_bots)), \
+             mock.patch.object(qqsvc, 'send_message', new=mock.AsyncMock(side_effect=fake_send)):
+            result = await watchdog.test_qq(cfg)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['stage'], 'send')
+        # 测试不要求先启用通知
+        self.assertTrue(probes[0]['enabled'])
+        self.assertIn('测试', sends[0])
+
+    async def test_test_qq_reports_auth_stage_without_sending(self) -> None:
+        cfg = {'qq': {'enabled': False, 'base_url': 'https://h',
+                      'api_key': 'bad', 'umo': 'a:b:c', 'timeout_seconds': 15}}
+        sent = mock.AsyncMock()
+        with mock.patch.object(qqsvc, 'list_bots',
+                               new=mock.AsyncMock(return_value={'ok': False, 'error': '403'})), \
+             mock.patch.object(qqsvc, 'send_message', new=sent):
+            result = await watchdog.test_qq(cfg)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['stage'], 'auth')
+        sent.assert_not_awaited()
 
 
 if __name__ == '__main__':

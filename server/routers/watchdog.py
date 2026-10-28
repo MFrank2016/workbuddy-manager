@@ -1,4 +1,4 @@
-"""上游网页改版监控：配置、状态、立即运行、邮件出口检测与测试发信。
+"""上游网页改版监控：配置、状态、立即运行、邮件出口检测、测试发信 / 发 QQ。
 
 接口都挂在 `/api/watchdog` 下。**全部要求管理员**：状态里有账号昵称与收件
 地址，配置里有 LLM base url 与打码后的凭据（打码仍能看出"配没配"）。写动作
@@ -16,6 +16,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from .. import security
 from ..iputil import client_ip
+from ..services import qq as qqsvc
 from ..services import watchdog
 
 router = APIRouter(prefix='/api/watchdog', tags=['watchdog'])
@@ -67,6 +68,27 @@ def _merge_llm(llm: dict, raw: object) -> dict:
         out['enabled'] = raw['enabled']
     if out.get('api_key') == '********':
         out['api_key'] = llm.get('api_key') or ''
+    return out
+
+
+def _merge_qq(qq: dict, raw: object) -> dict:
+    """同 `_merge_mail`：QQ 测试用表单当前值，不落库。
+
+    两个测试端点都强制 `enabled=True`：用户是在「还没开启通知」时来验证，
+    开关状态不该让测试返回「未启用」这种答非所问的结果。
+    """
+    out = dict(qq)
+    if isinstance(raw, dict):
+        for key in ('base_url', 'api_key', 'umo'):
+            value = raw.get(key)
+            if isinstance(value, str):
+                out[key] = value if key == 'api_key' else value.strip()
+        timeout = raw.get('timeout_seconds')
+        if isinstance(timeout, int) and not isinstance(timeout, bool):
+            out['timeout_seconds'] = timeout
+    if out.get('api_key') == '********':
+        out['api_key'] = qq.get('api_key') or ''
+    out['enabled'] = True
     return out
 
 
@@ -148,6 +170,41 @@ async def test_mail(request: Request,
     security.audit(user, 'test_watchdog_mail', cfg['mail'].get('host', ''),
                    f"ok={result.get('ok')}；来源 {client_ip(request)}",
                    ip=client_ip(request))
+    return result
+
+
+@router.post('/qq/bots')
+async def qq_bots(request: Request,
+                  payload: dict | None = Body(default=None),
+                  user: dict = Depends(security.require_admin)) -> dict:
+    """检测 AstrBot 地址 / 密钥 / scope，并列出可用平台适配器。
+
+    单独一个端点（而不是并进测试发消息）是为了让「密钥没 im 权限」与
+    「UMO 填错」两类失败在界面上分得开。
+    """
+    cfg = watchdog.load_config()
+    qq = _merge_qq(cfg['qq'], payload)
+    if not qq.get('base_url') or not qq.get('api_key'):
+        raise HTTPException(status_code=400, detail='请先填写 AstrBot 地址与开发者访问密钥')
+    result = await qqsvc.list_bots(qq)
+    security.audit(user, 'check_watchdog_qq', qq.get('base_url', ''),
+                   f"ok={result.get('ok')} bots={len(result.get('bots') or [])}；"
+                   f"来源 {client_ip(request)}", ip=client_ip(request))
+    return result
+
+
+@router.post('/qq/test')
+async def test_qq(request: Request,
+                  payload: dict | None = Body(default=None),
+                  user: dict = Depends(security.require_admin)) -> dict:
+    cfg = watchdog.load_config()
+    cfg = {**cfg, 'qq': _merge_qq(cfg['qq'], payload)}
+    if not cfg['qq'].get('base_url') or not cfg['qq'].get('umo'):
+        raise HTTPException(status_code=400, detail='请先填写 AstrBot 地址与 UMO')
+    result = await watchdog.test_qq(cfg)
+    security.audit(user, 'test_watchdog_qq', cfg['qq'].get('umo', ''),
+                   f"ok={result.get('ok')} stage={result.get('stage')}；"
+                   f"来源 {client_ip(request)}", ip=client_ip(request))
     return result
 
 
