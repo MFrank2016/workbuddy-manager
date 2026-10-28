@@ -19,6 +19,11 @@
 | **新装** | 直接用包内那份（下面的脚本会自动识别） |
 | **更新上游代码** | 跟着管理端一起更新（一键更新会把包内那份同步进来）；要改代码就改本地那份，或用 `UPSTREAM_SRC` 换一份 |
 
+> **上游来源**：包内 `upstream/` 来自 core 仓库的 `manager-core-2026.10.27` tag；
+> 解包后可看 `upstream/.core-tag` 核对具体 tag。Windows 安装器目前仍从旧的
+> `upstream-src` 载体取上游源码（已知后续项，切到 core tag 前其内嵌上游可能
+> 落后于发布包）；Linux / Docker 与 Windows 原生部署不受影响。
+
 ### 包内自带，开箱即用
 
 最新版本的 Release 包内含 `upstream/`（上游源码），装的时候直接用，

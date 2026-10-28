@@ -14,13 +14,20 @@
   git push origin manager-core-YYYY.MM.DD
 
   # 生成源码资产（顶层目录 workbuddy2api/，管理端用 --strip-components=1 解开）
-  git archive --format=tar.gz --prefix=workbuddy2api/ \
+  # R10：资产必须带 .core-tag 标记 —— 这是「这份源码来自哪个 core tag」的来源证明。
+  # `git archive` 只打已提交内容，用 --add-file 把未跟踪的标记一并归档；
+  # 标记会落在 workbuddy2api/.core-tag（管理端解开后即 upstream/.core-tag）。
+  printf '%s\n' manager-core-YYYY.MM.DD > .core-tag
+  git archive --format=tar.gz --prefix=workbuddy2api/ --add-file=.core-tag \
       -o /tmp/workbuddy2api-src.tar.gz manager-core-YYYY.MM.DD
+  rm -f .core-tag
   gh release create manager-core-YYYY.MM.DD /tmp/workbuddy2api-src.tar.gz \
       --repo MFrank2016/workbuddy2api --title manager-core-YYYY.MM.DD
   ```
   管理端默认从这里取：
   `https://github.com/MFrank2016/workbuddy2api/releases/download/<core-tag>/workbuddy2api-src.tar.gz`
+  工作流在资产缺少 `.core-tag` 时会按 `CORE_TAG` 补写 —— 那只是 CI 的声明；
+  资产自带标记才是内容来源的证明。所以 core 资产必须带 `.core-tag`。
 - **切换 core tag**：改 `.github/workflows/release.yml` 顶部的 `CORE_TAG`。旧的
   `manager-core-*` 资产不用删；新 tag 发布后旧版本仍可复现。
 - **源码怎么到达用户**：发布包内的 `upstream/` 就是该 core tag 的源码。打包步骤会写入
@@ -28,9 +35,15 @@
   重算），CI 断言 `.core-tag` 等于 `CORE_TAG`，并跑 `go build ./...` / `go test ./...`。
 - **改动上游代码**：直接在 core 仓库改、提 PR、打新 core tag；不要再往
   `dev/upstream-patches/` 加补丁。改的是 MIT 代码，需保留 `LICENSE` 与版权声明。
-- **旧路径回退**：`.github/workflows/release-patches.yml` 仅保留 `workflow_dispatch`，
-  不会随 tag 自动触发；只在新 core 资产不可用时手工补发（它仍取 `upstream-src` 资产
-  并应用本地补丁）。
+- **旧路径回退（慎用）**：`.github/workflows/release-patches.yml` 仅保留
+  `workflow_dispatch`，不会随 tag 自动触发；只在新 core 资产不可用时手工补发
+  （它仍取 `upstream-src` 资产并应用本地补丁）。**警告**：回退工作流推送的上游
+  镜像使用与 core 路径相同的 `ghcr.io/<owner>/workbuddy2api` 命名空间，手工补发
+  可能覆盖同版本甚至 `latest` 的 core 镜像；跑之前先确认不需要这些 tag，或记录/
+  备份现有镜像 digest。
+- **已知后续项（R11）**：Windows 安装器仍从旧的 `upstream-src` 载体取上游源码，
+  尚未切到 core tag；因此安装器内嵌的上游可能落后于发布包。后续需改
+  `windows/launcher/build.ps1` 指向 core 资产并更新缓存配方版本，本次不改。
 - **本地演练**：用仓库变量 `UPSTREAM_SRC_URL` 覆盖源码地址（可指向 `file:///...`），
   不必先发布 core 资产。
 

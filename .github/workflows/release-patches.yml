@@ -10,6 +10,10 @@
 # **只保留 workflow_dispatch**：不要再加 push/tag 触发器，否则同一个 tag 会同时
 # 触发两条发布流水线（R3）。补丁目录已退役，新增上游改动请直接提 core。
 #
+# **镜像命名空间警告（R12）**：本工作流推送的上游镜像同样使用
+# `ghcr.io/<owner>/workbuddy2api`，与 core 路径同名；手工补发会覆盖同版本甚至
+# `latest` 的 core 镜像。执行前确认不需要这些 tag，或先备份现有镜像 digest。
+#
 # 产物为可直接部署的压缩包（含 server/ 与已构建的 web/out/）。
 #
 # ── 关于产物与发布（重要）────────────────────────────────────
@@ -451,6 +455,8 @@ jobs:
       # 用户在未登录状态下 `docker pull` 会 401（管理端镜像当年也踩过这一步）。
       - name: 解析上游镜像名
         # GHCR 仓库名必须全小写（与上面管理端镜像同理）
+        # R12：与 release.yml 的 core 镜像同名（ghcr.io/<owner>/workbuddy2api）；
+        # 手工回退会覆盖同版本 / latest，确认不需要后再跑。
         if: steps.pack.outputs.has_upstream == '1' && (github.event_name == 'push' || inputs.tag != '')
         id: upstream_image
         run: |

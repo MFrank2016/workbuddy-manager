@@ -1,4 +1,4 @@
-"""Apply reviewed wb2api patches before bundling the upstream Release snapshot."""
+"""Legacy helper: apply retired wb2api patches for historical builds only."""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 _HUNK = re.compile(r'^@@')
 _FILE = re.compile(r'^\+\+\+ b/(.+)$')
@@ -157,7 +158,15 @@ def apply_patches(source: Path, patch_dir: Path) -> list[str]:
     return results
 
 
+DEPRECATION_WARNING = (
+    'DEPRECATED: dev/upstream-patches is retired. Patches 0001-0030 now live in the '
+    'workbuddy2api core tag (manager-core-2026.10.27). This script is kept only to '
+    'reproduce historical builds; new upstream changes belong in the core repo.'
+)
+
+
 def main() -> int:
+    print(DEPRECATION_WARNING, file=sys.stderr)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path)
     parser.add_argument('--patch-dir', type=Path,
