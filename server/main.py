@@ -18,9 +18,10 @@ from .routers import (
     accounts, anthropic, auth, gateway, keys, logs, models, panel, playground,
     pgsync as pgsync_router, redpackets, responses, security as security_router,
     proxies, settings, stats, system, tokens, tools, upstreams,
+    watchdog as watchdog_router,
 )
 from .services import (accountlog, cooling, dailyplan, modelroutes, pgsync, renew,
-                       tasklog, taskrun)
+                       tasklog, taskrun, watchdog as watchdog_service)
 
 # 最早时刻把标准输出/错误钉成 UTF-8：Windows 中文区域默认按 cp936 编码，日志里
 # 一旦出现 emoji（账号昵称就可能带）就会抛 UnicodeEncodeError —— 与「成长任务」
@@ -73,6 +74,8 @@ async def lifespan(app: FastAPI):
     # PostgreSQL 定时备份（用户反馈：怕服务器暴雷丢数据）。默认关闭 ——
     # 只有配好连接、打开开关并设了间隔才会真的推数据出去。
     pgsync.start_scheduler()
+    # 上游页面改版监控：默认关闭，开启后按 interval 巡检并落快照/告警。
+    watchdog_service.start_scheduler()
     try:
         yield
     finally:
@@ -83,6 +86,7 @@ async def lifespan(app: FastAPI):
         dailyplan.stop_scheduler()
         accountlog.stop_collector()
         pgsync.stop_scheduler()
+        watchdog_service.stop_scheduler()
         # 出站客户端是共享的（issue #144：Windows 上每次新建要 ~1 秒），
         # 退出时统一关掉，别把连接池与 SSL 上下文丢在原地。
         await config.close_clients()
@@ -193,6 +197,8 @@ app.include_router(proxies.router)
 app.include_router(pgsync_router.router)
 # 多上游（账号池分组）：密钥绑定上游 = 请求走那个池，见 upstreamsvc
 app.include_router(upstreams.router)
+# 上游页面改版监控（见 services/watchdog）：默认关闭，配置存 settings 表
+app.include_router(watchdog_router.router)
 app.include_router(system.router)
 app.include_router(models.router)
 app.include_router(panel.router)

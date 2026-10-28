@@ -60,6 +60,7 @@ WB2API_LOG_FILE = Path(_env(
 DATA_DIR = Path(_env('WB_DATA_DIR', str(ROOT / 'data')))
 DB_PATH = Path(_env('WB_DB', str(DATA_DIR / 'manager.db')))
 USERS_FILE = Path(_env('WB_USERS_FILE', str(DATA_DIR / 'users.json')))
+WATCHDOG_DIR = Path(_env('WB_WATCHDOG_DIR', str(DATA_DIR / 'watchdog')))
 STATIC_DIR = Path(_env('WB_STATIC_DIR', str(ROOT / 'web' / 'out')))
 
 # 子路径部署时的 URL 前缀，留空 = 根路径部署（默认）。
@@ -206,6 +207,7 @@ def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WATCHDOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def upstream_api_key() -> str:
