@@ -1914,3 +1914,207 @@ export interface PanelCreditHistory {
   entries: PanelCreditHistoryEntry[];
   limit: number;
 }
+
+/* ── 页面监控（watchdog）──────────────────────────────── */
+
+export interface WatchdogTarget {
+  name: string;
+  url: string;
+  kind: 'html' | 'js' | 'text' | 'assets';
+  enabled: boolean;
+}
+
+/** 通知时机：任意变化 / 只有出现可领取 / 只有异常（含可领取）。 */
+export type WatchdogNotifyOn = 'change' | 'claimable' | 'anomaly';
+
+export interface WatchdogLlmConfig {
+  enabled: boolean;
+  /** OpenAI 兼容的 base url；不带 /v1 时自动补 */
+  base_url: string;
+  /** 打码值 `********` 表示保持不变 */
+  api_key: string;
+  model: string;
+  timeout_seconds: number;
+}
+
+export interface WatchdogMailConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+  security: 'ssl' | 'starttls' | 'none';
+  username: string;
+  /** 打码值 `********` 表示保持不变 */
+  password: string;
+  from: string;
+  to: string[];
+  subject_prefix: string;
+}
+
+/**
+ * QQ 通知（经 AstrBot HTTP OpenAPI 中转）。
+ *
+ * 管理端不持有 QQ 官方机器人的 AppID/Secret：那是 AstrBot 的职责。这里只有
+ * 「AstrBot 在哪、用什么密钥、发给哪个会话」三样。
+ */
+export interface WatchdogQqConfig {
+  enabled: boolean;
+  /** AstrBot 地址；不带路径时自动补 `/api/v1` */
+  base_url: string;
+  /** 开发者访问密钥 `abk_...`（需 `im` scope）；打码值 `********` 表示保持不变 */
+  api_key: string;
+  /** UMO：`平台:消息类型:会话ID`，如 `qq_official:GroupMessage:<group_openid>` */
+  umo: string;
+  timeout_seconds: number;
+}
+
+export interface WatchdogConfig {
+  enabled: boolean;
+  interval_minutes: number;
+  targets: WatchdogTarget[];
+  timeout_seconds: number;
+  /** kind=assets 时最多抓几个静态资源（0 = 不抓 bundle） */
+  asset_limit: number;
+  notify_on: WatchdogNotifyOn;
+  /** 检测到变化后，逐账号只读查询「活动补偿」状态 */
+  scan_compensation: boolean;
+  /** 扫描明确可领时才真的领取（复用每日计划里的补偿任务） */
+  auto_claim: boolean;
+  /** 允许监控内网地址（默认关闭：SSRF 防护） */
+  allow_private_targets: boolean;
+  llm: WatchdogLlmConfig;
+  mail: WatchdogMailConfig;
+  qq: WatchdogQqConfig;
+}
+
+/** 单个 SMTP 端口的出口探测结果。 */
+export interface WatchdogPortProbe {
+  port: number;
+  ok: boolean;
+  banner: string;
+  error: string;
+}
+
+export interface WatchdogEgress {
+  ok: boolean;
+  host: string;
+  port?: number;
+  banner?: string;
+  error?: string;
+  ports: WatchdogPortProbe[];
+  checked_at: number;
+}
+
+/** 判读结论（LLM 或规则退化；`source=rule` 表示 LLM 未启用/失败）。 */
+export interface WatchdogVerdict {
+  layout_changed: boolean;
+  claimable: boolean;
+  anomaly: boolean;
+  confidence: number;
+  summary: string;
+  evidence: string[];
+  actions: string[];
+  source: string;
+  llm_error?: string;
+}
+
+export interface WatchdogTargetResult {
+  name: string;
+  url: string;
+  /** baseline_created = 首次建立基线（不告警） */
+  status: 'baseline_created' | 'unchanged' | 'changed' | 'error';
+  digest: string;
+  previous_digest?: string;
+  lines: number;
+  diff?: {added: number; removed: number; truncated: boolean};
+  verdict?: WatchdogVerdict;
+}
+
+export interface WatchdogScanSummary {
+  ok: boolean;
+  total?: number;
+  claimable?: number;
+  already?: number;
+  unknown?: number;
+  failed?: number;
+  error?: string;
+}
+
+export interface WatchdogRunResult {
+  ok: boolean;
+  trigger: string;
+  started_at?: number;
+  finished_at?: number;
+  targets?: WatchdogTargetResult[];
+  changed?: string[];
+  errors?: {name: string; error: string}[];
+  scan?: WatchdogScanSummary | null;
+  claim?: {ok: boolean; message: string} | null;
+  mail?: {ok: boolean; message?: string; skipped?: string} | null;
+  qq?: WatchdogQqResult | null;
+  /** 已有一次检测在运行时返回 */
+  skipped?: string;
+}
+
+export interface WatchdogQqResult {
+  ok: boolean;
+  message?: string;
+  skipped?: string;
+  error?: string;
+  /** 已发送的目标 UMO */
+  umo?: string;
+}
+
+export interface WatchdogState {
+  last_run_at?: number;
+  last_result?: WatchdogRunResult;
+  last_error?: string;
+  egress?: WatchdogEgress;
+}
+
+export interface WatchdogStatus {
+  config: WatchdogConfig;
+  state: WatchdogState;
+  /** 现在是否已到下一次检测时间 */
+  due: boolean;
+  next_run_at: number | null;
+}
+
+export interface WatchdogConfigResponse {
+  config: WatchdogConfig;
+}
+
+export interface WatchdogSaveResult {
+  config: WatchdogConfig;
+  mail_egress?: WatchdogEgress | null;
+  warning?: string;
+}
+
+export interface WatchdogMailTest {
+  ok: boolean;
+  message?: string;
+  skipped?: string;
+  egress: WatchdogEgress;
+}
+
+/** AstrBot 平台适配器（`GET /api/v1/im/bots` 的返回项）。 */
+export interface WatchdogQqBot {
+  id?: string;
+  name?: string;
+  type?: string;
+  [key: string]: unknown;
+}
+
+export interface WatchdogQqBotsResult {
+  ok: boolean;
+  error?: string;
+  status?: number;
+  bots?: WatchdogQqBot[];
+}
+
+export interface WatchdogQqTest extends WatchdogQqBotsResult {
+  /** auth = 地址/密钥/scope 没过；send = 已通过鉴权，问题在 UMO 或发送 */
+  stage?: 'auth' | 'send';
+  message?: string;
+  sent_at?: number;
+  umo?: string;
+}
