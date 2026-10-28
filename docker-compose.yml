@@ -10,8 +10,9 @@
 #
 # 与宿主机安装（deploy/install.sh + systemd）的区别，见 Dockerfile 顶部说明。
 # 简述：容器版**能**在界面上更新上游 —— 镜像内置了 docker CLI 与 compose 插件，
-# 挂上 docker.sock 后即可在容器内重建上游容器（见下方 volumes 的说明）。
-# 不挂 docker.sock 时那几项会降级为「请到宿主机操作」，界面如实提示。
+# 显式开启 docker.sock 挂载（见下方 volumes 的说明）即可在容器内重建上游容器。
+# 默认**不挂**：把宿主 root 交给一个 Web 应用不该是默认状态。不挂时那几项
+# 会降级为「请到宿主机操作」，界面如实提示。
 
 services:
   workbuddy-manager:
@@ -134,14 +135,16 @@ services:
       # docker 控制套接字：挂上后容器内的管理端可以像宿主部署那样操作上游容器
       # （保存设置后自动重载 / 读上游日志 / 一键更新上游）。
       #
-      # **安全性说明（值得读）**：挂 docker.sock 等于把宿主 root 权限交给本容器。
-      # 但这**不是新增的风险等级**——宿主部署时本服务本来就是 root 运行
-      # （systemd 单元无 User=、安装脚本要求 root），而 root 进程本来就能
-      # `docker run -v /:/host` 拿到宿主文件系统。两者权限等价。
+      # **安全性说明（值得读）**：挂 docker.sock 等于把宿主 root 权限交给本容器
+      # （`docker run -v /:/host` 即可拿到宿主文件系统）。管理端是持有全部账号
+      # 凭据的高价值目标，Web 应用被攻破的可能性永远不为零，所以这不该是默认
+      # 状态。需要「保存设置后自动重载上游 / 读上游日志 / 一键更新上游」这些
+      # 界面功能时，把下面这行与文件末尾的 group_add 一并取消注释，并把宿主
+      # socket 的真实 GID 写进 .env（见 deploy/README.md「容器内操作 docker」）。
       #
-      # 若你的要求是最小权限，把下面这行注释掉即可：此时依赖 docker 的功能会
-      # 自动降级为「请到宿主机执行 docker compose ...」，界面如实提示，不会
-      # 静默失败。
+      # 不挂时依赖 docker 的功能会自动降级为「请到宿主机执行 docker compose ...」，
+      # 界面如实提示，不会静默失败。
+      #
       # - /var/run/docker.sock:/var/run/docker.sock  # [安全巡检] 已移除挂载：避免容器被攻破即取得宿主 root
 
     # 挂上 socket 只是必要条件 —— 还得**进得了那个组**。
