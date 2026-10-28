@@ -1946,9 +1946,11 @@ def _sanitize_section(section: str, incoming: dict) -> dict:
             if len(val) > _UPSTREAM_TEXT_MAX:
                 raise ValueError(f'upstream.{key} 过长（上限 {_UPSTREAM_TEXT_MAX} 字符）')
             out[key] = val
-        elif section == 'upstream' and key == 'passthrough_ip':
+        elif section == 'upstream' and key in ('passthrough_ip', 'gzip_body'):
+            # 布尔开关先登记：未登记的键会被当成「未知键」静默忽略，用户在界面上
+            # 关掉 gzip 却没生效（issue #297 的排障路径依赖这个开关）。
             if not isinstance(raw, bool):
-                raise ValueError('upstream.passthrough_ip 必须是布尔值')
+                raise ValueError(f'upstream.{key} 必须是布尔值')
             out[key] = raw
         elif section == 'global' and key == 'enabled':
             # 逃生门开关：false = 锁死纯 CN（上游语义），必须是真布尔

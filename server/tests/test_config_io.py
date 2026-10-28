@@ -396,6 +396,14 @@ class UpstreamConfigRoundTrip(unittest.TestCase):
         with self.assertRaises(ValueError):
             wb2api.save_upstream_config({'upstream': {'passthrough_ip': 'yes'}})
 
+    def test_upstream_gzip_body_bool(self) -> None:
+        """issue #297：gzip 开关必须能落盘（否则界面关掉不生效）。"""
+        write_cfg(self.cfg_path, {})
+        wb2api.save_upstream_config({'upstream': {'gzip_body': False}})
+        self.assertIs(read_cfg(self.cfg_path)['upstream']['gzip_body'], False)
+        with self.assertRaises(ValueError):
+            wb2api.save_upstream_config({'upstream': {'gzip_body': 'off'}})
+
     def test_missing_config_refuses_to_write(self) -> None:
         with self.assertRaises(FileNotFoundError):
             wb2api.save_upstream_config({'schedule': {'checkin_hours': [9]}})
