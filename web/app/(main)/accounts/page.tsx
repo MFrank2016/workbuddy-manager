@@ -878,7 +878,10 @@ export default function AccountsPage() {
           ? 'text-amber-600 dark:text-amber-400'
           : 'text-foreground';
     return (
-      <span className="inline-flex items-center gap-1.5">
+      // 固定列宽后这一列只有 12%：余额 + 来源徽标 + 到期倒计时挤在一行会**溢出**
+      // 并被下一列裁掉（issue #298 的现场就是「到期信息被 token 有效期列遮挡」）。
+      // 允许换行：空间够时仍是一行，窄窗口下倒计时自动落到第二行，而不是被切掉。
+      <span className="inline-flex max-w-full flex-wrap items-center gap-1.5">
         <span className={`text-xs font-medium tabular-nums ${tone}`} title={t('accounts.creditsTitle')}>
           {fmtNumber(value)}
         </span>
@@ -966,7 +969,7 @@ export default function AccountsPage() {
 
   function renderExpiry(a: Account) {
     if (a.expires_at <= 0) {
-      return <div className="w-[150px] text-[11px] text-muted-foreground">{t('metric.unknown')}</div>;
+      return <div className="w-full max-w-[150px] text-[11px] text-muted-foreground">{t('metric.unknown')}</div>;
     }
     const pct = expiryBarPercent(a.remain_seconds, a.ttl_seconds);
     const vis = expiryVisual(a.remain_seconds);
@@ -975,7 +978,7 @@ export default function AccountsPage() {
     // 补一行签发时间（≈ 最近一次刷新）才能区分——后者是保活没覆盖到的隐患账号。
     const issued = a.issued_at ?? null;
     return (
-      <div className="w-[150px]">
+      <div className="w-full max-w-[150px] whitespace-normal">
         <div className={`mb-1 text-[11px] font-medium tabular-nums ${vis.textClass}`}>
           {fmtRemain(a.remain_seconds)}
         </div>
@@ -1038,10 +1041,12 @@ export default function AccountsPage() {
       (a.manual_disabled === true &&
         Boolean(a.manual_reason && a.manual_reason.startsWith('手动冷却')));
     // 手机卡片宽度只有 260–300px，必须换行（否则最右侧的停用/删除被裁掉）；
-    // 桌面表格空间足够，固定一行 —— 否则窄的「操作」列会把图标挤成两行
-    // （issue #151 的后续反馈）。表格容器自身可横向滚动，md 以上不再换行。
+    // 桌面表格改为固定列宽（table-fixed）后，操作列拿到 330px 定宽 —— 10 个图标
+    // 按钮按 h-7 + 2px 间距正好排成一行（9×28+8×2 是常见形态，留了余量）。
+    // 有备注时还要显示「本部署共享」提示，它的文案长度随语言变化；此时保留
+    // flex-wrap 让它落到第二行，而不是把定宽的操作列撑出横向滚动。
     return (
-      <div className="flex flex-wrap justify-end gap-1 md:flex-nowrap">
+      <div className={`flex flex-wrap justify-end gap-1 md:gap-0.5 ${noteText(a) ? '' : 'md:flex-nowrap'}`}>
         {/* 备注（issue #67）：只动本端库里的一行文本，不碰上游、不重启容器，
             所以放在最前——它是最轻的动作。任何状态下的账号都能写备注：
             停用的号恰恰更容易忘了它是谁。 */}
@@ -1663,17 +1668,17 @@ export default function AccountsPage() {
 
         {/* 桌面端：表格 */}
         <div className="hidden md:block">
-        <Table>
+        <Table className="table-fixed [&_td]:overflow-hidden">
           <TableHeader>
             <TableRow className="border-b border-border/60 hover:bg-transparent">
-              <TableHead className="pl-4 text-[11px] text-muted-foreground">{t('accounts.colNickname')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">UID</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colProfile')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('metric.credits')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colExpiry')}</TableHead>
-              {hasProxyUi && <TableHead className="text-[11px] text-muted-foreground">{t('accounts.proxyLine')}</TableHead>}
-              {isAdmin && <TableHead className="whitespace-nowrap pr-4 text-right text-[11px] text-muted-foreground">{t('accounts.colActions')}</TableHead>}
+              <TableHead className="w-[16%] pl-4 text-[11px] text-muted-foreground">{t('accounts.colNickname')}</TableHead>
+              <TableHead className="w-[8%] text-[11px] text-muted-foreground">UID</TableHead>
+              <TableHead className="w-[8%] text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
+              <TableHead className="w-[7%] text-[11px] text-muted-foreground">{t('accounts.colProfile')}</TableHead>
+              <TableHead className="w-[14%] text-[11px] text-muted-foreground">{t('metric.credits')}</TableHead>
+              <TableHead className="w-[9%] text-[11px] text-muted-foreground">{t('accounts.colExpiry')}</TableHead>
+              {hasProxyUi && <TableHead className="w-[10%] text-[11px] text-muted-foreground">{t('accounts.proxyLine')}</TableHead>}
+              {isAdmin && <TableHead className="w-[330px] whitespace-nowrap pr-4 text-right text-[11px] text-muted-foreground">{t('accounts.colActions')}</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1712,9 +1717,13 @@ export default function AccountsPage() {
                     </Badge>
                   </div>
                 </TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">{a.uid}</TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">
+                  {/* 固定列宽下 UID（36 字符 UUID）装不满整行，省略号收尾 +
+                      title 保留全文，鼠标悬停可看完整值（复制按钮在详情里）。 */}
+                  <div className="truncate" title={a.uid}>{a.uid}</div>
+                </TableCell>
                 <TableCell>
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5 [&_[data-slot=badge]]:max-w-full [&_[data-slot=badge]]:whitespace-normal">
                     {renderStatus(a)}
                     {renderModelLimit(a)}
                   </div>
