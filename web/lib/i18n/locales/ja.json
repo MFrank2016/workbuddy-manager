@@ -240,7 +240,9 @@
     "failedRequests": "失敗リクエスト",
     "todayFailed": "本日 {n} 件失敗",
     "weekFailed": "直近 7 日 {n} 件失敗 · {realm}",
-    "creditsExpiryDaily": "直近の期限日（{time}）に {amount} ポイントが失効"
+    "creditsExpiryDaily": "直近の期限日（{time}）に {amount} ポイントが失効",
+    "chartBar": "棒グラフ",
+    "chartLine": "折れ線"
   },
   "stats": {
     "title": "使用量",
@@ -929,7 +931,8 @@
     "notCollectedShort": "未取得",
     "noCredit": "上流が返していません",
     "unbilled": "（課金なし）",
-    "copyField": "{field}をコピー"
+    "copyField": "{field}をコピー",
+    "colChannel": "クライアント"
   },
   "security": {
     "title": "セキュリティと IP 制御",
@@ -1305,7 +1308,8 @@
     "stateSkipped": "スキップ",
     "stateFailed": "失敗",
     "viewByTask": "タスク別",
-    "viewRaw": "原文"
+    "viewRaw": "原文",
+    "runGroup": "アカウントグループ"
   },
   "addAccount": {
     "title": "Tencent アカウント追加 · {realm}",

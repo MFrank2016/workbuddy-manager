@@ -240,7 +240,9 @@
     "failedRequests": "失败请求",
     "todayFailed": "今天 {n} 次失败",
     "weekFailed": "近 7 天 {n} 次失败 · {realm}",
-    "creditsExpiryDaily": "最近一天（{time}）共 {amount} 积分到期"
+    "creditsExpiryDaily": "最近一天（{time}）共 {amount} 积分到期",
+    "chartBar": "柱状",
+    "chartLine": "折线"
   },
   "stats": {
     "title": "用量统计",
@@ -929,7 +931,8 @@
     "notCollectedShort": "未采集",
     "noCredit": "上游未返回",
     "unbilled": "（未计费）",
-    "copyField": "复制{field}"
+    "copyField": "复制{field}",
+    "colChannel": "客户端渠道"
   },
   "security": {
     "title": "安全与 IP 管控",
@@ -1305,7 +1308,8 @@
     "stateSkipped": "跳过",
     "stateFailed": "失败",
     "viewByTask": "按任务",
-    "viewRaw": "原文"
+    "viewRaw": "原文",
+    "runGroup": "账号分组"
   },
   "addAccount": {
     "title": "添加腾讯账号 · {realm}",

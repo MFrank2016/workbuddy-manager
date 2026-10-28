@@ -240,7 +240,9 @@
     "failedRequests": "失敗請求",
     "todayFailed": "今天 {n} 次失敗",
     "weekFailed": "近 7 天 {n} 次失敗 · {realm}",
-    "creditsExpiryDaily": "最近一天（{time}）共 {amount} 積分到期"
+    "creditsExpiryDaily": "最近一天（{time}）共 {amount} 積分到期",
+    "chartBar": "柱狀",
+    "chartLine": "折線"
   },
   "stats": {
     "title": "用量統計",
@@ -929,7 +931,8 @@
     "notCollectedShort": "未擷取",
     "noCredit": "上游未回傳",
     "unbilled": "（未計費）",
-    "copyField": "複製{field}"
+    "copyField": "複製{field}",
+    "colChannel": "客戶端渠道"
   },
   "security": {
     "title": "安全與 IP 管控",
@@ -1305,7 +1308,8 @@
     "stateSkipped": "跳過",
     "stateFailed": "失敗",
     "viewByTask": "按任務",
-    "viewRaw": "原文"
+    "viewRaw": "原文",
+    "runGroup": "帳號分組"
   },
   "addAccount": {
     "title": "新增騰訊帳號 · {realm}",

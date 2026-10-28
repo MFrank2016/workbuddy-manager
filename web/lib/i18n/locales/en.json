@@ -267,7 +267,9 @@
     "failedRequests": "Failed requests",
     "todayFailed": "{n} failed today",
     "weekFailed": "{n} failed in 7 days · {realm}",
-    "creditsExpiryDaily": "{amount} credits expire on the nearest day ({time})"
+    "creditsExpiryDaily": "{amount} credits expire on the nearest day ({time})",
+    "chartBar": "Bars",
+    "chartLine": "Line"
   },
   "stats": {
     "title": "Usage",
@@ -956,7 +958,8 @@
     "notCollectedShort": "not captured",
     "noCredit": "not returned by upstream",
     "unbilled": " (not billed)",
-    "copyField": "Copy {field}"
+    "copyField": "Copy {field}",
+    "colChannel": "Channel"
   },
   "security": {
     "title": "Security & IP control",
@@ -1332,7 +1335,8 @@
     "stateSkipped": "Skipped",
     "stateFailed": "Failed",
     "viewByTask": "By task",
-    "viewRaw": "Raw log"
+    "viewRaw": "Raw log",
+    "runGroup": "Account group"
   },
   "addAccount": {
     "title": "Add Tencent account · {realm}",

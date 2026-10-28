@@ -240,7 +240,9 @@
     "failedRequests": "실패 요청",
     "todayFailed": "오늘 {n}건 실패",
     "weekFailed": "최근 7일 {n}건 실패 · {realm}",
-    "creditsExpiryDaily": "가장 가까운 만료일({time})에 {amount} 포인트 만료"
+    "creditsExpiryDaily": "가장 가까운 만료일({time})에 {amount} 포인트 만료",
+    "chartBar": "막대",
+    "chartLine": "꺾은선"
   },
   "stats": {
     "title": "사용량",
@@ -929,7 +931,8 @@
     "notCollectedShort": "수집되지 않음",
     "noCredit": "업스트림 미반환",
     "unbilled": " (과금 없음)",
-    "copyField": "{field} 복사"
+    "copyField": "{field} 복사",
+    "colChannel": "클라이언트"
   },
   "security": {
     "title": "보안 및 IP 제어",
@@ -1305,7 +1308,8 @@
     "stateSkipped": "건너뜀",
     "stateFailed": "실패",
     "viewByTask": "작업별",
-    "viewRaw": "원문"
+    "viewRaw": "원문",
+    "runGroup": "계정 그룹"
   },
   "addAccount": {
     "title": "Tencent 계정 추가 · {realm}",
