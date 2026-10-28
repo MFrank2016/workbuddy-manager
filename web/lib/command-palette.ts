@@ -114,6 +114,8 @@ export const NAV_COMMANDS: readonly NavSeed[] = [
    keywords: 'tokens token api 令牌'},
   {href: '/settings/system', labelKey: 'settings.tabSystem', groupKey: 'nav.settings',
    keywords: 'system update upgrade 系统 更新 版本'},
+  {href: '/settings/watchdog', labelKey: 'settings.tabWatchdog', groupKey: 'nav.settings',
+   keywords: 'watchdog monitor page change activity 页面监控 改版 活动 监控'},
   {href: '/settings/backup', labelKey: 'settings.tabBackup', groupKey: 'nav.settings',
    keywords: 'backup postgres postgresql restore migrate 备份 恢复 迁移 数据'},
   {href: '/settings/changelog', labelKey: 'settings.tabChangelog', groupKey: 'nav.settings',

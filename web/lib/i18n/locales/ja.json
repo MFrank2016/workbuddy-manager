@@ -2273,5 +2273,13 @@
       "noRun": "まだ実行されていません",
       "adminOnly": "監視設定を閲覧できるのは管理者だけです。",
       "loadFailed": "監視設定の読み込みに失敗しました。"
-    }
+  ,
+    "mailSecuritySsl": "SSL（465）",
+    "mailSecurityStarttls": "STARTTLS（587）",
+    "mailSecurityNone": "none",
+    "egressPortsLabel": "ポート別の結果：",
+    "qqBotsLabel": "ボットのプラットフォーム：",
+    "evidenceLabel": "根拠：",
+    "actionsLabel": "推奨アクション："
+  }
 }

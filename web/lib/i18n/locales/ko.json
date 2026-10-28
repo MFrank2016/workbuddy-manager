@@ -2273,5 +2273,13 @@
       "noRun": "아직 실행된 적이 없습니다",
       "adminOnly": "관리자만 모니터링 설정을 볼 수 있습니다.",
       "loadFailed": "모니터링 설정을 불러오지 못했습니다."
-    }
+  ,
+    "mailSecuritySsl": "SSL(465)",
+    "mailSecurityStarttls": "STARTTLS(587)",
+    "mailSecurityNone": "none",
+    "egressPortsLabel": "포트별 결과:",
+    "qqBotsLabel": "봇 플랫폼:",
+    "evidenceLabel": "근거:",
+    "actionsLabel": "권장 조치:"
+  }
 }

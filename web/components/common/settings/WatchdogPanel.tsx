@@ -780,9 +780,9 @@ export function WatchdogPanel() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="ssl">SSL（465）</SelectItem>
-                <SelectItem value="starttls">STARTTLS（587）</SelectItem>
-                <SelectItem value="none">none</SelectItem>
+                <SelectItem value="ssl">{t('watchdog.mailSecuritySsl')}</SelectItem>
+                <SelectItem value="starttls">{t('watchdog.mailSecurityStarttls')}</SelectItem>
+                <SelectItem value="none">{t('watchdog.mailSecurityNone')}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -853,7 +853,7 @@ export function WatchdogPanel() {
             )}
             {egress.ports.length > 0 && (
               <div className="mt-2 text-muted-foreground">
-                <span>{t('watchdog.egressPorts')}：</span>
+                <span>{t('watchdog.egressPortsLabel')}</span>
                 <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
                   {egress.ports.map((probe) => (
                     <li key={probe.port}>
@@ -966,7 +966,7 @@ export function WatchdogPanel() {
             )}
             {qqBots !== null && (
               <div className="mt-1 text-muted-foreground">
-                <span>{t('watchdog.qqBots')}：</span>
+                <span>{t('watchdog.qqBotsLabel')}</span>
                 {qqBots.length === 0 ? (
                   <span className="ml-1">{t('watchdog.qqNoBots')}</span>
                 ) : (
@@ -1062,7 +1062,7 @@ export function WatchdogPanel() {
                     </div>
                     {target.verdict.evidence.length > 0 && (
                       <div>
-                        <span className="font-medium">{t('watchdog.evidence')}：</span>
+                        <span className="font-medium">{t('watchdog.evidenceLabel')}</span>
                         <ul className="mt-1 list-disc pl-5">
                           {target.verdict.evidence.map((line, i) => <li key={i}>{line}</li>)}
                         </ul>
@@ -1070,7 +1070,7 @@ export function WatchdogPanel() {
                     )}
                     {target.verdict.actions.length > 0 && (
                       <div>
-                        <span className="font-medium">{t('watchdog.actions')}：</span>
+                        <span className="font-medium">{t('watchdog.actionsLabel')}</span>
                         <ul className="mt-1 list-disc pl-5">
                           {target.verdict.actions.map((line, i) => <li key={i}>{line}</li>)}
                         </ul>

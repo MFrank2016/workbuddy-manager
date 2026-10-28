@@ -2036,5 +2036,13 @@
       "noRun": "还没有运行过检测",
       "adminOnly": "只有管理员可以查看监控配置。",
       "loadFailed": "读取监控配置失败"
-    }
+  ,
+    "mailSecuritySsl": "SSL（465）",
+    "mailSecurityStarttls": "STARTTLS（587）",
+    "mailSecurityNone": "none",
+    "egressPortsLabel": "各端口探测：",
+    "qqBotsLabel": "机器人平台：",
+    "evidenceLabel": "证据：",
+    "actionsLabel": "建议动作："
+  }
 }

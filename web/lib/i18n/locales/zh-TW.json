@@ -2273,5 +2273,13 @@
       "noRun": "還沒有執行過偵測",
       "adminOnly": "只有管理員可以檢視監控設定。",
       "loadFailed": "讀取監控設定失敗"
-    }
+  ,
+    "mailSecuritySsl": "SSL（465）",
+    "mailSecurityStarttls": "STARTTLS（587）",
+    "mailSecurityNone": "none",
+    "egressPortsLabel": "各埠探測：",
+    "qqBotsLabel": "機器人平台：",
+    "evidenceLabel": "證據：",
+    "actionsLabel": "建議動作："
+  }
 }

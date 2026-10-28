@@ -2300,5 +2300,13 @@
       "noRun": "No run yet",
       "adminOnly": "Only administrators can view monitoring settings.",
       "loadFailed": "Failed to load monitoring settings"
-    }
+  ,
+    "mailSecuritySsl": "SSL (465)",
+    "mailSecurityStarttls": "STARTTLS (587)",
+    "mailSecurityNone": "none",
+    "egressPortsLabel": "Per-port probes:",
+    "qqBotsLabel": "Bot platforms:",
+    "evidenceLabel": "Evidence:",
+    "actionsLabel": "Suggested actions:"
+  }
 }

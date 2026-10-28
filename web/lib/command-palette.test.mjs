@@ -45,6 +45,7 @@ const STUB = {
   'settings.tabUpstream': '上游配置', 'settings.tabProxy': '代理',
   'settings.tabModels': '模型映射',
   'settings.tabUsers': '用户', 'settings.tabTokens': '令牌', 'settings.tabSystem': '系统',
+  'settings.tabWatchdog': '页面监控',
   'settings.tabBackup': '数据备份',
   'settings.tabChangelog': '更新日志', 'settings.tabAbout': '关于',
 };
