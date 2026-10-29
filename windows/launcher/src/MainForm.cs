@@ -733,7 +733,7 @@ namespace WorkBuddyLauncher
                 }
                 if (current != null && latest <= current)
                 {
-                    AppendLog("[UPDATE] 已是最新版本 v" + current + "。");
+                    AppendLogSafe("[UPDATE] 已是最新版本 v" + current + "。");
                     ShowInfoOnUi("已是最新版本（v" + current + "）。");
                     return;
                 }
@@ -751,7 +751,7 @@ namespace WorkBuddyLauncher
                 string setupPath = Path.Combine(dir, SetupAssetName);
                 string shaPath = setupPath + ".sha256";
 
-                AppendLog("[UPDATE] 正在下载 " + SetupAssetName + "…");
+                AppendLogSafe("[UPDATE] 正在下载 " + SetupAssetName + "…");
                 DownloadFile(info.SetupUrl, setupPath, "安装包");
                 DownloadFile(info.ShaUrl, shaPath, "摘要");
                 string expected = ReadExpectedSha(shaPath);
@@ -761,7 +761,7 @@ namespace WorkBuddyLauncher
                         "安装包 SHA-256 与发布页不一致，已中止（未运行安装程序）");
                 }
 
-                AppendLog("[UPDATE] 校验通过，正在启动安装向导…");
+                AppendLogSafe("[UPDATE] 校验通过，正在启动安装向导…");
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = setupPath,
@@ -777,7 +777,7 @@ namespace WorkBuddyLauncher
             }
             catch (Exception ex)
             {
-                AppendLog("[ERROR] 检查更新失败：" + ex.Message);
+                AppendLogSafe("[ERROR] 检查更新失败：" + ex.Message);
                 ShowInfoOnUi("检查更新失败：" + ex.Message
                     + "\n\n可以先从 Releases 页面手动下载覆盖安装。");
             }
