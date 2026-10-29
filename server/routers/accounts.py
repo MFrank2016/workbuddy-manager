@@ -1228,6 +1228,31 @@ def _local_uids() -> set[str]:
     return found
 
 
+@router.get('/accounts/admin-api-status')
+def account_admin_api_status(upstream_id: int | None = Query(None),
+                             user: dict = Depends(security.require_admin)) -> dict:
+    """上游「账号管理接口」（admin.enabled）开关状态，供解禁队列提示用。
+
+    revive / enable / disable 这组解封操作都依赖上游这组接口：开关没开时，
+    重新登录只换令牌、清不掉「禁用」位。前端据此把「可通过解禁队列重新登录
+    解封」换成「需先在设置开启管理接口」，避免误导用户白重登。
+
+    这里只读**本地配置文件**、不做运行时探测：运行时是否生效由「保存设置自动
+    重启」保证；若要更精确（配置已开但运行中的上游没加载到它），应参照
+    `_disable_hint` 的运行时诊断逻辑，本接口刻意保持轻量。
+
+    非默认分组通常跑在另一套容器/主机上，面板读不到它的 config.json——
+    这时返回 `enabled=None`（未知），前端就不会拿默认分组的开关状态去误导它。
+    """
+    group = _group(upstream_id)
+    if not group.get('is_default'):
+        return {'enabled': None}
+    enabled, _ = wb2api.admin_enabled_in_config()
+    # 只回开关状态，不回配置路径（`where`）——那是部署信息，前端也用不到，
+    # 最小化接口暴露面。
+    return {'enabled': enabled}
+
+
 @router.get('/accounts/credits-snapshot')
 def credits_snapshot(user: dict = Depends(security.current_user)) -> dict:
     """已登记的积分快照（只读）。
@@ -1819,6 +1844,134 @@ async def account_test(filename: str, upstream_id: int | None = Query(None),
         'proxy': str(raw.get('proxy') or ''),
     })
     return {'ok': ok, 'message': message}
+
+
+# 主动探测一次最多的账号 × 模型组合数与规模上限（issue #270）。
+# 每条组合都是一次真实对话请求（max_tokens=1），上限既保护上游配额，也保证
+# 这个同步接口能在浏览器超时前跑完（每账号内串行 + 600ms 间隔）。
+_PROBE_COMBOS_MAX = 60
+_PROBE_ACCOUNTS_MAX = 20
+_PROBE_MODELS_MAX = 10
+_PROBE_ACCOUNT_GAP_SECONDS = 0.6
+_PROBE_CONCURRENCY = 4
+_PROBE_REQUEST_TIMEOUT = 30
+
+
+def _probe_model_name(raw: object) -> str:
+    """规范化模型名：去掉 `cn:` / `global:` 前缀（issue #270 的合并展示）。"""
+    name = str(raw or '').strip()
+    for prefix in ('cn:', 'global:'):
+        if name.lower().startswith(prefix):
+            name = name[len(prefix):].strip()
+            break
+    return name
+
+
+@router.post('/accounts/probe-models')
+async def probe_models(body: dict = Body(...),
+                       upstream_id: int | None = Query(None),
+                       user: dict = Depends(security.require_admin)) -> dict:
+    """账号 × 模型主动探测：一次性回答「这个号能不能用这个模型」（issue #270）。
+
+    结果分类与上游错误口径一致：ok / rate（6004 模型限流）/ credit（402 或
+    积分文案）/ auth（401 / 12153）/ no_model（11102，**不算错误**）/ error。
+
+    限流保护：同一账号内串行、每条之间 600ms；不同账号最多 4 路并发；
+    一次最多 60 条组合。看到 6004 也**不重试**（探测不能变成新的限流来源）。
+    """
+    base_dir = _require_dir(_group(upstream_id))
+    raw_accounts = body.get('accounts')
+    raw_models = body.get('models')
+    if not isinstance(raw_accounts, list) or not isinstance(raw_models, list):
+        raise HTTPException(status_code=400, detail='accounts / models 必须是数组')
+    if not raw_accounts or not raw_models:
+        raise HTTPException(status_code=400, detail='请至少选择一个账号与一个模型')
+    if len(raw_accounts) > _PROBE_ACCOUNTS_MAX:
+        raise HTTPException(status_code=400,
+                            detail=f'一次最多探测 {_PROBE_ACCOUNTS_MAX} 个账号')
+    models: list[str] = []
+    for item in raw_models:
+        name = _probe_model_name(item)
+        if not name:
+            continue
+        if len(name) > 120:
+            raise HTTPException(status_code=400, detail='模型名过长')
+        if name not in models:
+            models.append(name)
+    if not models:
+        raise HTTPException(status_code=400, detail='请至少选择一个模型')
+    if len(models) > _PROBE_MODELS_MAX:
+        raise HTTPException(status_code=400,
+                            detail=f'一次最多探测 {_PROBE_MODELS_MAX} 个模型')
+    if len(raw_accounts) * len(models) > _PROBE_COMBOS_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=(f'一次最多 {_PROBE_COMBOS_MAX} 条组合'
+                    f'（当前 {len(raw_accounts)} 个账号 × {len(models)} 个模型）；'
+                    '请分批探测'),
+        )
+
+    targets: list[dict] = []
+    seen_files: set[str] = set()
+    for item in raw_accounts:
+        filename = str(item)
+        if filename in seen_files:
+            continue
+        seen_files.add(filename)
+        raw = _load(filename, base_dir)  # 路径校验 + 不存在时报 404
+        acct = raw.get('account') or {}
+        auth = raw.get('auth') or {}
+        targets.append({
+            'file': filename,
+            'uid': str(acct.get('uid') or ''),
+            'nickname': str(acct.get('nickname') or ''),
+            'realm': realm_of(auth),
+            'auth': {
+                'access_token': auth.get('accessToken', ''),
+                'uid': str(acct.get('uid') or ''),
+                'enterprise_id': str(acct.get('enterpriseId') or ''),
+                'domain': str(auth.get('domain') or ''),
+                'realm': auth.get('realm'),
+                'device_token': str(raw.get('device_token') or ''),
+                'proxy': str(raw.get('proxy') or ''),
+            },
+        })
+
+    sem = asyncio.Semaphore(min(_PROBE_CONCURRENCY, len(targets)))
+    results: list[dict] = []
+
+    async def one(target: dict) -> None:
+        async with sem:
+            for idx, model in enumerate(models):
+                if idx:
+                    await asyncio.sleep(_PROBE_ACCOUNT_GAP_SECONDS)
+                try:
+                    detail = await asyncio.wait_for(
+                        tencent.probe_model(target['auth'], model),
+                        timeout=_PROBE_REQUEST_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    detail = {'status': 'error', 'code': None,
+                              'message': f'探测超时（>{_PROBE_REQUEST_TIMEOUT}s）',
+                              'latency_ms': _PROBE_REQUEST_TIMEOUT * 1000}
+                results.append({
+                    'file': target['file'],
+                    'uid': target['uid'],
+                    'nickname': target['nickname'],
+                    'realm': target['realm'],
+                    'model': model,
+                    **detail,
+                })
+
+    await asyncio.gather(*(one(t) for t in targets))
+
+    order = {t['file']: i for i, t in enumerate(targets)}
+    model_order = {m: i for i, m in enumerate(models)}
+    results.sort(key=lambda r: (order.get(r['file'], 0), model_order.get(r['model'], 0)))
+    summary = {k: 0 for k in ('ok', 'rate', 'credit', 'auth', 'no_model', 'error')}
+    for r in results:
+        summary[r['status']] = summary.get(r['status'], 0) + 1
+    return {'results': results, 'summary': summary, 'requests': len(results)}
 
 
 async def _refresh_one_token(filename: str, base_dir: Path) -> dict:

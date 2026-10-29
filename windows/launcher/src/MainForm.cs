@@ -2,7 +2,10 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Net;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -34,6 +37,7 @@ namespace WorkBuddyLauncher
         private TextBox _txtHost;
         private TextBox _txtPort;
         private Button _btnSave;
+        private Button _btnUpdate;
         private TextBox _log;
 
         private ProjectState _state = ProjectState.Stopped;
@@ -42,6 +46,7 @@ namespace WorkBuddyLauncher
         private bool _probing;
         private bool _reallyExit;
         private bool _openBrowserOnHealthy;
+        private bool _updating;
         private bool _credentialLookupRunning;
         private string _currentHost = EnvConfig.DefaultHost;
         private int _currentPort = EnvConfig.DefaultPort;
@@ -136,9 +141,16 @@ namespace WorkBuddyLauncher
             _btnSave.Click += OnSaveClick;
             configBox.Controls.Add(_btnSave);
 
+            // 检查更新（issue #288）：查最新 Release → 下载安装包 + 校验 sha256 → 启动安装向导。
+            _btnUpdate = new Button();
+            _btnUpdate.Text = "检查更新";
+            _btnUpdate.SetBounds(330, 202, 126, 26);
+            _btnUpdate.Click += OnCheckUpdate;
+            _content.Controls.Add(_btnUpdate);
+
             var logLabel = new Label();
             logLabel.Text = "输出日志";
-            logLabel.SetBounds(24, 208, 432, 20);
+            logLabel.SetBounds(24, 236, 432, 20);
             _content.Controls.Add(logLabel);
 
             _log = new TextBox();
@@ -146,7 +158,7 @@ namespace WorkBuddyLauncher
             _log.ReadOnly = true;
             _log.ScrollBars = ScrollBars.Vertical;
             _log.BackColor = SystemColors.Window;
-            _log.SetBounds(24, 230, 432, 206);
+            _log.SetBounds(24, 258, 432, 178);
             _content.Controls.Add(_log);
         }
 
@@ -171,6 +183,7 @@ namespace WorkBuddyLauncher
             menu.Items.Add("显示主窗口", null, delegate { RestoreFromTray(); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("查看初始管理员密码", null, OnShowInitialCredentials);
+            menu.Items.Add("检查更新…", null, OnCheckUpdate);
             menu.Items.Add("重置关闭行为提示", null, OnResetCloseBehavior);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出启动器", null, OnTrayExit);
@@ -663,6 +676,291 @@ namespace WorkBuddyLauncher
         {
             _reallyExit = true;
             Close();
+        }
+
+        // ── 检查更新（issue #288）─────────────────────────────────
+        //
+        // 只做三件事：查最新 Release、下载安装包与同目录 .sha256、校验后启动
+        // 安装向导。**不做静默覆盖**：安装器没有静默参数，而且装到一半失败时
+        // 用户需要看到向导给出的原因。账号、.env 与 data 由安装器的覆盖安装
+        // 逻辑保留（见 InstallerForm.DoInstall 的保留白名单）。
+
+        private const string LatestReleaseApi =
+            "https://api.github.com/repos/ithtelab/workbuddy-manager/releases/latest";
+        private const string SetupAssetName = "WorkBuddyManagerSetup.exe";
+
+        private sealed class UpdateInfo
+        {
+            public string Version;
+            public string SetupUrl;
+            public string ShaUrl;
+        }
+
+        private void OnCheckUpdate(object sender, EventArgs e)
+        {
+            if (_updating) { return; }
+            _updating = true;
+            _btnUpdate.Enabled = false;
+            AppendLog("[UPDATE] 正在检查最新版本…");
+            Task.Factory.StartNew(delegate { RunUpdateCheck(); });
+        }
+
+        private void RunUpdateCheck()
+        {
+            try
+            {
+                // GitHub 只接受 TLS 1.2+；.NET 4.x 的默认协议在部分机器上仍是
+                // TLS 1.0（Windows 10 早期版本）。用数值 3072 而不是枚举名，
+                // 是为了在 .NET 4.0 的编译引用下也能通过（运行时 4.8 支持）。
+                try
+                {
+                    ServicePointManager.SecurityProtocol |=
+                        (SecurityProtocolType)3072;
+                }
+                catch { }
+
+                string json = HttpGet(LatestReleaseApi, 20);
+                UpdateInfo info = ParseLatestRelease(json);
+                if (info == null)
+                {
+                    throw new InvalidDataException("发布信息里没有找到安装包或 SHA-256 摘要");
+                }
+                Version latest = ParseVersion(info.Version);
+                Version current = CurrentVersion();
+                if (latest == null)
+                {
+                    throw new InvalidDataException("无法识别最新版本号：" + info.Version);
+                }
+                if (current != null && latest <= current)
+                {
+                    AppendLogSafe("[UPDATE] 已是最新版本 v" + current + "。");
+                    ShowInfoOnUi("已是最新版本（v" + current + "）。");
+                    return;
+                }
+
+                string message = "发现新版本 v" + latest
+                    + (current != null ? "（当前 v" + current + "）" : "")
+                    + "。\n\n是否下载并安装？\n\n"
+                    + "安装程序会覆盖当前程序文件；.env、账号与 data 目录会保留。\n"
+                    + "下载完成后会先用发布页的 SHA-256 校验安装包，再启动安装向导。";
+                if (!ConfirmOnUi(message)) { return; }
+
+                string dir = Path.Combine(Path.GetTempPath(),
+                    "WorkBuddyManager-update-" + DateTime.Now.ToString("yyyyMMddHHmmss"));
+                Directory.CreateDirectory(dir);
+                string setupPath = Path.Combine(dir, SetupAssetName);
+                string shaPath = setupPath + ".sha256";
+
+                AppendLogSafe("[UPDATE] 正在下载 " + SetupAssetName + "…");
+                DownloadFile(info.SetupUrl, setupPath, "安装包");
+                DownloadFile(info.ShaUrl, shaPath, "摘要");
+                string expected = ReadExpectedSha(shaPath);
+                if (!VerifySha256(setupPath, expected))
+                {
+                    throw new InvalidDataException(
+                        "安装包 SHA-256 与发布页不一致，已中止（未运行安装程序）");
+                }
+
+                AppendLogSafe("[UPDATE] 校验通过，正在启动安装向导…");
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = setupPath,
+                    WorkingDirectory = dir,
+                    UseShellExecute = true,
+                });
+                // 安装器的覆盖流程会关闭旧的控制窗口；这里先退出，避免占用 exe。
+                BeginInvokeSafe(delegate
+                {
+                    _reallyExit = true;
+                    Close();
+                });
+            }
+            catch (Exception ex)
+            {
+                AppendLogSafe("[ERROR] 检查更新失败：" + ex.Message);
+                ShowInfoOnUi("检查更新失败：" + ex.Message
+                    + "\n\n可以先从 Releases 页面手动下载覆盖安装。");
+            }
+            finally
+            {
+                BeginInvokeSafe(delegate
+                {
+                    _updating = false;
+                    _btnUpdate.Enabled = true;
+                });
+            }
+        }
+
+        private static UpdateInfo ParseLatestRelease(string json)
+        {
+            string version = MatchGroup(json, "\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
+            string setup = AssetUrl(json, SetupAssetName);
+            string sha = AssetUrl(json, SetupAssetName + ".sha256");
+            if (string.IsNullOrEmpty(version) || string.IsNullOrEmpty(setup)
+                || string.IsNullOrEmpty(sha))
+            {
+                return null;
+            }
+            if (!IsHttps(setup) || !IsHttps(sha))
+            {
+                return null;   // 发布资产必须是 HTTPS，不接受降级
+            }
+            return new UpdateInfo { Version = version.Trim(), SetupUrl = setup, ShaUrl = sha };
+        }
+
+        private static string AssetUrl(string json, string assetName)
+        {
+            string pattern = "\"name\"\\s*:\\s*\"" + Regex.Escape(assetName)
+                + "\"[\\s\\S]{0,2500}?\"browser_download_url\"\\s*:\\s*\"([^\"]+)\"";
+            return MatchGroup(json, pattern);
+        }
+
+        private static string MatchGroup(string text, string pattern)
+        {
+            Match m = Regex.Match(text, pattern);
+            return m.Success ? m.Groups[1].Value : "";
+        }
+
+        private static bool IsHttps(string url)
+        {
+            Uri uri;
+            return Uri.TryCreate(url, UriKind.Absolute, out uri)
+                && uri.Scheme == Uri.UriSchemeHttps;
+        }
+
+        private static Version CurrentVersion()
+        {
+            Version v = ParseVersion(Application.ProductVersion);
+            if (v != null) { return v; }
+            try
+            {
+                return ParseVersion(FileVersionInfo.GetVersionInfo(
+                    Application.ExecutablePath).FileVersion);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static Version ParseVersion(string raw)
+        {
+            string text = (raw ?? "").Trim().TrimStart('v', 'V');
+            int cut = text.IndexOfAny(new[] { '-', '+', ' ' });
+            if (cut >= 0) { text = text.Substring(0, cut); }
+            Version parsed;
+            return Version.TryParse(text, out parsed) ? parsed : null;
+        }
+
+        private static string ReadExpectedSha(string path)
+        {
+            string text = File.ReadAllText(path, Encoding.UTF8).Trim();
+            int cut = text.IndexOfAny(new[] { ' ', '\t', '\r', '\n' });
+            if (cut > 0) { text = text.Substring(0, cut); }
+            text = text.ToLowerInvariant();
+            if (!Regex.IsMatch(text, "^[0-9a-f]{64}$"))
+            {
+                throw new InvalidDataException("发布页的 SHA-256 摘要格式不正确");
+            }
+            return text;
+        }
+
+        private static bool VerifySha256(string path, string expected)
+        {
+            using (SHA256 sha = SHA256.Create())
+            using (FileStream fs = File.OpenRead(path))
+            {
+                string actual = BitConverter.ToString(sha.ComputeHash(fs))
+                    .Replace("-", "").ToLowerInvariant();
+                return String.Equals(actual, expected, StringComparison.Ordinal);
+            }
+        }
+
+        private static string HttpGet(string url, int timeoutSeconds)
+        {
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+            request.UserAgent = "WorkBuddyManager-Launcher";
+            request.Accept = "application/vnd.github+json";
+            request.Timeout = timeoutSeconds * 1000;
+            request.ReadWriteTimeout = timeoutSeconds * 1000;
+            ApplyUpdateProxy(request);
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+            using (StreamReader reader = new StreamReader(
+                       response.GetResponseStream(), Encoding.UTF8))
+            {
+                return reader.ReadToEnd();
+            }
+        }
+
+        private void DownloadFile(string url, string path, string label)
+        {
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+            request.UserAgent = "WorkBuddyManager-Launcher";
+            request.Timeout = 30000;
+            request.ReadWriteTimeout = 30000;
+            ApplyUpdateProxy(request);
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+            using (Stream input = response.GetResponseStream())
+            using (FileStream output = File.Create(path))
+            {
+                byte[] buffer = new byte[81920];
+                long total = response.ContentLength;
+                long read = 0;
+                int lastBucket = -1;
+                int n;
+                while ((n = input.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    output.Write(buffer, 0, n);
+                    read += n;
+                    if (total > 0)
+                    {
+                        int bucket = (int)(read * 10 / total);
+                        if (bucket != lastBucket)
+                        {
+                            lastBucket = bucket;
+                            AppendLogSafe("[UPDATE] " + label + "下载 " + (bucket * 10) + "%");
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void ApplyUpdateProxy(HttpWebRequest request)
+        {
+            // 与服务器端更新器同一个约定：国内网络访问 GitHub 时可设 WB_UPDATE_PROXY。
+            string proxy = Environment.GetEnvironmentVariable("WB_UPDATE_PROXY");
+            if (!String.IsNullOrEmpty(proxy))
+            {
+                request.Proxy = new WebProxy(proxy);
+            }
+        }
+
+        private bool ConfirmOnUi(string message)
+        {
+            bool confirmed = false;
+            if (!IsHandleCreated || IsDisposed) { return false; }
+            try
+            {
+                Invoke(new Action(delegate
+                {
+                    confirmed = MessageBox.Show(this, message, "检查更新",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+                }));
+            }
+            catch
+            {
+                return false;
+            }
+            return confirmed;
+        }
+
+        private void ShowInfoOnUi(string message)
+        {
+            BeginInvokeSafe(delegate
+            {
+                MessageBox.Show(this, message, "检查更新",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            });
         }
 
         // ── 日志与线程辅助 ────────────────────────────────────────

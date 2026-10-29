@@ -21,6 +21,7 @@ import {
   FileText,
   KeyRound,
   Route,
+  Radar,
 } from 'lucide-react';
 import {usePathname} from 'next/navigation';
 import {notify} from '@/lib/toast';
@@ -59,6 +60,7 @@ import {UpstreamReloadNotice} from '@/components/common/settings/UpstreamReloadN
 import {ModelRoutesPanel} from '@/components/common/settings/ModelRoutesPanel';
 import {ResponsesPanel} from '@/components/common/settings/ResponsesPanel';
 import {ToolsPanel} from '@/components/common/settings/ToolsPanel';
+import {WatchdogPanel} from '@/components/common/settings/WatchdogPanel';
 import {CopyButton} from '@/components/ui/copy-button';
 import {Button} from '@/components/ui/button';
 import {Badge} from '@/components/ui/badge';
@@ -965,6 +967,7 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
     users: {icon: <Users className="h-3.5 w-3.5" />},
     tokens: {icon: <KeyRound className="h-3.5 w-3.5" />},
     system: {icon: <DownloadCloud className="h-3.5 w-3.5" />},
+    watchdog: {icon: <Radar className="h-3.5 w-3.5" />},
     backup: {icon: <Database className="h-3.5 w-3.5" />},
     changelog: {icon: <FileText className="h-3.5 w-3.5" />},
     about: {icon: <Info className="h-3.5 w-3.5" />},
@@ -2238,6 +2241,11 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
           <UpdatePanel />
           {/* 日志保留策略：与「系统更新」同属运维面（都回答「这台机器怎么运转」）。 */}
           <RetentionPanel />
+        </TabsContent>
+
+        {/* ═══ 页面监控 ═══ */}
+        <TabsContent value="watchdog" className="mt-4 space-y-4">
+          <WatchdogPanel />
         </TabsContent>
 
         {/* ═══ 数据备份 ═══ */}

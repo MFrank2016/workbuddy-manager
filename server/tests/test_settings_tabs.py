@@ -39,8 +39,8 @@ _VERIFY = _ROOT / 'dev' / 'verify_state_honesty.mjs'
 _LOCALES = _ROOT / 'web' / 'lib' / 'i18n' / 'locales'
 _NODE = shutil.which('node')
 
-# 路线图里写死的数字：8 个 Tab。多一个少一个都要有人主动改这里（以及 CHANGELOG）。
-_TAB_COUNT = 9
+# 路线图里写死的数字：10 个 Tab。多一个少一个都要有人主动改这里（以及 CHANGELOG）。
+_TAB_COUNT = 10
 
 # 只跑 .mjs，不碰 .ts —— Node 的 type stripping 从 22.6 起才有
 _MIN_MAJOR = 22

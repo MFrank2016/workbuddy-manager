@@ -409,8 +409,21 @@ export default function LogsPage() {
                 </span>
                 <span className="shrink-0 tabular-nums">{fmtDateTimeMarked(l.ts)}</span>
               </div>
-              <div className="mt-1 text-[11px] text-muted-foreground">
-                {t('logs.colLatency')} <span className="tabular-nums">{fmtLatency(l.latency_ms)}</span>
+              <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                <span>
+                  {t('logs.colLatency')} <span className="tabular-nums">{fmtLatency(l.latency_ms)}</span>
+                </span>
+                {/* 思考强度：客户端显式传的档位；没传/旧记录显示「—」，不猜默认档。 */}
+                <span data-testid="log-effort" className="flex min-w-0 items-center gap-1">
+                  <span className="shrink-0">{t('logs.colEffort')}</span>
+                  {l.effort ? (
+                    <Badge variant="secondary" className="max-w-[6rem] truncate rounded-full font-mono text-[10px]">
+                      {l.effort}
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
+                  )}
+                </span>
               </div>
             </div>
           ))}
@@ -425,6 +438,7 @@ export default function LogsPage() {
               <TableHead className="text-[11px] text-muted-foreground">IP</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('logs.colAccount')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('nav.models')}</TableHead>
+              <TableHead className="text-[11px] text-muted-foreground">{t('logs.colEffort')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('logs.colFirstToken')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('logs.colLatency')}</TableHead>
@@ -452,6 +466,20 @@ export default function LogsPage() {
                   {l.model || '—'}
                   {l.mapped_model && l.mapped_model !== l.model && (
                     <span className="ml-1 text-[11px] text-muted-foreground">→{l.mapped_model}</span>
+                  )}
+                </TableCell>
+                {/*
+                  思考强度：客户端显式传的 reasoning_effort（low/medium/high/max…）。
+                  没传就显示「—」而不是猜默认档——同一模型不同版本的默认档可能不同，
+                  写死会把「客户端没传」误读成「客户端要了某个档位」。
+                */}
+                <TableCell className="text-xs" data-testid="log-effort">
+                  {l.effort ? (
+                    <Badge variant="secondary" className="rounded-full font-mono text-[10px]">
+                      {l.effort}
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
                   )}
                 </TableCell>
                 <TableCell>

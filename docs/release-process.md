@@ -1,67 +1,55 @@
 # 发布流程（维护者手册）
 
-上游 `workbuddy2api` 的**公开地址自 2026-09-23 起不可用**。维护者手上保留着完整的
-源码副本，继续维护；**不要把上游代码提交进本仓库，也不要另开公开镜像** ——
-用户侧的源码来自我们的 Release 包（见下）。
+上游 `workbuddy2api` 的**公开地址自 2026-09-23 起不可用**。现在上游代码由 core 仓库
+（`MFrank2016/workbuddy2api`）维护；管理端只消费它的 **core tag**，不再在本地维护补丁。
 
-## 上游停更之后
+## 上游源码：core tag
 
-- **发版前不再查外部上游**：上游由本项目维护，没有独立的远端提交可对。
-  `deploy/check-upstream.sh` 只提示这一点并以 0 退出；需要验证的是补丁与
-  Go 测试，不是 git 提交。
-- **源码从哪来**：维护者手上留存了一份**最后版本的源码归档**（HEAD 快照，
-  287 个文件，含 `LICENSE`）。它是完整的、可构建的；但原克隆是 blob-less
-  部分克隆，**逐版本历史无法完整还原**，所以归档以「单次导入提交」的形式保存，
-  不能 checkout 出中间某次提交的源码。
-- **源码怎么到达用户**（**不要**把上游代码提交进本仓库，也不要另开公开镜像）：
-  上游源码走 Release 包：
-  1. 把最新的源码放进归档目录（覆盖对应文件；手上没有新源码就跳过这步）；
-  2. `python dev/pack_upstream_src.py <源码目录> -o /tmp/upstream-pack --stamp "本次改了什么"`
-     —— 打成 `workbuddy2api-src.tar.gz`（自动排除 `.git` 与 `config.json`/`auths`/`data`）；
-  3. `gh release upload upstream-src /tmp/upstream-pack/workbuddy2api-src.tar.gz --clobber`
-     —— 覆盖到**固定的载体 Release**（tag `upstream-src`，**必须是 pre-release**：
-     否则它会成为 `releases/latest`，把面板的更新检查带偏）；
-  4. 之后任何一次面板发版，CI 都会把它塞进发布包的 `upstream/`（取不到只告警、不
-     阻断发布），用户装/更新时就用它。
-- **改动上游代码**：改本地那份源码（`/opt/workbuddy2api`），
-  然后 `docker compose up -d --build`。改的是别人的 MIT 代码，需保留其
-  `LICENSE` 与版权声明。
+- **core tag 是唯一事实来源**。每个 tag（默认 `manager-core-2026.10.27`）对应一份
+  可构建的源码；`dev/upstream-patches/` 已退役，历史补丁保留用于复现旧 tag。
+- **发版前必须先把 core tag 与源码资产 push/publish 到 core 仓库**：
+  ```bash
+  # 在 core 仓库（../workbuddy2api）里
+  git tag -a manager-core-YYYY.MM.DD -m "manager core base: ..."
+  git push origin manager-core-YYYY.MM.DD
 
-### 我们自己改上游的那条路（补丁 + 重打包）
+  # 生成源码资产（顶层目录 workbuddy2api/，管理端用 --strip-components=1 解开）
+  # R10：资产必须带 .core-tag 标记 —— 这是「这份源码来自哪个 core tag」的来源证明。
+  # `git archive` 只打已提交内容，用 --add-file 把未跟踪的标记一并归档；
+  # 标记会落在 workbuddy2api/.core-tag（管理端解开后即 upstream/.core-tag）。
+  printf '%s\n' manager-core-YYYY.MM.DD > .core-tag
+  git archive --format=tar.gz --prefix=workbuddy2api/ --add-file=.core-tag \
+      -o /tmp/workbuddy2api-src.tar.gz manager-core-YYYY.MM.DD
+  rm -f .core-tag
+  gh release create manager-core-YYYY.MM.DD /tmp/workbuddy2api-src.tar.gz \
+      --repo MFrank2016/workbuddy2api --title manager-core-YYYY.MM.DD
+  ```
+  管理端默认从这里取：
+  `https://github.com/MFrank2016/workbuddy2api/releases/download/<core-tag>/workbuddy2api-src.tar.gz`
+  工作流在资产缺少 `.core-tag` 时会按 `CORE_TAG` 补写 —— 那只是 CI 的声明；
+  资产自带标记才是内容来源的证明。所以 core 资产必须带 `.core-tag`。
+- **切换 core tag**：改 `.github/workflows/release.yml` 顶部的 `CORE_TAG`。旧的
+  `manager-core-*` 资产不用删；新 tag 发布后旧版本仍可复现。
+- **源码怎么到达用户**：发布包内的 `upstream/` 就是该 core tag 的源码。打包步骤会写入
+  `upstream/.core-tag`（资产自带则校验一致）和 `upstream/.upstream-id`（按路径 + 内容
+  重算），CI 断言 `.core-tag` 等于 `CORE_TAG`，并跑 `go build ./...` / `go test ./...`。
+- **改动上游代码**：直接在 core 仓库改、提 PR、打新 core tag；不要再往
+  `dev/upstream-patches/` 加补丁。改的是 MIT 代码，需保留 `LICENSE` 与版权声明。
+- **旧路径回退（慎用）**：`.github/workflows/release-patches.yml` 仅保留
+  `workflow_dispatch`，不会随 tag 自动触发；只在新 core 资产不可用时手工补发
+  （它仍取 `upstream-src` 资产并应用本地补丁）。**警告**：回退工作流推送的上游
+  镜像使用与 core 路径相同的 `ghcr.io/<owner>/workbuddy2api` 命名空间，手工补发
+  可能覆盖同版本甚至 `latest` 的 core 镜像；跑之前先确认不需要这些 tag，或记录/
+  备份现有镜像 digest。
+- **已知后续项（R11）**：Windows 安装器仍从旧的 `upstream-src` 载体取上游源码，
+  尚未切到 core tag；因此安装器内嵌的上游可能落后于发布包。后续需改
+  `windows/launcher/build.ps1` 指向 core 资产并更新缓存配方版本，本次不改。
+- **本地演练**：用仓库变量 `UPSTREAM_SRC_URL` 覆盖源码地址（可指向 `file:///...`），
+  不必先发布 core 资产。
 
-上游停更之后，「上游代码的改动」都由我们提出并留在 `dev/upstream-patches/*.patch`
-里，**补丁是唯一事实来源**；本地改完就直接改源码目录的那种做法不再用于需要随包的
-功能（那样改动只存在于某个人的机器上，下次重打包就丢了）。
-
-1. 改代码：从**当前 `upstream-src` 资产**解开一份干净树（`tar xzf` 即可，别在
-   本地运行目录上改），在里面写改动与 Go 用例；
-2. 出补丁：`git init` 一个只含基线的仓库 → 改完 `git add -N` 新文件 → `git diff`
-   存成 `dev/upstream-patches/000N-<名字>.patch`（**含测试文件**，0001/0003 都是这个
-   体例；后续补丁只描述自己的增量，不要重述前面几个补丁）；
-3. 验补丁：在一份**未被该补丁改动过**的资产基线上 `git apply --check` 通过、
-   `apply_upstream_patches.py` 报 `applied:`、再跑一次报 `already applied:`。
-   源码树里会生成 `.wb2a-patches.json`（补丁名 → 字节哈希）：后续补丁改写前面补丁的
-   新增行时（0009 → 0010 就是），按内容判定会误报「没打」，清单记录的是事实；
-4. 重打包：`dev/pack_fixed_upstream_src.py <那份树> -o <输出> --stamp '<一句话>'`
-   —— 它会按序号依次应用全部补丁（已应用的会跳过），再打成 `workbuddy2api-src.tar.gz`；
-5. 验收：解开新包 `go build ./...` + `go test ./...`（必要时加 `-race`）、
-   包内 `scripts/` 的 Python 用例，然后
-   `gh release upload upstream-src <包> --clobber` 覆盖载体 Release；
-6. 记录：上传后核对资产的 **size 与 sha256** 与本地一致，并把「基线摘要 → 产出摘要」
-   写进该功能自己的 docs（如 `docs/random-daily-tasks.md`、`docs/credit-exhausted-cooldown.md`）。
-
-**顺序要求**：重打包必须在**当次面板发版之前**完成 —— CI 是从载体 Release 取
-`upstream/` 塞进发布包的，晚一步设备装到的就还是旧上游。面板侧只加字段不算完成：
+**顺序要求**：core tag 与源码资产必须在**当次面板发版之前** push/publish —— CI 直接
+从 core Release 取 `upstream/`，晚一步会 404 或装到旧上游。面板侧只加字段不算完成：
 旧上游会忽略未知字段，用户会看到「保存成功但没生效」。
-
-**CI 的发布门禁**（2.2.1 起）：发布作业会把随包上游当成一次真实构建来验 ——
-`apply_upstream_patches.py` 必须报「补丁数 = 文件数，且没有现场新应用的」，
-然后 `go build ./...`、`go test ./...`、对**补丁动过的文件**跑 `gofmt -l`，
-并校验 `server/main.py` 的 `version=` 与 tag 一致。以前只跑 Python 测试，
-上游补丁的缺陷可以一路进 Release。
-
-- **`adapt(upstream)` 提交**：有可访问的上游代码要跟时照旧写——把核对过的上游
-  提交号写进提交信息，供下次对照。
 
 ### 仍然要守的老规矩
 

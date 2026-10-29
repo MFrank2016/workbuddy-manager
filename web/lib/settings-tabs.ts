@@ -22,6 +22,9 @@ export const SETTINGS_TABS = [
   'users',
   'tokens',
   'system',
+  // 「页面监控」也归在运维这一组：它盯的是上游网页的改版与活动入口，
+  // 和「系统更新 / 数据备份」回答的是同一类问题——「有没有事情需要我看一眼」。
+  'watchdog',
   // 「数据备份」紧挨「系统更新」：两件事都属于「这台机器上的运维」，
   // 而且都在回答同一个问题——「我的东西会不会丢」。
   'backup',
@@ -60,6 +63,7 @@ export const SETTINGS_TAB_LABEL_KEYS: Record<SettingsTab, string> = {
   users: 'settings.tabUsers',
   tokens: 'settings.tabTokens',
   system: 'settings.tabSystem',
+  watchdog: 'settings.tabWatchdog',
   backup: 'settings.tabBackup',
   changelog: 'settings.tabChangelog',
   about: 'settings.tabAbout',

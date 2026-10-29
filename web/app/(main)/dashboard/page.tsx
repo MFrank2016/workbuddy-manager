@@ -19,6 +19,7 @@ import {
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {collectAccountExpiries, collectScopedExpiries} from '@/lib/dashboard-credits';
+import {flowSeries, flowAxis} from '@/lib/credits-flow-chart';
 import {getExpiryDailyGroup, groupExpiriesByDay} from '@/lib/display-prefs';
 import {accountApi, statsApi, upstreamApi, upstreamsApi} from '@/lib/api';
 import {useRealm} from '@/lib/realm-context';
@@ -242,6 +243,13 @@ export default function DashboardPage() {
   const flowFailed = 'flow' in flowState.errors;
   /** 区间内是否有任何收支——全 0 时画图没意义，给空态 */
   const hasFlow = flow.total.income > 0 || flow.total.expense > 0;
+  /**
+   * 单日范围下探到小时：序列选择与 X 轴参数的规则收在
+   * `@/lib/credits-flow-chart`（纯函数，Node 直测）。旧后端不返回 hourly 时
+   * 那里自然退回天序列，维持原来的单点渲染。
+   */
+  const {points: flowPoints, byHour: flowByHour} = flowSeries(flow);
+  const flowXAxis = flowAxis(flowByHour);
 
   const slices: GroupSlice[] = values.pool ?? EMPTY_SLICES;
   const summary: StatsSummary | null = values.summary ?? null;
@@ -823,10 +831,14 @@ export default function DashboardPage() {
                 <ResponsiveContainer width="100%" height="100%">
                   {/* 左边距不能给负数：轴宽 48 减去它才是刻度的可用宽度，
                       4 位数的刻度会越出图表左边缘被裁掉（issue #184 的遮挡就是这么来的）。 */}
-                  <LineChart data={flow.daily} margin={{top: 4, right: 4, bottom: 0, left: 0}}>
+                  <LineChart data={flowPoints} margin={{top: 4, right: 4, bottom: 0, left: 0}}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                    <XAxis dataKey="day" tickLine={false} axisLine={false} fontSize={11}
-                           stroke="var(--muted-foreground)" />
+                    <XAxis
+                           dataKey={flowXAxis.dataKey}
+                           tickLine={false} axisLine={false} fontSize={11}
+                           stroke="var(--muted-foreground)"
+                           interval={flowXAxis.interval}
+                           tickFormatter={(v) => flowXAxis.format(v)} />
                     {/* 双 Y 轴：收入常是几千、支出常是几十。同一根轴会把支出压成
                         贴着 0 的直线，等于没画。左轴收入、右轴支出，颜色与曲线对应。 */}
                     <YAxis yAxisId="inc" tickLine={false} axisLine={false} fontSize={11}

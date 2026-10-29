@@ -19,6 +19,11 @@
 | **新装** | 直接用包内那份（下面的脚本会自动识别） |
 | **更新上游代码** | 跟着管理端一起更新（一键更新会把包内那份同步进来）；要改代码就改本地那份，或用 `UPSTREAM_SRC` 换一份 |
 
+> **上游来源**：包内 `upstream/` 来自 core 仓库的 `manager-core-2026.10.27` tag；
+> 解包后可看 `upstream/.core-tag` 核对具体 tag。Windows 安装器目前仍从旧的
+> `upstream-src` 载体取上游源码（已知后续项，切到 core tag 前其内嵌上游可能
+> 落后于发布包）；Linux / Docker 与 Windows 原生部署不受影响。
+
 ### 包内自带，开箱即用
 
 最新版本的 Release 包内含 `upstream/`（上游源码），装的时候直接用，
@@ -60,11 +65,11 @@ cd /opt/workbuddy2api && docker compose up -d --build
 ### 直接用预构建的上游镜像（不想本地构建时）
 
 每次发版也会把**上游**构建成镜像推到 GHCR。它和管理端镜像**同源**：都用发布包里
-那份源码（= `upstream-src` 资产 + 我们的全部补丁），所以不会出现「第三方上游镜像
-与项目上游源码不一致」的版本漂移。
+那份源码（= core 仓库 `manager-core-2026.10.27` tag 的源码资产），所以不会出现
+「第三方上游镜像与项目上游源码不一致」的版本漂移。
 
 ```bash
-docker pull ghcr.io/ithtelab/workbuddy2api:<版本>
+docker pull ghcr.io/mfrank2016/workbuddy2api:<版本>
 # latest 指向最近一次发布；长期跑建议钉版本号（理由同管理端镜像）
 ```
 
@@ -74,7 +79,7 @@ docker pull ghcr.io/ithtelab/workbuddy2api:<版本>
 ```yaml
 services:
   wb2api:
-    image: ghcr.io/ithtelab/workbuddy2api:2.8.0
+    image: ghcr.io/mfrank2016/workbuddy2api:<版本>
     container_name: workbuddy2api
     restart: unless-stopped
     environment:
@@ -96,6 +101,9 @@ services:
   `docker compose up -d --build`）：升级上游 = 改 `image:` 的版本号 +
   `docker compose up -d`。面板「全部更新」里针对上游源码的那一步对镜像部署无效，
   这是预期行为。
+- 镜像自带 `dev.workbuddy.upstream-id` label，面板读运行中容器的这个 label 判断
+  「镜像部署且与本次发布同源」，同源时不会提示「随包上游与本机不一致」。读不到
+  label 的旧镜像（≤ 2.8.2）仍按部署目录的 `.upstream-id` 判定，行为不变。
 
 ### 许可
 

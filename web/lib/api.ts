@@ -61,6 +61,7 @@ import type {
   PgSyncStatus,
   PgSyncTestResult,
   PlaygroundModels,
+  ProbeModelsResponse,
   RedPacket,
   RedPacketDetail,
   RedPacketKind,
@@ -85,6 +86,18 @@ import type {
   UsagePoint,
   UserItem,
   Versions,
+  WatchdogConfigResponse,
+  WatchdogEgress,
+  WatchdogLlmConfig,
+  WatchdogMailConfig,
+  WatchdogMailTest,
+  WatchdogQqBotsResult,
+  WatchdogQqConfig,
+  WatchdogQqTest,
+  WatchdogRunResult,
+  WatchdogSaveResult,
+  WatchdogStatus,
+  WatchdogVerdict,
 } from './types';
 
 export const http = axios.create({
@@ -348,6 +361,13 @@ export const accountApi = {
   test: (file: string, upstreamId?: number | null) =>
     post<{ok: boolean; message: string}>(
       `/api/accounts/${encodeURIComponent(file)}/test${groupQs(upstreamId)}`),
+  /** 账号 × 模型主动探测（issue #270）：files 为账号文件名，models 为模型 id。 */
+  probeModels: (files: string[], models: string[], upstreamId?: number | null) =>
+    post<ProbeModelsResponse>(`/api/accounts/probe-models${groupQs(upstreamId)}`,
+                              {accounts: files, models}),
+  /** 上游「账号管理接口」（admin.enabled）开关状态；null = 未知（非默认分组）。 */
+  adminApiStatus: (upstreamId?: number | null) =>
+    get<{enabled: boolean | null}>('/api/accounts/admin-api-status' + groupQs(upstreamId)),
   refresh: (file: string, upstreamId?: number | null) =>
     post<{ok: boolean; message: string}>(
       `/api/accounts/${encodeURIComponent(file)}/refresh${groupQs(upstreamId)}`),
@@ -889,4 +909,48 @@ export const pgSyncApi = {
   importData: () =>
     post<{ok: boolean; message: string; status: PgSyncStatus}>('/api/settings/pg-sync/import'),
   status: () => get<PgSyncStatus>('/api/settings/pg-sync/status'),
+};
+
+/* ── 页面监控（watchdog）──────────────────────────────── */
+/**
+ * 上游网页改版监控：配置 / 状态 / 立即检测 / 基线 / 邮件出口 / 测试发信。
+ *
+ * 全部要求管理员 —— 状态里有账号昵称与收件地址，配置里有 LLM 地址与打码凭据。
+ * 「立即检测」是同步返回的：一轮是几次页面抓取 + 一两个只读查询，正常几秒内
+ * 结束，界面可以直接把结果写出来，不用再引入一套任务轮询。
+ */
+export const watchdogApi = {
+  config: () => get<WatchdogConfigResponse>('/api/watchdog/config'),
+  /** 只传要改的段即可；打码值 `********` 表示保持原密码/密钥不变 */
+  saveConfig: (body: Record<string, unknown>) =>
+    put<WatchdogSaveResult>('/api/watchdog/config', body),
+  status: () => get<WatchdogStatus>('/api/watchdog/status'),
+  /**
+   * 一轮可能是「页面 25s + 资源预算 40s + LLM 60s」，超过全局 60s 上限——
+   * 超时只影响这一次等待，后端仍会跑完并落库；但界面会显示一条失败，
+   * 用户会以为没检测。这里单独放宽到 4 分钟。
+   */
+  run: async () => (await http.post<WatchdogRunResult>(
+    '/api/watchdog/run', {}, {timeout: 240000})).data,
+  /** 清掉全部基线：下次检测只重建指纹，不告警（改版后误报时用） */
+  resetBaseline: () =>
+    post<{ok: boolean; cleared: number; message: string}>('/api/watchdog/baseline', {}),
+  /**
+   * 三个「测试」都接受表单当前值（不必先保存）：用户填完 SMTP 主机就会点
+   * 检测，要求先保存再测试等于把一步藏在别处。未传 body 时后端用已保存配置。
+   */
+  checkEgress: (mail?: Partial<WatchdogMailConfig>) =>
+    post<WatchdogEgress>('/api/watchdog/mail/egress', mail ?? {}),
+  testMail: (mail?: Partial<WatchdogMailConfig>) =>
+    post<WatchdogMailTest>('/api/watchdog/mail/test', mail ?? {}),
+  /** 检测 AstrBot 地址 / 密钥 / scope，并列出可用平台适配器（拼 UMO 用） */
+  qqBots: (qq?: Partial<WatchdogQqConfig>) =>
+    post<WatchdogQqBotsResult>('/api/watchdog/qq/bots', qq ?? {}),
+  /** 发一条 QQ 测试消息（同样用表单当前值，不要求先保存） */
+  testQq: async (qq?: Partial<WatchdogQqConfig>) =>
+    (await http.post<WatchdogQqTest>(
+      '/api/watchdog/qq/test', qq ?? {}, {timeout: 60000})).data,
+  testLlm: async (llm?: Partial<WatchdogLlmConfig>) =>
+    (await http.post<{ok: boolean; verdict: WatchdogVerdict}>(
+      '/api/watchdog/llm/test', llm ?? {}, {timeout: 120000})).data,
 };

@@ -30,6 +30,7 @@ import {
   Scale,
   FolderInput,
   TriangleAlert,
+  ScanSearch,
 } from 'lucide-react';
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {useAsyncAll} from '@/lib/use-async-data';
@@ -77,6 +78,8 @@ import {MoveAccountDialog} from '@/components/common/accounts/MoveAccountDialog'
 import {UpstreamFormDialog} from '@/components/common/upstreams/UpstreamFormDialog';
 import {AccountCoolingDialog} from '@/components/common/accounts/AccountCoolingDialog';
 import {AccountTaskDialog} from '@/components/common/accounts/AccountTaskDialog';
+import {ReloginQueueDialog} from '@/components/common/accounts/ReloginQueue';
+import {ModelProbeDialog} from '@/components/common/accounts/ModelProbeDialog';
 import {AccountTaskDrawer} from '@/components/common/accounts/AccountTaskDrawer';
 import {PanelObservabilityPanel} from '@/components/common/accounts/PanelObservabilityPanel';
 import {PanelCompensationPanel} from '@/components/common/accounts/PanelCompensationPanel';
@@ -126,6 +129,9 @@ export default function AccountsPage() {
   const t = useT();
   const {isAdmin} = useAuth();
   const [addOpen, setAddOpen] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
+  /** 账号 × 模型主动探测（issue #270） */
+  const [probeOpen, setProbeOpen] = useState(false);
   const [proxyRoutes, setProxyRoutes] = useState<string[] | null>(null);
   // 备注编辑（issue #67）：记的是**哪个账号**而不是布尔——弹窗要以该账号当前的
   // 备注为初值，否则会拿上一个账号的内容去保存。
@@ -178,6 +184,14 @@ export default function AccountsPage() {
    * 所以这里如实记下，并在积分列旁给一句说明（原实现是裸 `catch {}` 吞掉）。
    */
   const [creditsFailed, setCreditsFailed] = useState(false);
+  /**
+   * 上游「账号管理接口」（admin.enabled）开关。null = 未知/读取中/读取失败。
+   *
+   * 解封的最后一步要调上游的 revive 接口，而这组接口默认关闭（admin.enabled
+   * 默认 false）。开关没开时，重登只换令牌、清不掉禁用位——因此「是否可解封」
+   * 的提示必须区分两种情况，不能一概说「可通过解禁队列解封」误导用户。
+   */
+  const [adminApiEnabled, setAdminApiEnabled] = useState<boolean | null>(null);
 
   /**
    * 账号池 = 这一页的**主数据**，单独一个 hook。
@@ -242,6 +256,19 @@ export default function AccountsPage() {
     const [a, b, c] = await Promise.all([reload(), poolStatus.reload(), groupList.reload()]);
     return a && b && c;
   }, [reload, poolStatus.reload, groupList.reload]);
+
+  // 上游「账号管理接口」（admin.enabled）开关：解禁队列据此提示「重登能不能真正解封」。
+  // 切分组先回到「未知」，否则会拿上一个分组的开关状态去提示当前分组；非默认
+  // 分组的面板读不到那套实例的 config.json，接口会回 null。
+  useEffect(() => {
+    if (!isAdmin) return;
+    let alive = true;
+    setAdminApiEnabled(null);
+    accountApi.adminApiStatus(groupId)
+      .then((d) => { if (alive) setAdminApiEnabled(d.enabled); })
+      .catch(() => { if (alive) setAdminApiEnabled(null); });
+    return () => { alive = false; };
+  }, [isAdmin, groupId]);
 
   // 打开页面时自动拉一次实时积分：上游 /status 的 credits 可能滞后数小时，
   // 首次进入应展示真实余额。服务端有 TTL 缓存，重复进入不会频繁请求。
@@ -424,6 +451,11 @@ export default function AccountsPage() {
   const visible = useMemo(
     () => merged.filter((a) => accountRealm(a) === realm),
     [merged, realm],
+  );
+  /** 封控账号数：解禁队列按钮的角标与 NEW 提示只看它。 */
+  const blockedCount = useMemo(
+    () => visible.filter((a) => availabilityOf(a) === 'disabled').length,
+    [visible],
   );
   const visibleByProfile = useMemo(
     () => (profileFilter === 'all'
@@ -846,7 +878,10 @@ export default function AccountsPage() {
           ? 'text-amber-600 dark:text-amber-400'
           : 'text-foreground';
     return (
-      <span className="inline-flex items-center gap-1.5">
+      // 固定列宽后这一列只有 12%：余额 + 来源徽标 + 到期倒计时挤在一行会**溢出**
+      // 并被下一列裁掉（issue #298 的现场就是「到期信息被 token 有效期列遮挡」）。
+      // 允许换行：空间够时仍是一行，窄窗口下倒计时自动落到第二行，而不是被切掉。
+      <span className="inline-flex max-w-full flex-wrap items-center gap-1.5">
         <span className={`text-xs font-medium tabular-nums ${tone}`} title={t('accounts.creditsTitle')}>
           {fmtNumber(value)}
         </span>
@@ -934,7 +969,7 @@ export default function AccountsPage() {
 
   function renderExpiry(a: Account) {
     if (a.expires_at <= 0) {
-      return <div className="w-[150px] text-[11px] text-muted-foreground">{t('metric.unknown')}</div>;
+      return <div className="w-full max-w-[150px] text-[11px] text-muted-foreground">{t('metric.unknown')}</div>;
     }
     const pct = expiryBarPercent(a.remain_seconds, a.ttl_seconds);
     const vis = expiryVisual(a.remain_seconds);
@@ -943,7 +978,7 @@ export default function AccountsPage() {
     // 补一行签发时间（≈ 最近一次刷新）才能区分——后者是保活没覆盖到的隐患账号。
     const issued = a.issued_at ?? null;
     return (
-      <div className="w-[150px]">
+      <div className="w-full max-w-[150px] whitespace-normal">
         <div className={`mb-1 text-[11px] font-medium tabular-nums ${vis.textClass}`}>
           {fmtRemain(a.remain_seconds)}
         </div>
@@ -1006,10 +1041,12 @@ export default function AccountsPage() {
       (a.manual_disabled === true &&
         Boolean(a.manual_reason && a.manual_reason.startsWith('手动冷却')));
     // 手机卡片宽度只有 260–300px，必须换行（否则最右侧的停用/删除被裁掉）；
-    // 桌面表格空间足够，固定一行 —— 否则窄的「操作」列会把图标挤成两行
-    // （issue #151 的后续反馈）。表格容器自身可横向滚动，md 以上不再换行。
+    // 桌面表格改为固定列宽（table-fixed）后，操作列拿到 330px 定宽 —— 10 个图标
+    // 按钮按 h-7 + 2px 间距正好排成一行（9×28+8×2 是常见形态，留了余量）。
+    // 有备注时还要显示「本部署共享」提示，它的文案长度随语言变化；此时保留
+    // flex-wrap 让它落到第二行，而不是把定宽的操作列撑出横向滚动。
     return (
-      <div className="flex flex-wrap justify-end gap-1 md:flex-nowrap">
+      <div className={`flex flex-wrap justify-end gap-1 md:gap-0.5 ${noteText(a) ? '' : 'md:flex-nowrap'}`}>
         {/* 备注（issue #67）：只动本端库里的一行文本，不碰上游、不重启容器，
             所以放在最前——它是最轻的动作。任何状态下的账号都能写备注：
             停用的号恰恰更容易忘了它是谁。 */}
@@ -1308,6 +1345,20 @@ export default function AccountsPage() {
                 <span className="sm:hidden">{t('accounts.refreshTokensShort')}</span>
               </Button>
             )}
+            {isAdmin && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="rounded-full"
+                onClick={() => setProbeOpen(true)}
+                disabled={!visible.length}
+                title={t('accounts.probeTitle')}
+              >
+                <ScanSearch />
+                <span className="hidden sm:inline">{t('accounts.probeShort')}</span>
+                <span className="sm:hidden">{t('accounts.probeShort')}</span>
+              </Button>
+            )}
             {/* 「全部签到」仅国内版显示：国际版**没有签到体系**（上游调度器对
                 global 账号直接过滤，不发请求）。显示一个按下去只会得到「已跳过」
                 的按钮是误导，直接不给。 */}
@@ -1336,6 +1387,31 @@ export default function AccountsPage() {
                   <span className="tabular-nums opacity-70">{pendingCheckin}</span>
                 )}
               </Button>
+            )}
+            {isAdmin && (
+              <span className="relative inline-flex">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="rounded-full"
+                  onClick={() => setQueueOpen(true)}
+                  title={t('accounts.reloginQueueTitleTip')}
+                >
+                  <Users className="h-3.5 w-3.5" />
+                  <span>{t('accounts.reloginQueueTitle')}</span>
+                  {blockedCount > 0 && (
+                    <span className="tabular-nums font-semibold opacity-80">{blockedCount}</span>
+                  )}
+                </Button>
+                {/* 新功能角标（issue 约定：为新 UI 功能加红色 NEW 角标，稳定后移除）。
+                    只在存在封禁账号、队列真正有内容时显示——没有待解封账号时
+                    光秃秃的 NEW 没有引导意义。 */}
+                {blockedCount > 0 && (
+                  <span className="pointer-events-none absolute -right-1.5 -top-1.5 z-10 rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                    NEW
+                  </span>
+                )}
+              </span>
             )}
             {isAdmin && (
               <UploadAccountsButton upstreamId={groupId} groups={groups} onSuccess={reloadAll} />
@@ -1592,17 +1668,17 @@ export default function AccountsPage() {
 
         {/* 桌面端：表格 */}
         <div className="hidden md:block">
-        <Table>
+        <Table className="table-fixed [&_td]:overflow-hidden">
           <TableHeader>
             <TableRow className="border-b border-border/60 hover:bg-transparent">
-              <TableHead className="pl-4 text-[11px] text-muted-foreground">{t('accounts.colNickname')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">UID</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colProfile')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('metric.credits')}</TableHead>
-              <TableHead className="text-[11px] text-muted-foreground">{t('accounts.colExpiry')}</TableHead>
-              {hasProxyUi && <TableHead className="text-[11px] text-muted-foreground">{t('accounts.proxyLine')}</TableHead>}
-              {isAdmin && <TableHead className="whitespace-nowrap pr-4 text-right text-[11px] text-muted-foreground">{t('accounts.colActions')}</TableHead>}
+              <TableHead className="w-[16%] pl-4 text-[11px] text-muted-foreground">{t('accounts.colNickname')}</TableHead>
+              <TableHead className="w-[8%] text-[11px] text-muted-foreground">UID</TableHead>
+              <TableHead className="w-[8%] text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
+              <TableHead className="w-[7%] text-[11px] text-muted-foreground">{t('accounts.colProfile')}</TableHead>
+              <TableHead className="w-[14%] text-[11px] text-muted-foreground">{t('metric.credits')}</TableHead>
+              <TableHead className="w-[9%] text-[11px] text-muted-foreground">{t('accounts.colExpiry')}</TableHead>
+              {hasProxyUi && <TableHead className="w-[10%] text-[11px] text-muted-foreground">{t('accounts.proxyLine')}</TableHead>}
+              {isAdmin && <TableHead className="w-[330px] whitespace-nowrap pr-4 text-right text-[11px] text-muted-foreground">{t('accounts.colActions')}</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1641,9 +1717,13 @@ export default function AccountsPage() {
                     </Badge>
                   </div>
                 </TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">{a.uid}</TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">
+                  {/* 固定列宽下 UID（36 字符 UUID）装不满整行，省略号收尾 +
+                      title 保留全文，鼠标悬停可看完整值（复制按钮在详情里）。 */}
+                  <div className="truncate" title={a.uid}>{a.uid}</div>
+                </TableCell>
                 <TableCell>
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5 [&_[data-slot=badge]]:max-w-full [&_[data-slot=badge]]:whitespace-normal">
                     {renderStatus(a)}
                     {renderModelLimit(a)}
                   </div>
@@ -1802,6 +1882,23 @@ export default function AccountsPage() {
         onOpenChange={(open) => { if (!open) setTaskTarget(null); }}
         onFinished={reloadAll}
       />
+      <ReloginQueueDialog
+        open={queueOpen}
+        onOpenChange={setQueueOpen}
+        accounts={visible}
+        upstreamId={groupId}
+        onSuccess={reloadAll}
+        adminApiEnabled={adminApiEnabled}
+      />
+      {probeOpen && (
+        <ModelProbeDialog
+          open={probeOpen}
+          onOpenChange={setProbeOpen}
+          accounts={visible}
+          upstreamId={groupId}
+          realm={realm}
+        />
+      )}
       <PanelCompensationPanel upstreamId={groupId} onChanged={reloadAll} />
       <PanelObservabilityPanel upstreamId={groupId} />
       <AccountTaskDrawer

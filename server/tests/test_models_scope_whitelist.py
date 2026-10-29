@@ -91,6 +91,16 @@ class ListMatchesCallAdmissionTest(unittest.TestCase):
         self.assertEqual(listed, ['global:deepseek-v4.1-flash'],
                          '白名单外的模型仍被列出（用户选中就 400）')
 
+    def test_global_key_with_bare_whitelist(self) -> None:
+        """issue #255：国际版密钥的白名单写裸名时，列表要给出 `global:` 条目。
+
+        否则客户端按提示加 `global:` 前缀调用会被白名单拒掉，不加又被版本
+        校验拒掉——两条路都走不通。
+        """
+        listed = self._assert_invariant(
+            _key(realm='global', models=['deepseek-v4.1-flash']))
+        self.assertEqual(listed, ['global:deepseek-v4.1-flash'])
+
     def test_cross_realm_whitelist(self) -> None:
         listed = self._assert_invariant(
             _key(models=['glm-5.2', 'global:gpt-5.6-sol']))
@@ -222,6 +232,22 @@ class SharedCriterionTest(unittest.TestCase):
         # 畸形输入不放行
         self.assertFalse(keysvc.model_allowed(_key(models=['glm-5.2']), None))
         self.assertFalse(keysvc.model_allowed(_key(models=['glm-5.2']), '   '))
+
+    def test_locked_realm_ignores_prefix_in_whitelist(self) -> None:
+        """issue #255：锁定版本的密钥，白名单裸名与带本版本前缀都放行。
+
+        版本已经由密钥锁死，前缀不再提供额外信息（另一版本根本进不来）；
+        列表给出的是 `global:` 条目，白名单写裸名的用户必须也能调用它。
+        """
+        self.assertTrue(keysvc.model_allowed(
+            _key(realm='global', models=['deepseek-v4.1-flash']),
+            'global:deepseek-v4.1-flash'))
+        self.assertTrue(keysvc.model_allowed(
+            _key(realm='global', models=['global:deepseek-v4.1-flash']),
+            'deepseek-v4.1-flash'))
+        # 未锁定版本时仍保留原语义（global: 决定路由，不能混）
+        self.assertFalse(keysvc.model_allowed(
+            _key(models=['glm-5.2']), 'global:glm-5.2'))
 
 
 class CatalogShrinkTest(unittest.TestCase):

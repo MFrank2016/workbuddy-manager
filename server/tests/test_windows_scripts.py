@@ -291,5 +291,48 @@ class WindowsScriptLayoutTest(unittest.TestCase):
                               f'{cmd} 没有按 %~dp0 调同目录的 {ps1}')
 
 
+class WindowsLauncherUpdateTest(unittest.TestCase):
+    """issue #288：启动器检查最新 Release、下载并校验安装包。
+
+    不做端到端下载（需要网络与 42MB 安装包），但把安全不变量钉在源码里：
+      · 只查本仓库的 `releases/latest`；
+      · 只接受 HTTPS 资产；
+      · 必须先校验 `.sha256` 再启动安装程序；
+      · 启动前必须让用户确认，且不能静默覆盖。
+    """
+
+    def _src(self) -> str:
+        path = _ROOT / 'windows' / 'launcher' / 'src' / 'MainForm.cs'
+        self.assertTrue(path.is_file(), f'缺少 {path}')
+        return path.read_text(encoding='utf-8-sig')
+
+    def test_checks_this_repo_latest_release(self) -> None:
+        src = self._src()
+        self.assertIn('api.github.com/repos/ithtelab/workbuddy-manager/releases/latest', src)
+        self.assertIn('WorkBuddyManagerSetup.exe', src)
+
+    def test_requires_https_and_sha256_before_running(self) -> None:
+        src = self._src()
+        self.assertIn('Uri.UriSchemeHttps', src)
+        self.assertIn('VerifySha256', src)
+        self.assertIn('.sha256', src)
+        # 校验失败必须中止，且提示里要说明「未运行安装程序」
+        self.assertIn('未运行安装程序', src)
+
+    def test_user_confirms_before_download(self) -> None:
+        src = self._src()
+        self.assertIn('MessageBoxButtons.YesNo', src)
+        self.assertIn('是否下载并安装', src)
+
+    def test_honors_update_proxy(self) -> None:
+        """国内网络访问 GitHub 时复用服务器的 WB_UPDATE_PROXY 约定。"""
+        self.assertIn('WB_UPDATE_PROXY', self._src())
+
+    def test_update_entry_points_exist(self) -> None:
+        src = self._src()
+        self.assertIn('OnCheckUpdate', src)
+        self.assertIn('检查更新', src)
+
+
 if __name__ == '__main__':
     unittest.main()
