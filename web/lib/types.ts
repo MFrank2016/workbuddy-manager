@@ -1027,6 +1027,12 @@ export interface UpstreamConfig {
    * 上游默认关闭，所以面板提供一个开关，否则用户只能手改 config.json。
    */
   admin?: Record<string, unknown>;
+  /** 出站身份替换（core identity.enabled/target/replacements）。 */
+  identity?: {
+    enabled?: boolean;
+    target?: string;
+    replacements?: Record<string, string>;
+  };
   upstash?: UpstashConfig;
 }
 

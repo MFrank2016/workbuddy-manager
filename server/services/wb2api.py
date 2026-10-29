@@ -1568,7 +1568,7 @@ def read_container_logs(limit: int = 200, timestamps: bool = True,
 # 后加则会出现「界面能填但存不下去」的窗口期。
 _EDITABLE_SECTIONS = ('schedule', 'pool', 'cooldown', 'features',
                       'session_sticky', 'prompt', 'server', 'upstream', 'global',
-                      'admin', 'search', 'mcp', 'profiles')
+                      'admin', 'search', 'mcp', 'profiles', 'identity')
 
 
 def _mask(v: str) -> str:
@@ -1761,6 +1761,21 @@ def _sanitize_section(section: str, incoming: dict) -> dict:
     也不要写进上游配置触发容器启动失败。
     """
     out = dict(incoming)
+    if section == 'identity':
+        enabled = incoming.get('enabled', False)
+        if not isinstance(enabled, bool):
+            raise ValueError('identity.enabled 必须是 true 或 false')
+        target = str(incoming.get('target') or '').strip() or 'WorkBuddy'
+        reps = incoming.get('replacements') or {}
+        if not isinstance(reps, dict):
+            raise ValueError('identity.replacements 必须是对象')
+        clean_reps: dict[str, str] = {}
+        for k, v in reps.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                raise ValueError('identity.replacements 的键和值都必须是字符串')
+            if k.strip():
+                clean_reps[k] = v
+        return {'enabled': enabled, 'target': target, 'replacements': clean_reps}
     for key, raw in incoming.items():
         if key in _HOURS_KEYS:
             if not isinstance(raw, list) or not all(
@@ -2070,6 +2085,30 @@ async def save_upstream_config_remote(upstream: dict, patch: dict) -> dict:
     }
 
 
+_IDENTITY_DEFAULTS = {
+    'Claude Code': 'WorkBuddy', 'Claude': 'WorkBuddy',
+    'DeepSeek Harness': 'WorkBuddy', 'Codex': 'WorkBuddy', 'ZCode': 'WorkBuddy',
+    'workspace root': 'workspace base',
+    'are paths the user': 'are paths that the user',
+}
+
+
+def _merge_identity(cur: dict, patch: dict) -> dict:
+    """默认映射 + 已有值 + 本次 patch 逐项合并；用户值优先，缺失默认补齐。"""
+    reps = dict(_IDENTITY_DEFAULTS)
+    for source in (cur.get('replacements') or {}, patch.get('replacements') or {}):
+        if isinstance(source, dict):
+            reps.update({str(k): str(v) for k, v in source.items() if str(k).strip()})
+    out = {
+        'enabled': bool(cur.get('enabled', False)),
+        'target': str(patch.get('target') or cur.get('target') or 'WorkBuddy'),
+        'replacements': reps,
+    }
+    if 'enabled' in patch:
+        out['enabled'] = bool(patch['enabled'])
+    return out
+
+
 def save_upstream_config(patch: dict, *, upstream_id: object = None) -> dict:
     """仅允许改写 schedule / pool / cooldown / features / upstash 等非敏感段。
 
@@ -2104,7 +2143,10 @@ def save_upstream_config(patch: dict, *, upstream_id: object = None) -> dict:
             # __delete__ 表示调用方要求显式删除某些敏感键（见 _sanitize_section）
             if clean.pop('__delete__', False):
                 cfg[field].pop('device_token', None)
-            cfg[field].update(clean)
+            if field == 'identity':
+                cfg[field] = _merge_identity(cfg.get(field) or {}, clean)
+            else:
+                cfg[field].update(clean)
 
     # 顶层布尔开关：思考通道兜底（reasoning_as_content）。
     # 它不是任何配置段的成员，所以不能走上面的段循环 —— 塞进段里会写到

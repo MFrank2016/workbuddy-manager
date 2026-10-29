@@ -32,6 +32,7 @@ import {RichText} from '@/lib/i18n/rich-text';
 import {settingsApi, upstreamApi, errText} from '@/lib/api';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {UpstreamEndpoints} from '@/components/settings/UpstreamEndpoints';
+import {IdentityPanel} from '@/components/settings/IdentityPanel';
 import {scheduleDelayError} from '@/lib/schedule-validation';
 import {
   DEFAULT_SETTINGS_TAB,
@@ -1386,6 +1387,7 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
               放在 config.json 字段之前：它是「本端接了几个上游」的清单，
               而下面那批字段描述的是**默认上游自身**的配置。 */}
           <UpstreamEndpoints />
+          <IdentityPanel />
           {/* Responses 投影 / 工具修复是 manager 本地设置，走 /api/settings/responses；
               放在这里是因为它与「默认上游的出站行为」相邻，且默认 Tab 最容易找到。 */}
           <ResponsesPanel />
