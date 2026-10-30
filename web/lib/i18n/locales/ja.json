@@ -1265,6 +1265,8 @@
     "dailySaved": "毎日のタスクを保存しました",
     "dailyTitle": "毎日のタスク",
     "planCardTitle": "スケジュールタスク",
+    "checkinPlanTitle": "本日のチェックインプラン",
+    "checkinPlanSummary": "合計 {total} · 完了 {done} · 失敗 {failed} · 待機 {pending}",
     "planDays": "日",
     "planDesc": "残り有効期間に関係なく、N 日ごとに全アカウントのトークンを更新します",
     "planDisabled": "無効",

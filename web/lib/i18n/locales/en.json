@@ -1292,6 +1292,8 @@
     "dailySaved": "Daily tasks saved",
     "dailyTitle": "Daily tasks",
     "planCardTitle": "Scheduled tasks",
+    "checkinPlanTitle": "Today's check-in plan",
+    "checkinPlanSummary": "Total {total} · done {done} · failed {failed} · pending {pending}",
     "planDays": "days",
     "planDesc": "Refresh every account's token every N days, regardless of remaining validity",
     "planDisabled": "Not enabled",
