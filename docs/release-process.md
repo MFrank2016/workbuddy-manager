@@ -5,7 +5,7 @@
 
 ## 上游源码：core tag
 
-- **core tag 是唯一事实来源**。每个 tag（默认 `manager-core-2026.10.27`）对应一份
+- **core tag 是唯一事实来源**。每个 tag（默认 `manager-core-2026.10.29`）对应一份
   可构建的源码；`dev/upstream-patches/` 已退役，历史补丁保留用于复现旧 tag。
 - **发版前必须先把 core tag 与源码资产 push/publish 到 core 仓库**：
   ```bash

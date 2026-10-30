@@ -160,7 +160,7 @@ def apply_patches(source: Path, patch_dir: Path) -> list[str]:
 
 DEPRECATION_WARNING = (
     'DEPRECATED: dev/upstream-patches is retired. Patches 0001-0030 now live in the '
-    'workbuddy2api core tag (manager-core-2026.10.27). This script is kept only to '
+    'workbuddy2api core tag (manager-core-2026.10.29). This script is kept only to '
     'reproduce historical builds; new upstream changes belong in the core repo.'
 )
 

@@ -1194,7 +1194,7 @@ class UpstreamSourceFallbackTest(unittest.TestCase):
         import yaml
         wf = (_ROOT / '.github' / 'workflows' / 'release.yml').read_text(encoding='utf-8')
         yaml.safe_load(wf)   # 先确保 YAML 没写坏
-        self.assertIn('CORE_TAG: manager-core-2026.10.27', wf,
+        self.assertIn('CORE_TAG: manager-core-2026.10.29', wf,
                       '没有固定 core tag')
         self.assertIn('releases/download/${CORE_TAG}/workbuddy2api-src.tar.gz', wf,
                       '没有从 core tag 的 Release 取上游源码')

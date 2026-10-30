@@ -2,12 +2,12 @@
 
 **不要在这里新增补丁。** 上游 `workbuddy2api` 的改动现在直接进入 core 仓库
 [`MFrank2016/workbuddy2api`](https://github.com/MFrank2016/workbuddy2api)，由 core tag
-（当前为 `manager-core-2026.10.27`）统一发布。
+（当前为 `manager-core-2026.10.29`）统一发布。
 
 ## 发生了什么
 
 - 本目录里编号 `0001`–`0030` 的补丁（本分支现存 `0001`–`0019`，`0020`–`0030`
-  来自后续发布线）已经全部迁入 core tag `manager-core-2026.10.27` 的源码。
+  来自后续发布线）已经全部迁入 core tag `manager-core-2026.10.29` 的源码。
 - 管理端发布流程不再读取本目录：`.github/workflows/release.yml` 直接取 core tag
   的源码资产，校验 `upstream/.core-tag` 后打进发布包。
 - 这些文件**保留不动**，用于复现旧 tag 的历史构建；不要删除、改写或重新编号。

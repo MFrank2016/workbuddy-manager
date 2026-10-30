@@ -25,7 +25,7 @@
 ### 变更
 
 - **上游源码改为随包来自 core tag**：发布包内的 `upstream/` 现在直接来自
-  `workbuddy2api` 的 `manager-core-2026.10.27`，并带 `upstream/.core-tag`
+  `workbuddy2api` 的 `manager-core-2026.10.29`，并带 `upstream/.core-tag`
   记录来源；管理端与上游镜像因此保持同源。旧的本地补丁目录不再更新。
 - **旧补丁发布路径仅作手工回退**：`release-patches.yml` 不再随 tag 自动触发，
   只在新 core 资产不可用时由维护者手工补发；它可能覆盖同版本的上游镜像，

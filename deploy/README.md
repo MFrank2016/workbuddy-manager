@@ -19,7 +19,7 @@
 | **新装** | 直接用包内那份（下面的脚本会自动识别） |
 | **更新上游代码** | 跟着管理端一起更新（一键更新会把包内那份同步进来）；要改代码就改本地那份，或用 `UPSTREAM_SRC` 换一份 |
 
-> **上游来源**：包内 `upstream/` 来自 core 仓库的 `manager-core-2026.10.27` tag；
+> **上游来源**：包内 `upstream/` 来自 core 仓库的 `manager-core-2026.10.29` tag；
 > 解包后可看 `upstream/.core-tag` 核对具体 tag。Windows 安装器目前仍从旧的
 > `upstream-src` 载体取上游源码（已知后续项，切到 core tag 前其内嵌上游可能
 > 落后于发布包）；Linux / Docker 与 Windows 原生部署不受影响。
@@ -65,7 +65,7 @@ cd /opt/workbuddy2api && docker compose up -d --build
 ### 直接用预构建的上游镜像（不想本地构建时）
 
 每次发版也会把**上游**构建成镜像推到 GHCR。它和管理端镜像**同源**：都用发布包里
-那份源码（= core 仓库 `manager-core-2026.10.27` tag 的源码资产），所以不会出现
+那份源码（= core 仓库 `manager-core-2026.10.29` tag 的源码资产），所以不会出现
 「第三方上游镜像与项目上游源码不一致」的版本漂移。
 
 ```bash
