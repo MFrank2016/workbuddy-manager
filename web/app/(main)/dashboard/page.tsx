@@ -19,7 +19,7 @@ import {
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {collectAccountExpiries, collectScopedExpiries} from '@/lib/dashboard-credits';
-import {flowSeries, flowAxis} from '@/lib/credits-flow-chart';
+import {flowSeries, flowAxis, flowSyncId} from '@/lib/credits-flow-chart';
 import {getExpiryDailyGroup, groupExpiriesByDay} from '@/lib/display-prefs';
 import {accountApi, statsApi, upstreamApi, upstreamsApi} from '@/lib/api';
 import {useRealm} from '@/lib/realm-context';
@@ -250,6 +250,8 @@ export default function DashboardPage() {
    */
   const {points: flowPoints, byHour: flowByHour} = flowSeries(flow);
   const flowXAxis = flowAxis(flowByHour);
+  // 两张图共享 hover 索引：天序列且桶数一致时用同一个 syncId。
+  const chartSyncId = flowSyncId(flowByHour, values.daily?.length ?? 0, flowPoints.length);
 
   const slices: GroupSlice[] = values.pool ?? EMPTY_SLICES;
   const summary: StatsSummary | null = values.summary ?? null;
@@ -693,7 +695,7 @@ export default function DashboardPage() {
           <div className="h-[220px] w-full">
             {chartData.length ? (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{top: 4, right: 8, bottom: 0, left: 0}}>
+                <AreaChart data={chartData} syncId={chartSyncId} syncMethod="index" margin={{top: 4, right: 8, bottom: 0, left: 0}}>
                   <defs>
                     <linearGradient id="gReq" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.35} />
@@ -831,7 +833,7 @@ export default function DashboardPage() {
                 <ResponsiveContainer width="100%" height="100%">
                   {/* 左边距不能给负数：轴宽 48 减去它才是刻度的可用宽度，
                       4 位数的刻度会越出图表左边缘被裁掉（issue #184 的遮挡就是这么来的）。 */}
-                  <LineChart data={flowPoints} margin={{top: 4, right: 4, bottom: 0, left: 0}}>
+                  <LineChart data={flowPoints} syncId={chartSyncId} syncMethod="index" margin={{top: 4, right: 4, bottom: 0, left: 0}}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                     <XAxis
                            dataKey={flowXAxis.dataKey}

@@ -11,7 +11,7 @@
  *   · 24 个小时标签全画出来 → X 轴糊成一片；
  *   · 上限取了数据极值 → 柱子贴边、0 线不在中间。
  */
-import {flowSeries, flowAxis, flowTop, flowBars} from './credits-flow-chart.ts';
+import {flowSeries, flowAxis, flowTop, flowBars, flowSyncId} from './credits-flow-chart.ts';
 
 let pass = 0;
 const ok = (cond, label, detail = '') => {
@@ -85,6 +85,14 @@ console.log('flowTop：取峰值的整齐上限（1/2/2.5/5/10 档）');
   ok(flowTop([{income: 2600, expense: 0}]) === 5000, '2600 跨 2.5 档 → 5000');
   ok(flowTop([{income: 40, expense: 220}]) === 250, '支出是峰值时同样取档（220 → 250）');
   ok(flowTop([{income: 0, expense: 0}]) === 1, '全 0 给 1，domain 不塌成 [0,0]');
+}
+
+// ── 双图 hover 联动 ────────────────────────────────────────────
+console.log('flowSyncId：只有天序列且桶数一致才联动');
+{
+  ok(flowSyncId(false, 7, 7) === 'dashboard-daily', '天序列 + 同桶数 → 共享 syncId');
+  ok(flowSyncId(false, 7, 6) === undefined, '桶数不一致 → 不联动（避免错位）');
+  ok(flowSyncId(true, 24, 24) === undefined, '小时序列 → 不联动（用量图是天序列）');
 }
 
 // ── 发散柱数据 ─────────────────────────────────────────────────

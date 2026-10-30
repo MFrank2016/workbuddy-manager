@@ -62,6 +62,18 @@ export function flowTop(points: {income: number; expense: number}[]): number {
   return step * mag;
 }
 
+/**
+ * 仪表盘两张图共享 hover 的 syncId。
+ *
+ * 只有「两张图都是天序列且桶数一致」时才联动：单日下探到小时后，用量图仍是
+ * 天序列、收支图是 24 个小时桶，按 index 同步会把 09:00 对到某一天，读数会错。
+ * 桶数不一致同样不联动——宁可各看各的，也不显示错位的数据。
+ */
+export function flowSyncId(byHour: boolean, usageLen: number, flowLen: number): string | undefined {
+  if (byHour || usageLen !== flowLen) return undefined;
+  return 'dashboard-daily';
+}
+
 /** 发散柱的数据行：支出取负让柱子向下生长（收入向上、净增折线叠在中间）。 */
 export function flowBars<P extends {income: number; expense: number; net: number}>(points: P[]): (P & {expenseDown: number})[] {
   return points.map((p) => ({...p, expenseDown: -p.expense}));
