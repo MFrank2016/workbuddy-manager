@@ -160,14 +160,24 @@ jobs:
           CORE_TAG="${CORE_TAG:-manager-core-2026.10.29}"
           UPSTREAM_SRC_URL="${UPSTREAM_SRC_URL:-https://github.com/MFrank2016/workbuddy2api/releases/download/${CORE_TAG}/workbuddy2api-src.tar.gz}"
           mkdir -p "$STAGE/upstream"
-          if curl -fsSL --retry 3 --retry-delay 2 --max-time 120 \
-                 "$UPSTREAM_SRC_URL" -o /tmp/upstream-src.tar.gz \
-             && tar -xzf /tmp/upstream-src.tar.gz -C "$STAGE/upstream" --strip-components=1 \
+          if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 120 \
+                 "$UPSTREAM_SRC_URL" -o /tmp/upstream-src.tar.gz; then
+            # 资产尚未发布时的回退：GitHub 为 tag 自动生成的源码包。
+            # 内容与 tag 一一对应；`.core-tag` 由下面的打包步骤补齐。
+            ARCHIVE_URL="https://github.com/MFrank2016/workbuddy2api/archive/refs/tags/${CORE_TAG}.tar.gz"
+            echo "::warning::core 源码资产不可用，回退到 tag archive：$ARCHIVE_URL"
+            if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 120 \
+                   "$ARCHIVE_URL" -o /tmp/upstream-src.tar.gz; then
+              echo "::error::取不到 core tag 源码包（$UPSTREAM_SRC_URL 或 $ARCHIVE_URL）。"
+              exit 1
+            fi
+          fi
+          if tar -xzf /tmp/upstream-src.tar.gz -C "$STAGE/upstream" --strip-components=1 \
              && [ -f "$STAGE/upstream/docker-compose.yml" ]; then
             echo "已内嵌上游源码：$(find "$STAGE/upstream" -type f | wc -l) 个文件"
             echo "has_upstream=1" >> $GITHUB_OUTPUT
           else
-            echo "::error::取不到 core tag 源码包（$UPSTREAM_SRC_URL）。core tag 与源码资产必须先 push/publish。"
+            echo "::error::core tag 源码包解压后缺少 docker-compose.yml"
             exit 1
           fi
           # 来源标记：资产自带 `.core-tag` 时以它为准，缺失则由打包步骤写入。

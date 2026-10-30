@@ -39,10 +39,11 @@ $webCacheMeta = Join-Path $repoRoot '.tools\cache\web-build.json'
 $upstreamCacheMeta = Join-Path $repoRoot '.tools\cache\upstream-build.json'
 $buildScriptPath = Join-Path $scriptDir 'build.ps1'
 $WebBuildRecipeVersion = '3'
-$UpstreamBuildRecipeVersion = '2'
+$UpstreamBuildRecipeVersion = '3'
 $RuntimeBuildRecipeVersion = '3'
 
-$UpstreamSrcUrl = 'https://github.com/ithtelab/workbuddy-manager/releases/download/upstream-src/workbuddy2api-src.tar.gz'
+$UpstreamSrcUrl = 'https://github.com/MFrank2016/workbuddy2api/releases/download/manager-core-2026.10.29/workbuddy2api-src.tar.gz'
+$UpstreamArchiveUrl = 'https://github.com/MFrank2016/workbuddy2api/archive/refs/tags/manager-core-2026.10.29.tar.gz'
 $UvUrl = 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip'
 $GoToolchainUrl = 'https://go.dev/dl/go1.27.0.windows-amd64.zip'
 # 显式用 Windows 自带 bsdtar：PATH 里的 GNU tar 会把 C:\ 路径当作「远程主机:路径」
@@ -365,13 +366,20 @@ if (-not $SkipUpstream) {
     if (-not (Test-Path (Join-Path $upstreamDir 'go.mod'))) {
         Write-Step '下载上游源码包…'
         $tarPath = Join-Path $env:TEMP 'wb-upstream-src.tar.gz'
-        Invoke-Curl $UpstreamSrcUrl $tarPath
+        try {
+            Invoke-Curl $UpstreamSrcUrl $tarPath
+        } catch {
+            Write-Warn2 ('core 源码资产不可用，回退到 tag archive：' + $UpstreamArchiveUrl)
+            Invoke-Curl $UpstreamArchiveUrl $tarPath
+        }
         $extractTmp = Join-Path $env:TEMP ('wb-upstream-' + [Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory $extractTmp -Force | Out-Null
         & $TarExe -xzf $tarPath -C $extractTmp
         if ($LASTEXITCODE -ne 0) { throw '上游源码解压失败' }
+        $extractedRoot = Get-ChildItem -Path $extractTmp -Directory | Select-Object -First 1
+        if (-not $extractedRoot) { throw '上游源码包为空' }
         New-Item -ItemType Directory $upstreamDir -Force | Out-Null
-        Move-Item (Join-Path $extractTmp 'workbuddy2api\*') $upstreamDir -Force
+        Move-Item (Join-Path $extractedRoot.FullName '*') $upstreamDir -Force
         Remove-Item $extractTmp -Recurse -Force
         Remove-Item $tarPath -Force
     } else {
