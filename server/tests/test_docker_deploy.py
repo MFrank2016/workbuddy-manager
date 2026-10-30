@@ -1196,8 +1196,8 @@ class UpstreamSourceFallbackTest(unittest.TestCase):
         yaml.safe_load(wf)   # 先确保 YAML 没写坏
         self.assertIn('CORE_TAG: manager-core-2026.10.29', wf,
                       '没有固定 core tag')
-        self.assertIn('releases/download/${CORE_TAG}/workbuddy2api-src.tar.gz', wf,
-                      '没有从 core tag 的 Release 取上游源码')
+        self.assertIn('archive/refs/tags/${CORE_TAG}.tar.gz', wf,
+                      '没有从 core tag 的 GitHub 源码包取上游源码')
         self.assertIn("$STAGE/upstream", wf, '取回来的源码没有放进发布目录')
         self.assertIn('::error::', wf, '取不到源码时应让发布失败')
         self.assertIn('.core-tag', wf, '没有校验包内 core-tag')

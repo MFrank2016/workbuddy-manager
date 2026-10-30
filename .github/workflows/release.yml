@@ -7,10 +7,9 @@
 #
 # ── 上游源码（core tag，重要）──────────────────────────────────
 #   上游 workbuddy2api 由 core 仓库（MFrank2016/workbuddy2api）维护，每个 core
-#   tag（默认 manager-core-2026.10.29）发布一份源码资产。本流程直接取该资产
+#   tag（默认 manager-core-2026.10.29）对应一份 GitHub 源码包。本流程直接取该源码包
 #   塞进发布包的 upstream/，**不再应用 dev/upstream-patches/*.patch**。
-#   * 前置条件：core tag 与源码资产必须先 push/publish；本地 tag 没推上去时
-#     这里会 404，发版失败。
+#   * 前置条件：core tag 必须先 git push；本地 tag 没推上去时这里会 404，发版失败。
 #   * 可用仓库变量 UPSTREAM_SRC_URL 覆盖源码地址（演练 / 镜像源）。
 #   * 旧的「upstream-src 资产 + 本地补丁」路径保留在 release-patches.yml，仅
 #     workflow_dispatch 手动触发，不会与 tag 发布同时运行（R3）。
@@ -151,26 +150,19 @@ jobs:
           # 不替换根目录文件。放进 server/ 后，任何部署（含从旧版升上来的）
           # 都拿得到更新日志，避免界面报「未找到更新日志文件」。
           cp CHANGELOG.md "$STAGE/server/CHANGELOG.md"
-          # ── 上游源码随包分发（core tag 资产）──────────────────────────
+          # ── 上游源码随包分发（core tag 源码包）────────────────────────
           # 上游 workbuddy2api 由 core 仓库（MFrank2016/workbuddy2api）维护。
-          # 每个 core tag 发布一份源码资产；本流程直接消费该资产，**不再**应用
+          # 每个 core tag 对应一份 GitHub 源码包；本流程直接消费该源码包，**不再**应用
           # dev/upstream-patches/*.patch（补丁已迁入 core tag）。
-          # 前置条件：core tag 与源码资产必须先 push/publish，否则这里会 404。
+          # 前置条件：core tag 必须已经 git push；源码直接取 GitHub 的 tag 源码包。
           # 本地演练 / 镜像源可用仓库变量 UPSTREAM_SRC_URL 覆盖。
           CORE_TAG="${CORE_TAG:-manager-core-2026.10.29}"
-          UPSTREAM_SRC_URL="${UPSTREAM_SRC_URL:-https://github.com/MFrank2016/workbuddy2api/releases/download/${CORE_TAG}/workbuddy2api-src.tar.gz}"
+          UPSTREAM_SRC_URL="${UPSTREAM_SRC_URL:-https://github.com/MFrank2016/workbuddy2api/archive/refs/tags/${CORE_TAG}.tar.gz}"
           mkdir -p "$STAGE/upstream"
           if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 120 \
                  "$UPSTREAM_SRC_URL" -o /tmp/upstream-src.tar.gz; then
-            # 资产尚未发布时的回退：GitHub 为 tag 自动生成的源码包。
-            # 内容与 tag 一一对应；`.core-tag` 由下面的打包步骤补齐。
-            ARCHIVE_URL="https://github.com/MFrank2016/workbuddy2api/archive/refs/tags/${CORE_TAG}.tar.gz"
-            echo "::warning::core 源码资产不可用，回退到 tag archive：$ARCHIVE_URL"
-            if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 120 \
-                   "$ARCHIVE_URL" -o /tmp/upstream-src.tar.gz; then
-              echo "::error::取不到 core tag 源码包（$UPSTREAM_SRC_URL 或 $ARCHIVE_URL）。"
-              exit 1
-            fi
+            echo "::error::取不到 core tag 源码包（$UPSTREAM_SRC_URL）。先 git push core tag。"
+            exit 1
           fi
           if tar -xzf /tmp/upstream-src.tar.gz -C "$STAGE/upstream" --strip-components=1 \
              && [ -f "$STAGE/upstream/docker-compose.yml" ]; then
@@ -180,8 +172,7 @@ jobs:
             echo "::error::core tag 源码包解压后缺少 docker-compose.yml"
             exit 1
           fi
-          # 来源标记：资产自带 `.core-tag` 时以它为准，缺失则由打包步骤写入。
-          # 无论哪种来源，最终都必须等于本流程期望的 CORE_TAG。
+          # 来源标记：tag 源码包不带 `.core-tag`，由打包步骤按 CORE_TAG 写入。
           if [ -f "$STAGE/upstream/.core-tag" ]; then
             GOT_CORE_TAG="$(cat "$STAGE/upstream/.core-tag")"
           else
@@ -465,7 +456,7 @@ jobs:
       # 网络常常卡在拉基础镜像那一步，或者被拿到的第三方镜像版本拖偏（issue #241
       # 的现场：「更新 2.8.0 之后显示与项目上游源码不一致」）。
       #
-      # 这里用**发布包里那份源码**（= core tag 源码资产，前面已校验 `.core-tag`
+      # 这里用**发布包里那份源码**（= core tag 的 GitHub 源码包，前面已校验 `.core-tag`
       # 与 build/test）原样构建，镜像与面板随包上游是同一份代码，不存在版本漂移。
       # 取不到上游源码（has_upstream=0）时整段跳过，不阻断发布。
       #

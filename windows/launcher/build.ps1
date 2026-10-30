@@ -42,8 +42,7 @@ $WebBuildRecipeVersion = '3'
 $UpstreamBuildRecipeVersion = '3'
 $RuntimeBuildRecipeVersion = '3'
 
-$UpstreamSrcUrl = 'https://github.com/MFrank2016/workbuddy2api/releases/download/manager-core-2026.10.29/workbuddy2api-src.tar.gz'
-$UpstreamArchiveUrl = 'https://github.com/MFrank2016/workbuddy2api/archive/refs/tags/manager-core-2026.10.29.tar.gz'
+$UpstreamSrcUrl = 'https://github.com/MFrank2016/workbuddy2api/archive/refs/tags/manager-core-2026.10.29.tar.gz'
 $UvUrl = 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip'
 $GoToolchainUrl = 'https://go.dev/dl/go1.27.0.windows-amd64.zip'
 # 显式用 Windows 自带 bsdtar：PATH 里的 GNU tar 会把 C:\ 路径当作「远程主机:路径」
@@ -366,12 +365,7 @@ if (-not $SkipUpstream) {
     if (-not (Test-Path (Join-Path $upstreamDir 'go.mod'))) {
         Write-Step '下载上游源码包…'
         $tarPath = Join-Path $env:TEMP 'wb-upstream-src.tar.gz'
-        try {
-            Invoke-Curl $UpstreamSrcUrl $tarPath
-        } catch {
-            Write-Warn2 ('core 源码资产不可用，回退到 tag archive：' + $UpstreamArchiveUrl)
-            Invoke-Curl $UpstreamArchiveUrl $tarPath
-        }
+        Invoke-Curl $UpstreamSrcUrl $tarPath
         $extractTmp = Join-Path $env:TEMP ('wb-upstream-' + [Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory $extractTmp -Force | Out-Null
         & $TarExe -xzf $tarPath -C $extractTmp
