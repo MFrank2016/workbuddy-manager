@@ -18,8 +18,8 @@ import {RichText} from '@/lib/i18n/rich-text';
 import {useI18n, useT} from '@/lib/i18n/provider';
 import {checkinResultText, taskLogResultText} from '@/lib/tasklog-text';
 import {accountApi, errText} from '@/lib/api';
-import type {CheckinLog, TaskLog, TaskLogResponse} from '@/lib/types';
-import {fmtDateTimeMarked, fmtNumber} from '@/lib/format';
+import type {Account, CheckinLog, TaskLog, TaskLogResponse} from '@/lib/types';
+import {fmtDateTime, fmtDateTimeMarked, fmtNumber} from '@/lib/format';
 import {PageHeader} from '@/components/common/layout/PageHeader';
 import {PageSectionTabs} from '@/components/common/layout/PageSectionTabs';
 import {RefreshPlanCard} from '@/components/common/accounts/RefreshPlanCard';
@@ -142,6 +142,56 @@ function ListFooter({
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * 今日 random 签到计划卡：只在 core 返回了计划字段时出现。
+ * 账号页负责单号细节，这里给管理员一个「今天签了多少、还差谁」的总览。
+ */
+function CheckinPlanCard() {
+  const t = useT();
+  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    accountApi
+      .list()
+      .then((r) => alive && setAccounts(r.accounts))
+      .catch(() => alive && setAccounts([]));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  if (!accounts) return null;
+  const plans = accounts.filter((a) => a.checkin_plan_at);
+  if (plans.length === 0) return null;
+  const done = plans.filter((a) => a.checkin_state === 'done').length;
+  const failed = plans.filter((a) => a.checkin_state === 'failed').length;
+  const pending = plans.length - done - failed;
+  return (
+    <section className="space-y-2 rounded-[20px] bg-muted px-3.5 py-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <CalendarCheck className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="text-sm font-medium">{t('tasks.checkinPlanTitle')}</div>
+        <div className="text-[11px] text-muted-foreground">
+          {t('tasks.checkinPlanSummary', {total: plans.length, done, failed, pending})}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {plans.slice(0, 12).map((a) => (
+          <span
+            key={a.uid}
+            className="rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground"
+            title={a.checkin_state || 'pending'}
+          >
+            {a.nickname || a.uid}
+            {' · '}
+            {a.checkin_plan_at ? fmtDateTime(Date.parse(a.checkin_plan_at) / 1000) : '—'}
+            {a.checkin_state ? ` · ${a.checkin_state}` : ''}
+          </span>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -340,7 +390,12 @@ export default function TasksPage() {
 
   // 计划任务（令牌刷新计划 + 每日任务）：到点自动跑的东西放「任务」这一页才对 ——
   // 它跟「这个账号是谁」无关，只跟「什么时候做什么」有关（用户反馈：原先挂在账号页）
-  const planCard = isAdmin ? <RefreshPlanCard /> : null;
+  const planCard = isAdmin ? (
+    <>
+      <RefreshPlanCard />
+      <CheckinPlanCard />
+    </>
+  ) : null;
 
   /**
    * 首屏守卫：一份数据都没到（还在加载，或两份全失败）时**不渲染内容区**。

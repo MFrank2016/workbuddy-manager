@@ -63,6 +63,12 @@ export interface Account {
    * 已签到态，避免重复点击（详见 server/routers/accounts.py 的 `_today_start`）。
    */
   checkin_today?: number | null;
+  /** random 签到计划时刻（RFC3339；legacy 模式为空）。 */
+  checkin_plan_at?: string | null;
+  /** random 签到已尝试次数（0/1/2）。 */
+  checkin_attempts?: number | null;
+  /** random 签到计划状态：pending / done / failed / skipped。 */
+  checkin_state?: 'pending' | 'done' | 'failed' | 'skipped' | string | null;
   rate_limited_models?: {
     model: string;
     /** 该模型的冷却截止（已被 soft_rate_max 截断） */

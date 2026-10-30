@@ -1265,6 +1265,8 @@
     "dailySaved": "每日任務已儲存",
     "dailyTitle": "每日任務",
     "planCardTitle": "計畫任務",
+    "checkinPlanTitle": "今日簽到計畫",
+    "checkinPlanSummary": "共 {total} · 已完成 {done} · 失敗 {failed} · 待執行 {pending}",
     "planDays": "天",
     "planDesc": "每 N 天自動把所有帳號的權杖重新整理一次（不看剩餘有效期）",
     "planDisabled": "未啟用",

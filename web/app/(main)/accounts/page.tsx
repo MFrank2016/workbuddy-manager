@@ -1726,6 +1726,16 @@ export default function AccountsPage() {
                   <div className="flex flex-wrap items-center gap-1.5 [&_[data-slot=badge]]:max-w-full [&_[data-slot=badge]]:whitespace-normal">
                     {renderStatus(a)}
                     {renderModelLimit(a)}
+                    {a.checkin_plan_at && (
+                      <div
+                        className="w-full text-[10px] text-muted-foreground"
+                        title={a.checkin_state || 'pending'}
+                      >
+                        {a.checkin_state === 'done' ? '✓ ' : a.checkin_state === 'failed' ? '! ' : '⏱ '}
+                        {fmtDateTime(Date.parse(a.checkin_plan_at) / 1000)}
+                        {a.checkin_attempts ? ` · ${a.checkin_attempts}` : ''}
+                      </div>
+                    )}
                   </div>
                 </TableCell>
                 <TableCell className="text-[11px]">

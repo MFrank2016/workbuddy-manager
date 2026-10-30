@@ -1265,6 +1265,8 @@
     "dailySaved": "매일 작업을 저장했습니다",
     "dailyTitle": "매일 작업",
     "planCardTitle": "예약 작업",
+    "checkinPlanTitle": "오늘의 체크인 계획",
+    "checkinPlanSummary": "총 {total} · 완료 {done} · 실패 {failed} · 대기 {pending}",
     "planDays": "일",
     "planDesc": "남은 유효기간과 무관하게 N일마다 모든 계정의 Token을 갱신합니다",
     "planDisabled": "사용 안 함",

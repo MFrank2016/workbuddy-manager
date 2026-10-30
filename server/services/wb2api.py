@@ -347,6 +347,10 @@ def merge_pool_status(accounts: list[dict], status: dict) -> list[dict]:
             pool[str(item['uid'])] = item
 
     for a in accounts:
+        # random 签到计划：文件侧没有这些字段，统一先置 None，保证前端类型稳定。
+        a['checkin_plan_at'] = None
+        a['checkin_attempts'] = None
+        a['checkin_state'] = None
         p = pool.get(a['uid'])
         a['in_pool'] = p is not None
         if not p:
@@ -401,6 +405,13 @@ def merge_pool_status(accounts: list[dict], status: dict) -> list[dict]:
         # 账号（到期也不自愈），对 14017（试用未激活）只软冷却。展示原因才能
         # 让用户知道该去重新登录，而不是干等冷却。
         a['disabled_reason'] = str(p.get('disabled_reason') or '')
+        # random 签到计划（core checkin_mode=random 时注入）；legacy 下缺省。
+        _pa = p.get('checkin_plan_at')
+        a['checkin_plan_at'] = _pa if isinstance(_pa, str) and _pa else None
+        _ca = p.get('checkin_attempts')
+        a['checkin_attempts'] = _ca if isinstance(_ca, int) and not isinstance(_ca, bool) else None
+        _cs = p.get('checkin_state')
+        a['checkin_state'] = _cs if isinstance(_cs, str) and _cs else None
         a['success_count'] = p.get('success_count')
         a['in_flight'] = p.get('in_flight')
         a['breaker_fails'] = p.get('breaker_fails')
@@ -1754,6 +1765,7 @@ def _check_float(key: str, raw: object) -> float:
 # 上游用 Go time.ParseDuration，**不认 `d`**：写 `7d` 会让上游启动失败。
 # 面板与后端必须用同一份口径，只放行 Go 能解析的 s/m/h。
 _DURATION_RE = re.compile(r'^\d+\s*(s|m|h)$', re.IGNORECASE)
+_HHMM_RE = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
 
 
 def _sanitize_section(section: str, incoming: dict) -> dict:
@@ -1787,6 +1799,24 @@ def _sanitize_section(section: str, incoming: dict) -> dict:
             if not raw:
                 raise ValueError(f'{key} 至少要有一个时刻')
             out[key] = sorted({int(x) for x in raw})
+        elif section == 'schedule' and key == 'checkin_mode':
+            val = str(raw or '').strip().lower()
+            if val not in ('legacy', 'random'):
+                raise ValueError('checkin_mode 只能是 legacy / random')
+            out[key] = val
+        elif section == 'schedule' and key in (
+            'checkin_window_start', 'checkin_window_end',
+            'checkin_retry_start', 'checkin_retry_end',
+        ):
+            val = str(raw or '').strip()
+            if not _HHMM_RE.match(val):
+                raise ValueError(f'{key} 必须是 HH:MM（00:00–23:59）')
+            out[key] = val
+        elif section == 'schedule' and key == 'checkin_state_file':
+            val = str(raw or '').strip()
+            if _has_control_chars(val):
+                raise ValueError('checkin_state_file 不能包含换行或控制字符')
+            out[key] = val
         elif isinstance(raw, str) and (
             key.endswith(('_rate', '_rate_max', '_cooldown', '_cooldown_max'))
             or key in ('ttl', 'gc_interval')
