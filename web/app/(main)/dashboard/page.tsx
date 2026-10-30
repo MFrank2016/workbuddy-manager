@@ -1022,6 +1022,11 @@ function UpstreamBlock({
     [t('dashboard.stickySessions'), up.sticky_sessions ?? 0],
     [t('dashboard.redisMode'), up.redis_mode ?? '—'],
   ];
+  if (up.pool) {
+    rows.push(['等待中', up.pool.waiting ?? up.pool.queue_depth ?? 0]);
+    rows.push(['队列上限', up.pool.max_queue_depth ?? '—']);
+    rows.push(['满额等待', up.pool.acquire_timeout_sec != null ? `${up.pool.acquire_timeout_sec}s` : '—']);
+  }
   return (
     <>
       <div className="flex items-center justify-between text-xs">

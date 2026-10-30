@@ -306,6 +306,13 @@ export interface UpstreamStatus {
   realm_totals?: Record<string, PoolCounts>;
   redis_mode?: string;
   sticky_sessions?: number;
+  /** core /status.pool：并发等待/队列（旧 core 无此字段）。 */
+  pool?: {
+    waiting?: number;
+    queue_depth?: number;
+    acquire_timeout_sec?: number;
+    max_queue_depth?: number;
+  };
   error?: string;
 }
 
@@ -901,6 +908,8 @@ export interface StatsSummary {
   total_tokens: number;
   active_keys: number;
   top_model: string | null;
+  /** 服务端当前时刻（Unix ms），用于未来时间桶留白。 */
+  server_time?: number;
   /**
    * 统计写入的健康状态。`ok: false` 时详情说明为什么可疑。
    *
@@ -1027,6 +1036,12 @@ export interface UpstreamConfig {
    * 上游默认关闭，所以面板提供一个开关，否则用户只能手改 config.json。
    */
   admin?: Record<string, unknown>;
+  /** 出站身份替换（core identity.enabled/target/replacements）。 */
+  identity?: {
+    enabled?: boolean;
+    target?: string;
+    replacements?: Record<string, string>;
+  };
   upstash?: UpstashConfig;
 }
 

@@ -32,6 +32,7 @@ import {RichText} from '@/lib/i18n/rich-text';
 import {settingsApi, upstreamApi, errText} from '@/lib/api';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {UpstreamEndpoints} from '@/components/settings/UpstreamEndpoints';
+import {IdentityPanel} from '@/components/settings/IdentityPanel';
 import {scheduleDelayError} from '@/lib/schedule-validation';
 import {
   DEFAULT_SETTINGS_TAB,
@@ -404,6 +405,33 @@ const POOL_FIELDS: Field[] = [
     // 不一致会出现「JSON 里能设、表单编辑时被拒」的矛盾。
     max: 64,
     def: 2,
+  },
+  {
+    key: 'max_total_concurrency',
+    kind: 'num',
+    label: '全池并发上限',
+    desc: '所有账号同时在途请求的总上限；0 = 不限。顶满时按「满额等待上限」等待，超时回 503',
+    unit: '个',
+    min: 0,
+    max: 4096,
+    def: 0,
+  },
+  {
+    key: 'acquire_timeout',
+    kind: 'duration',
+    label: '满额等待上限',
+    desc: '账号/全池并发满时最多等待多久；0 = 不等待（旧行为，直接 503）。格式如 30s / 2m',
+    def: '30s',
+  },
+  {
+    key: 'max_queue_depth',
+    kind: 'num',
+    label: '等待队列上限',
+    desc: '最多允许多少请求排队；0 = 不限（不推荐）。队列满直接 503',
+    unit: '个',
+    min: 0,
+    max: 4096,
+    def: 64,
   },
   {
     key: 'breaker_threshold',
@@ -1386,6 +1414,7 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
               放在 config.json 字段之前：它是「本端接了几个上游」的清单，
               而下面那批字段描述的是**默认上游自身**的配置。 */}
           <UpstreamEndpoints />
+          <IdentityPanel />
           {/* Responses 投影 / 工具修复是 manager 本地设置，走 /api/settings/responses；
               放在这里是因为它与「默认上游的出站行为」相邻，且默认 Tab 最容易找到。 */}
           <ResponsesPanel />

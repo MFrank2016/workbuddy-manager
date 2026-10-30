@@ -153,6 +153,9 @@ def summary(realm: str | None = None,
         'top_model': top['model'] if top else None,
         'usage_health': _usage_health(today, t_req, realm),
         'failures': _failures(realm),
+        # 服务端当前时刻（Unix ms）：前端用它把「尚未开始」的时间桶留白，
+        # 避免把未来桶画成 0 或伪造数据点。
+        'server_time': int(time.time() * 1000),
     }
 
 

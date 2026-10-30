@@ -55,6 +55,8 @@ export interface ChartPoint {
   failed: number;
   /** 小时粒度下：这是不是「现在」这一小时（UI 会把它标出来） */
   isNow?: boolean;
+  /** 该时间桶尚未开始（服务端 server_time 之后）：图上留白，不画 0。 */
+  future?: boolean;
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
