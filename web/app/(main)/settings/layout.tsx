@@ -970,6 +970,14 @@ const TOP_LEVEL_KEYS = new Set(['reasoning_as_content']);
 export default function SettingsLayout({children}: {children: React.ReactNode}) {
   const {t, tp} = useI18n();
   const {isAdmin} = useAuth();
+  const [liveListener, setLiveListener] = useState<{actual?: string; hot_switch?: boolean} | null>(null);
+  useEffect(() => {
+    let alive = true;
+    upstreamApi.status().then((st) => {
+      if (alive) setLiveListener(st.listener ?? null);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
   /**
    * 当前 Tab 只由**路径**决定（`/settings/<tab>`）。
    *
@@ -1442,9 +1450,12 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
                   // 只有以冒号开头时才需要补主机名，否则会出现
                   // "127.0.0.1127.0.0.1:9000" 这种拼接。
                   ['listen', t('settings.infoListen'),
-                   cfg?.listen
-                     ? (cfg.listen.startsWith(':') ? `127.0.0.1${cfg.listen}` : cfg.listen)
-                     : '—'],
+                   liveListener?.actual
+                     || (cfg?.listen
+                       ? (cfg.listen.startsWith(':') ? `127.0.0.1${cfg.listen}` : cfg.listen)
+                       : '—')],
+                  ['listenerHot', '监听热切换',
+                   liveListener ? (liveListener.hot_switch ? '支持' : '不支持（需重启）') : '—'],
                   ['apiKey', t('settings.infoApiKey'), cfg?.api_key_masked ? t('settings.infoApiKeySet') : '—'],
                   ['authDir', t('settings.infoAuthDir'), cfg?.auth_dir || '—'],
                 ] as [string, string, string][]).map(([id, k, v]) => (
