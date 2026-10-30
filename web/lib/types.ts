@@ -313,6 +313,12 @@ export interface UpstreamStatus {
     acquire_timeout_sec?: number;
     max_queue_depth?: number;
   };
+  /** core /status.listener：配置/实际监听地址与热切换能力（旧 core 无）。 */
+  listener?: {
+    configured?: string;
+    actual?: string;
+    hot_switch?: boolean;
+  };
   error?: string;
 }
 
