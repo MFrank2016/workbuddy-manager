@@ -306,6 +306,13 @@ export interface UpstreamStatus {
   realm_totals?: Record<string, PoolCounts>;
   redis_mode?: string;
   sticky_sessions?: number;
+  /** core /status.pool：并发等待/队列（旧 core 无此字段）。 */
+  pool?: {
+    waiting?: number;
+    queue_depth?: number;
+    acquire_timeout_sec?: number;
+    max_queue_depth?: number;
+  };
   error?: string;
 }
 

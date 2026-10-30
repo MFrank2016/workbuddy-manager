@@ -1717,6 +1717,8 @@ _INT_RANGES: dict[str, tuple[int, int, str]] = {
     # 单独登记是为了享受同样的区间校验 —— 不登记的话它会被归到「未知键」
     # 原样透传，用户填个负数或超大值也能写进上游配置。
     'max_in_flight_global': (0, 64, '个'),
+    'max_total_concurrency': (0, 4096, '个'),
+    'max_queue_depth': (0, 4096, '个'),
     'breaker_threshold': (1, 100, '次'),
     # 连败降权阈值（上游 cf1e7e5 新增 pool.degrade_threshold，默认 5）：ErrClient 与
     # 传输层失败连续达此次数即临时出池。登记以享受同样的区间校验。
@@ -1838,6 +1840,12 @@ def _sanitize_section(section: str, incoming: dict) -> dict:
             val = str(raw or '').strip()
             if val and val != '0' and not _DURATION_RE.match(val):
                 raise ValueError('cost_explore_interval 时长格式有误，应为 30m / 1h；0 = 关停')
+            out[key] = val
+        elif section == 'pool' and key == 'acquire_timeout':
+            # 满额等待上限：0 合法（不等待），其余必须是 s/m/h 时长。
+            val = str(raw or '').strip()
+            if val and val != '0' and not _DURATION_RE.match(val):
+                raise ValueError('acquire_timeout 时长格式有误，应为 30s / 2m / 1h；0 = 不等待')
             out[key] = val
         elif section == 'pool' and key == 'expiring_soon':
             # 快过期积分窗口（上游 2026-09-14 新增）：选号时优先消耗窗口内到期的
