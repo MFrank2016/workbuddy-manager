@@ -908,6 +908,8 @@ export interface StatsSummary {
   total_tokens: number;
   active_keys: number;
   top_model: string | null;
+  /** 服务端当前时刻（Unix ms），用于未来时间桶留白。 */
+  server_time?: number;
   /**
    * 统计写入的健康状态。`ok: false` 时详情说明为什么可疑。
    *

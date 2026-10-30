@@ -203,9 +203,20 @@ export default function StatsPage() {
    *  · 今日 → 24 个小时桶（后端已补零；这里只做标签与「当前小时」标记）；
    *  · 多日 → 按天并补齐到窗口长度（缺的那天不再是「凭空消失」而是画成 0）。
    */
-  const chartData: ChartPoint[] = spec.granularity === 'hour'
+  const baseChartData: ChartPoint[] = spec.granularity === 'hour'
     ? hourlySeries(hourly, new Date().getHours())
     : dailySeries(daily, d, todayKeyLocal());
+  // 未来桶留白：server_time 之后的桶不画 0/点线柱；过去零值保持 0（连续）。
+  const serverNow = new Date(summary?.server_time ?? Date.now());
+  const todayKey = todayKeyLocal(serverNow);
+  const nowHour = `${todayKey} ${String(serverNow.getHours()).padStart(2, '0')}:00`;
+  const chartData: ChartPoint[] = baseChartData.map((p) => ({
+    ...p,
+    future: spec.granularity === 'hour' ? p.full > nowHour : p.full > todayKey,
+  }));
+  const renderData = chartData.map((p) => p.future
+    ? {...p, tokens: null, requests: null, failed: null}
+    : p);
 
   /** 今日失败总数（4xx + 5xx）。单独来自请求日志——用量汇总只含成功请求。 */
   const todayFailed =
@@ -413,7 +424,7 @@ export default function StatsPage() {
             <ResponsiveContainer width="100%" height="100%">
               {/* 用 ComposedChart 而不是 BarChart：BarChart 会忽略非 Bar 子组件，
                   失败曲线（Line）根本不会被渲染 —— 实测踩过，图上一条线都没有。 */}
-              <ComposedChart data={chartData} margin={{top: 4, right: 8, bottom: 0, left: -8}} barCategoryGap="20%">
+              <ComposedChart data={renderData as unknown as ChartPoint[]} margin={{top: 4, right: 8, bottom: 0, left: -8}} barCategoryGap="20%">
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                 <XAxis
                   dataKey="label"
