@@ -193,6 +193,9 @@ namespace WorkBuddyLauncher
 
             Report("正在删除快捷方式与注册表…");
             Maintenance.RemoveShortcutsAndRegistry();
+            // 开机自启写在 HKCU Run（不在安装清单里），卸载时要单独清；只删
+            // 指向本安装目录的值，避免误删同一用户另一份安装的启动项。
+            Autostart.DisableIfOwned(_installDir);
 
             _totalFiles = Maintenance.CountFiles(_installDir);
             _progress.Maximum = Math.Max(_totalFiles, 1);

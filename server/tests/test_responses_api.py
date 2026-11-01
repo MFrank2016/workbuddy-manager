@@ -1350,5 +1350,135 @@ class EndpointTest(unittest.TestCase):
         self.assertIn('boom', r.content.decode())
 
 
+class StructuredOutputInstructionTest(unittest.TestCase):
+    """issue #258：Responses 的 `text.format` 不能丢。
+
+    上游 Chat Completions 没有 Responses 的 `text` 对象；不转成提示词，
+    Codex guardian 这类要求 JSON 的调用会拿到自然语言，校验恒失败。
+    """
+
+    def test_json_schema_is_turned_into_system_instruction(self) -> None:
+        schema = {'type': 'object', 'properties': {'answer': {'type': 'string'}},
+                  'required': ['answer'], 'additionalProperties': False}
+        out = R.to_chat_request({
+            'model': 'm', 'input': 'What is 2+2?',
+            'text': {'format': {'type': 'json_schema', 'name': 'ans',
+                                'strict': True, 'schema': schema}},
+        })
+        self.assertEqual(out['messages'][0]['role'], 'system')
+        self.assertIn('JSON Schema', out['messages'][0]['content'])
+        self.assertIn('"answer"', out['messages'][0]['content'])
+        self.assertEqual(out['messages'][-1]['content'], 'What is 2+2?')
+
+    def test_existing_instructions_are_extended_not_duplicated(self) -> None:
+        out = R.to_chat_request({
+            'model': 'm', 'instructions': 'Follow the project rules.',
+            'input': 'hi', 'text': {'format': {'type': 'json_object'}},
+        })
+        systems = [m for m in out['messages'] if m['role'] == 'system']
+        self.assertEqual(len(systems), 1, '不应新建第二条 system 消息')
+        self.assertIn('Follow the project rules.', systems[0]['content'])
+        self.assertIn('valid JSON object', systems[0]['content'])
+
+    def test_plain_text_format_is_untouched(self) -> None:
+        out = R.to_chat_request({'model': 'm', 'input': 'hi',
+                                 'text': {'format': {'type': 'text'}}})
+        self.assertEqual([m['role'] for m in out['messages']], ['user'])
+
+
+class OrphanToolOutputTest(unittest.TestCase):
+    """无 call_id 且无对应 function_call 的工具结果不能写成 role=tool。
+
+    Codex 的「agent 创建会话」会在子会话开头只下发一条
+    `function_call_output`（name=create_thread，内容为 <codex_delegation>），
+    没有对应的 function_call，也没有 call_id。旧实现会把它写成
+    `role=tool, tool_call_id=''`，上游严格校验直接返回
+    11148 `tool calls and tool results do not match`，新会话第一轮即失败。
+
+    修复：这种孤儿结果降级为 user 消息，内容保留（委派任务就在其中）。
+    带 call_id 的结果保持既有行为不变（见 ToolOutputImageTest）。
+    """
+
+    def test_orphan_output_without_call_id_becomes_user_message(self) -> None:
+        out = R.to_chat_request({'model': 'm', 'input': [
+            {'type': 'function_call_output', 'name': 'create_thread',
+             'output': '<codex_delegation><input>只回复 OK</input></codex_delegation>'},
+        ]})
+        roles = [m['role'] for m in out['messages']]
+        self.assertEqual(roles, ['user'], f'孤儿结果不应变成 tool：{roles}')
+        self.assertIn('codex_delegation', out['messages'][0]['content'])
+
+    def test_output_without_call_id_pairs_with_single_open_call(self) -> None:
+        out = R.to_chat_request({'model': 'm', 'input': [
+            {'type': 'function_call', 'call_id': 'c9', 'name': 'bar', 'arguments': '{}'},
+            {'type': 'function_call_output', 'output': 'result-9'},
+        ]})
+        tool_msg = next(m for m in out['messages'] if m['role'] == 'tool')
+        self.assertEqual(tool_msg['tool_call_id'], 'c9')
+
+
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReasoningDeltaContractTest(unittest.TestCase):
+    """思考增量的字段完整性（issue #348）。
+
+    现象：ai-sdk 系客户端（ZCode / provider-utils）走 /v1/responses 时，思考块
+    出现但内容恒为空，正文正常；直连上游 /v1/chat/completions 有完整
+    `reasoning_content`。根因是 `response.reasoning_summary_text.delta` 少了
+    `summary_index` —— 该字段在 OpenAI Responses 规范里是**必填**。
+
+    ai-sdk 用 zod 逐事件校验，缺字段的帧匹配不上任何具名分支，会落进
+    `unknown_chunk` 兜底，而流处理器没有那个 case —— 整帧被静默丢弃，不报错、
+    不中断，客户端只是拿不到任何思考内容。所以这类缺字段必须由我们自己的测试
+    挡住（影子解析器太宽松，之前就是它漏过的）。
+    """
+
+    REQUIRED = ('type', 'output_index', 'item_id', 'summary_index', 'delta')
+
+    def _events(self, chunks: list[bytes]) -> list[dict]:
+        out: list[dict] = []
+        for chunk in chunks:
+            for line in chunk.decode('utf-8').splitlines():
+                if not line.startswith('data:'):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == '[DONE]':
+                    continue
+                out.append(json.loads(raw))
+        return out
+
+    def test_reasoning_delta_has_every_required_field(self) -> None:
+        t = R._StreamTranslator('m', 'resp_1')
+        chunks = t.feed(delta(reasoning='一步'))
+        chunks += t.feed(delta(finish='stop'))
+        events = [e for e in self._events(chunks)
+                  if e.get('type') == 'response.reasoning_summary_text.delta']
+        self.assertTrue(events, '没有产出思考增量事件')
+        for event in events:
+            for key in self.REQUIRED:
+                self.assertIn(key, event,
+                              f'思考增量缺 {key}，客户端会整帧静默丢弃：{event}')
+
+    def test_summary_index_is_zero_and_stable_across_chunks(self) -> None:
+        """summary 是数组，我们只产第 0 段；分片之间必须一致（客户端按它拼接）。"""
+        t = R._StreamTranslator('m', 'resp_1')
+        chunks: list[bytes] = []
+        for piece in ('a', 'b', 'c'):
+            chunks += t.feed(delta(reasoning=piece))
+        chunks += t.feed(delta(finish='stop'))
+        indexes = {e['summary_index'] for e in self._events(chunks)
+                   if e.get('type') == 'response.reasoning_summary_text.delta'}
+        self.assertEqual(indexes, {0})
+
+    def test_reasoning_item_summary_is_populated(self) -> None:
+        """收尾的 item 里 summary 要有内容（非流式与流式同口径）。"""
+        t = R._StreamTranslator('m', 'resp_1')
+        chunks = t.feed(delta(reasoning='思考内容'))
+        chunks += t.feed(delta(finish='stop'))
+        done = [e for e in self._events(chunks)
+                if e.get('type') == 'response.output_item.done'
+                and (e.get('item') or {}).get('type') == 'reasoning']
+        self.assertTrue(done)
+        self.assertEqual(done[0]['item']['summary'][0]['text'], '思考内容')

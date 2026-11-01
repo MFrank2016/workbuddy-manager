@@ -284,19 +284,17 @@ class UpdaterEnvInjectionTest(_Base):
             seen.update(kwargs.get('env') or {})
             return _FakeProc()
 
-        # 锁文件也必须指向临时目录：`start_update` 的 `_claim_lock()` 会在
-        # `config.DATA_DIR` 下 O_CREAT|O_EXCL 建真锁，末尾还会把 `proc.pid`
-        # （这里假进程是 pid=1，永远存活）写进去。旧写法只 patch 了 STATUS/LOG，
-        # 于是**本用例自己**在真实 data/ 里留下一把「活着的」update.lock：
-        # 下一次运行（或同轮其它用例）走到 `_lock_active()` 就报
-        # 「已有更新任务正在执行」。这不是环境问题，是用例的副作用。
+        # LOCK_FILE 也要指到临时目录：不 patch 时它落在仓库的 data/ 下，而
+        # `_claim_lock()` 会真的建锁并把 pid 改写成假 worker pid（1）。下次跑
+        # 同一用例时 `_lock_active()` 认为更新仍在进行，这条与锁无关的用例就会
+        # 莫名其妙变红 —— 套件因此不可重复。
         with mock.patch.object(updater, '_updater_script', return_value=script), \
                 mock.patch.object(updater, '_lock_active', return_value=False), \
                 mock.patch.object(updater.subprocess, 'Popen', fake_popen), \
                 mock.patch.object(updater, '_write_initial_status'), \
                 mock.patch.object(updater, 'STATUS_FILE', self.root / 'status.json'), \
-                mock.patch.object(updater, 'LOCK_FILE', self.root / 'update.lock'), \
-                mock.patch.object(updater, 'LOG_FILE', self.root / 'update.log'):
+                mock.patch.object(updater, 'LOG_FILE', self.root / 'update.log'), \
+                mock.patch.object(updater, 'LOCK_FILE', self.root / 'update.lock'):
             ok, message = updater.start_update('manager')
         self.assertTrue(ok, message)
         self.assertEqual(seen.get('WB_HTTP_PROXY'), 'socks5://u:pw@h:1080')
@@ -305,3 +303,84 @@ class UpdaterEnvInjectionTest(_Base):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ProxyWriteFailureTest(_Base):
+    """配置文件读得到、写不进去时必须**说清原因**，不能裸露成 500（issue #341）。
+
+    现场：界面上只弹一句英文 `Internal Server Error`，而真实原因是面板进程对
+    `config.json` 没有写权限（只读挂载 / root 属主 / SELinux 标签）。读得到、
+    写不了是最迷惑的一种 —— 页面能把线路全列出来，一保存就 500。
+    """
+
+    def test_readonly_config_reports_409_with_path(self) -> None:
+        from server.services.proxyroutes import RouteError
+        real = proxyroutes._atomic_write_json
+
+        def boom(path, payload):
+            raise PermissionError(13, 'Permission denied')
+
+        with mock.patch.object(proxyroutes, '_atomic_write_json', side_effect=boom):
+            response = self.client.post('/api/proxy-routes',
+                                        json={'name': 'px-new', 'url': 'socks5://h.example.dev:1080'})
+        self.assertEqual(response.status_code, 409,
+                         f'写失败不该是 5xx：{response.status_code} {response.text}')
+        detail = response.json()['detail']
+        self.assertIn(str(self.cfg), detail, '提示里要有具体文件路径')
+        self.assertIn('写权限', detail, '提示里要说清是权限问题')
+        self.assertTrue(real)  # 原函数仍在（没被误改）
+
+    def test_write_failure_does_not_touch_the_file(self) -> None:
+        """写失败后配置文件必须原样（不能留下半截或丢了别的键）。"""
+        before = self.cfg.read_text(encoding='utf-8')
+        with mock.patch.object(proxyroutes, '_atomic_write_json',
+                               side_effect=OSError('disk full')):
+            self.client.post('/api/proxy-routes',
+                             json={'name': 'px-new', 'url': 'socks5://h.example.dev:1080'})
+        self.assertEqual(self.cfg.read_text(encoding='utf-8'), before)
+
+
+class DirectRouteBindingTest(unittest.TestCase):
+    """账号绑「仅直连」（`__direct__`）不能被当成不存在的线路（issue #342）。
+
+    `__direct__` 是与上游 `DirectRouteName` 同一个保留名，`auths/*.json` 里就写它。
+    面板侧此前把它当普通线路名去查表，于是抛「代理线路 '__direct__' 不存在」——
+    而这个绑定是**合法**的，上游完全认。
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        cfg = root / 'config.json'
+        cfg.write_text(json.dumps({'proxies': {'px-a': 'socks5://h.example.dev:1080'}}),
+                       encoding='utf-8')
+        for name, value in (('UPSTREAM_CONFIG', cfg), ('HTTP_PROXY', ''),
+                            ('DEFAULT_ACCOUNT_PROXY', '')):
+            patch = mock.patch.object(config, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_direct_route_returns_empty_not_error(self) -> None:
+        from server import config as cfg
+        self.assertEqual(cfg.resolve_account_proxy({'proxy': cfg.DIRECT_ROUTE}), '')
+
+    def test_direct_route_bypasses_pool_and_global(self) -> None:
+        """即使代理池开着、全局代理配了，也要直连（这才是「仅直连」的语义）。"""
+        from server import config as cfg
+        with mock.patch.object(cfg, 'proxy_pool_config',
+                               return_value={'enabled': True, 'strategy': 'weight', 'interval_seconds': 0}),                 mock.patch.object(cfg, 'pool_routes',
+                                  return_value={'px-a': 'socks5://h.example.dev:1080'}),                 mock.patch.object(cfg, 'global_http_proxy',
+                                  return_value='http://global.example.dev:3128'):
+            self.assertEqual(cfg.resolve_account_proxy({'proxy': cfg.DIRECT_ROUTE}), '')
+
+    def test_unknown_route_still_rejected(self) -> None:
+        from server import config as cfg
+        with self.assertRaises(ValueError) as ctx:
+            cfg.resolve_account_proxy({'proxy': 'px-gone'})
+        self.assertIn('不存在', str(ctx.exception))
+
+    def test_constant_matches_upstream_reserved_name(self) -> None:
+        """与上游 `internal/upstream/transport.go` 的 DirectRouteName 必须是同一个值。"""
+        from server import config as cfg
+        self.assertEqual(cfg.DIRECT_ROUTE, '__direct__')

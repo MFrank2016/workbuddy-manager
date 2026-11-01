@@ -132,8 +132,7 @@ services:
       # 若你**不想**让管理端碰上游仓库（例如上游由别人维护），改成只挂 config.json
       # 与 auths/ 两条子路径即可：此时「更新上游」会不可用，界面会如实提示。
       - ../workbuddy2api:/opt/workbuddy2api
-      # docker 控制套接字：挂上后容器内的管理端可以像宿主部署那样操作上游容器
-      # （保存设置后自动重载 / 读上游日志 / 一键更新上游）。
+      # docker 控制套接字：**默认不挂**（opt-in）。
       #
       # **安全性说明（值得读）**：挂 docker.sock 等于把宿主 root 权限交给本容器
       # （`docker run -v /:/host` 即可拿到宿主文件系统）。管理端是持有全部账号
@@ -147,9 +146,10 @@ services:
       #
       # - /var/run/docker.sock:/var/run/docker.sock  # [安全巡检] 已移除挂载：避免容器被攻破即取得宿主 root
 
-    # 挂上 socket 只是必要条件 —— 还得**进得了那个组**。
-    # 宿主的 socket 通常归 root:docker（GID 998/999），而本容器以 uid 10001 运行，
-    # 不在那个组里就是 permission denied。GID 因机器而异，所以用变量：
+    # 与上面的挂载配套（同样默认注释掉）：
+    # 挂上 socket 只是必要条件 —— 还得**进得了那个组**。宿主的 socket 通常归
+    # root:docker（GID 998/999），而本容器以 uid 10001 运行，不在那个组里就是
+    # permission denied。GID 因机器而异，所以用变量：
     #   DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)   # 写进 .env
     # 默认 999 是 Debian/Ubuntu 上最常见的值；取错了不会静默失败 —— 更新上游时会
     # 给出取真实 GID 的提示。不需要容器内操作 docker 的话，连上面那行一起注释掉即可。

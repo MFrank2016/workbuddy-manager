@@ -7,10 +7,13 @@ import {Users, CircleCheck, TriangleAlert, Activity, Server, Coins, ChevronRight
 import {
   Area,
   AreaChart,
+  Bar,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -19,8 +22,14 @@ import {
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {collectAccountExpiries, collectScopedExpiries} from '@/lib/dashboard-credits';
-import {flowSeries, flowAxis, flowSyncId} from '@/lib/credits-flow-chart';
-import {getExpiryDailyGroup, groupExpiriesByDay} from '@/lib/display-prefs';
+import {flowSeries, flowAxis, flowSyncId, flowTop as niceFlowTop, flowBars as toFlowBars} from '@/lib/credits-flow-chart';
+import {
+  getCreditsChartType,
+  getExpiryDailyGroup,
+  groupExpiriesByDay,
+  setCreditsChartType,
+  type CreditsChartType,
+} from '@/lib/display-prefs';
 import {accountApi, statsApi, upstreamApi, upstreamsApi} from '@/lib/api';
 import {useRealm} from '@/lib/realm-context';
 import type {
@@ -228,6 +237,18 @@ export default function DashboardPage() {
    * 上下文」的代价，而时段只是这一张图的查询范围。分开后只有本卡片重取。
    */
   const [flowDays, setFlowDays] = useState('7');
+  /**
+   * 图表类型（issue #263）：默认柱状，选择记在浏览器本地。
+   * 首帧固定按默认值渲染，挂载后再读偏好——服务端预渲染读不到 localStorage。
+   */
+  const [flowChart, setFlowChart] = useState<CreditsChartType>('bar');
+  useEffect(() => {
+    setFlowChart(getCreditsChartType());
+  }, []);
+  const chooseFlowChart = (v: CreditsChartType) => {
+    setFlowChart(v);
+    setCreditsChartType(v);
+  };
   const flowState = useAsyncAll({
     flow: () => statsApi.creditsFlow(Number(flowDays) || 7, realm),
   }, [realm, flowDays]);
@@ -244,14 +265,21 @@ export default function DashboardPage() {
   /** 区间内是否有任何收支——全 0 时画图没意义，给空态 */
   const hasFlow = flow.total.income > 0 || flow.total.expense > 0;
   /**
-   * 单日范围下探到小时：序列选择与 X 轴参数的规则收在
-   * `@/lib/credits-flow-chart`（纯函数，Node 直测）。旧后端不返回 hourly 时
-   * 那里自然退回天序列，维持原来的单点渲染。
+   * 单日范围下探到小时（issue #285）：序列选择、X 轴参数与发散柱上限的
+   * 规则收在 `@/lib/credits-flow-chart`（纯函数，Node 直测）。旧后端不返回
+   * hourly 时那里自然退回天序列，维持单点渲染。
    */
   const {points: flowPoints, byHour: flowByHour} = flowSeries(flow);
   const flowXAxis = flowAxis(flowByHour);
   // 两张图共享 hover 索引：天序列且桶数一致时用同一个 syncId。
   const chartSyncId = flowSyncId(flowByHour, values.daily?.length ?? 0, flowPoints.length);
+  /** 发散柱：支出取负让柱子向下生长；net 用折线叠在同一根轴上。 */
+  const flowBars = useMemo(() => toFlowBars(flowPoints), [flowPoints]);
+  /**
+   * 单轴上限：收入与支出共用一根轴，取两者峰值的整齐上限（1/2/2.5/5/10 档）。
+   * 没有这一步，Recharts 会把上下限取成数据极值，柱子贴边且 0 线不在中间。
+   */
+  const flowTop = useMemo(() => niceFlowTop(flowPoints), [flowPoints]);
 
   const slices: GroupSlice[] = values.pool ?? EMPTY_SLICES;
   const summary: StatsSummary | null = values.summary ?? null;
@@ -781,21 +809,51 @@ export default function DashboardPage() {
             <Coins className="h-4 w-4" />
             {t('dashboard.creditsFlowTitle')}
           </div>
-          <Select value={flowDays} onValueChange={setFlowDays}>
-            <SelectTrigger
-              className="h-8 w-[130px] rounded-full"
+          <div className="flex flex-wrap items-center gap-2">
+            {/* 图形切换（issue #263）：折线看趋势走势，发散柱看收支量级差与
+                净增正负——双轴折线里两条线各自缩放，「哪根更高」不代表数值高低。 */}
+            <div
+              className="flex items-center gap-0.5 rounded-full bg-background p-0.5"
+              role="group"
               aria-label={t('dashboard.creditsFlowTitle')}
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="1">{t('stats.today')}</SelectItem>
-              <SelectItem value="3">{t('stats.last3')}</SelectItem>
-              <SelectItem value="7">{t('stats.last7')}</SelectItem>
-              <SelectItem value="15">{t('stats.last15')}</SelectItem>
-              <SelectItem value="30">{t('stats.last30')}</SelectItem>
-            </SelectContent>
-          </Select>
+              <Button
+                type="button"
+                size="sm"
+                variant={flowChart === 'bar' ? 'secondary' : 'ghost'}
+                className="h-7 rounded-full px-3 text-xs"
+                aria-pressed={flowChart === 'bar'}
+                onClick={() => chooseFlowChart('bar')}
+              >
+                {t('dashboard.chartBar')}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={flowChart === 'line' ? 'secondary' : 'ghost'}
+                className="h-7 rounded-full px-3 text-xs"
+                aria-pressed={flowChart === 'line'}
+                onClick={() => chooseFlowChart('line')}
+              >
+                {t('dashboard.chartLine')}
+              </Button>
+            </div>
+            <Select value={flowDays} onValueChange={setFlowDays}>
+              <SelectTrigger
+                className="h-8 w-[130px] rounded-full"
+                aria-label={t('dashboard.creditsFlowTitle')}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1">{t('stats.today')}</SelectItem>
+                <SelectItem value="3">{t('stats.last3')}</SelectItem>
+                <SelectItem value="7">{t('stats.last7')}</SelectItem>
+                <SelectItem value="15">{t('stats.last15')}</SelectItem>
+                <SelectItem value="30">{t('stats.last30')}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         {flowFailed && !flowState.values.flow ? (
@@ -828,41 +886,89 @@ export default function DashboardPage() {
               />
             </div>
 
+            {/* 图表的左边距不能给负数：轴宽 52 减去它才是刻度的可用宽度，
+                4 位数的刻度会越出图表左边缘被裁掉（issue #184 的遮挡就是这么来的）。 */}
             <div className="mt-4 h-[220px] w-full">
               {hasFlow ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  {/* 左边距不能给负数：轴宽 48 减去它才是刻度的可用宽度，
-                      4 位数的刻度会越出图表左边缘被裁掉（issue #184 的遮挡就是这么来的）。 */}
-                  <LineChart data={flowPoints} syncId={chartSyncId} syncMethod="index" margin={{top: 4, right: 4, bottom: 0, left: 0}}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                    <XAxis
-                           dataKey={flowXAxis.dataKey}
-                           tickLine={false} axisLine={false} fontSize={11}
-                           stroke="var(--muted-foreground)"
-                           interval={flowXAxis.interval}
-                           tickFormatter={(v) => flowXAxis.format(v)} />
-                    {/* 双 Y 轴：收入常是几千、支出常是几十。同一根轴会把支出压成
-                        贴着 0 的直线，等于没画。左轴收入、右轴支出，颜色与曲线对应。 */}
-                    <YAxis yAxisId="inc" tickLine={false} axisLine={false} fontSize={11}
-                           stroke="var(--chart-2)" width={52} />
-                    <YAxis yAxisId="exp" orientation="right" tickLine={false} axisLine={false}
-                           fontSize={11} stroke="var(--destructive)" width={48} />
-                    <Tooltip
-                      contentStyle={{
-                        background: 'var(--popover)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 12,
-                        fontSize: 12,
-                      }}
-                    />
-                    <Legend wrapperStyle={{fontSize: 11}} />
-                    <Line yAxisId="inc" type="monotone" dataKey="income"
-                          name={t('dashboard.income')} stroke="var(--chart-2)"
-                          strokeWidth={2} dot={false} />
-                    <Line yAxisId="exp" type="monotone" dataKey="expense"
-                          name={t('dashboard.expense')} stroke="var(--destructive)"
-                          strokeWidth={2} dot={false} />
-                  </LineChart>
+                  {flowChart === 'bar' ? (
+                    /* 单轴发散柱（issue #263）：收入向上、支出向下（取负）、净增
+                       折线叠在中间。同一根轴，任何高度差都是真实数值差；双轴折线
+                       里两轴各自缩放，「哪根线更高」不代表数值高低。 */
+                    <ComposedChart data={flowBars} syncId={chartSyncId} syncMethod="index" margin={{top: 4, right: 4, bottom: 0, left: 0}}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                      <XAxis
+                        dataKey={flowXAxis.dataKey}
+                        tickLine={false} axisLine={false} fontSize={11}
+                        stroke="var(--muted-foreground)"
+                        interval={flowXAxis.interval}
+                        tickFormatter={(v) => flowXAxis.format(v)}
+                      />
+                      {/* 刻度取绝对值：支出柱是负值，但读数不该显示成「-600」。 */}
+                      <YAxis
+                        tickLine={false} axisLine={false} fontSize={11}
+                        stroke="var(--muted-foreground)" width={52}
+                        allowDecimals={false} domain={[-flowTop, flowTop]}
+                        tickFormatter={(v) => fmtCompact(Math.abs(Number(v)))}
+                      />
+                      <ReferenceLine y={0} stroke="var(--muted-foreground)" strokeWidth={1} />
+                      <Tooltip
+                        contentStyle={{
+                          background: 'var(--popover)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 12,
+                          fontSize: 12,
+                        }}
+                        formatter={(value, name) => {
+                          const n = Number(value);
+                          const shown = name === t('dashboard.expense') ? Math.abs(n) : n;
+                          return [fmtNumber(shown), String(name)] as [string, string];
+                        }}
+                      />
+                      <Legend wrapperStyle={{fontSize: 11}} />
+                      <Bar dataKey="income" name={t('dashboard.income')} fill="var(--chart-2)"
+                           radius={[3, 3, 0, 0]} maxBarSize={22} minPointSize={2} />
+                      <Bar dataKey="expenseDown" name={t('dashboard.expense')}
+                           fill="var(--destructive)" radius={[0, 0, 3, 3]}
+                           maxBarSize={22} minPointSize={2} />
+                      <Line dataKey="net" name={t('dashboard.creditsNet')}
+                            stroke="var(--chart-3)" strokeWidth={2} dot={false} />
+                    </ComposedChart>
+                  ) : (
+                    /* 折线（现状，保留）：看趋势走势更连续省空间。单日时段下
+                       X 轴换成小时（issue #285），否则只会剩一个孤点。 */
+                    <LineChart data={flowPoints} syncId={chartSyncId} syncMethod="index" margin={{top: 4, right: 4, bottom: 0, left: 0}}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                      <XAxis
+                        dataKey={flowXAxis.dataKey}
+                        tickLine={false} axisLine={false} fontSize={11}
+                        stroke="var(--muted-foreground)"
+                        interval={flowXAxis.interval}
+                        tickFormatter={(v) => flowXAxis.format(v)}
+                      />
+                      {/* 双 Y 轴：收入常是几千、支出常是几十。同一根轴会把支出压成
+                          贴着 0 的直线，等于没画。左轴收入、右轴支出，颜色与曲线对应。 */}
+                      <YAxis yAxisId="inc" tickLine={false} axisLine={false} fontSize={11}
+                             stroke="var(--chart-2)" width={52} />
+                      <YAxis yAxisId="exp" orientation="right" tickLine={false} axisLine={false}
+                             fontSize={11} stroke="var(--destructive)" width={48} />
+                      <Tooltip
+                        contentStyle={{
+                          background: 'var(--popover)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 12,
+                          fontSize: 12,
+                        }}
+                      />
+                      <Legend wrapperStyle={{fontSize: 11}} />
+                      <Line yAxisId="inc" type="monotone" dataKey="income"
+                            name={t('dashboard.income')} stroke="var(--chart-2)"
+                            strokeWidth={2} dot={false} />
+                      <Line yAxisId="exp" type="monotone" dataKey="expense"
+                            name={t('dashboard.expense')} stroke="var(--destructive)"
+                            strokeWidth={2} dot={false} />
+                    </LineChart>
+                  )}
                 </ResponsiveContainer>
               ) : (
                 <div className="grid h-full place-items-center text-xs text-muted-foreground">

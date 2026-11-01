@@ -14,6 +14,7 @@ A web console for [`workbuddy2api`](https://github.com/Sliverkiss/workbuddy2api)
 [![Release](https://img.shields.io/github/v/release/ithtelab/workbuddy-manager?color=22c55e&label=Release)](https://github.com/ithtelab/workbuddy-manager/releases)
 [![Changelog](https://img.shields.io/badge/Changelog-CHANGELOG-blue)](CHANGELOG.md)
 [![Issues](https://img.shields.io/github/issues/ithtelab/workbuddy-manager?color=f59e0b&label=Issues)](https://github.com/ithtelab/workbuddy-manager/issues)
+[![Stars](https://img.shields.io/github/stars/ithtelab/workbuddy-manager?color=f5c542&label=Stars)](https://github.com/ithtelab/workbuddy-manager)
 
 **English** · [简体中文](README.md) ｜ Documented and discussed in the [LINUX DO](https://linux.do) community
 
@@ -32,6 +33,11 @@ New customers get 30% off the first purchase with code `WORKBUDDY30`.
 **Interface preview**
 
 </div>
+
+<p align="center">
+  Repository: <a href="https://github.com/ithtelab/workbuddy-manager">github.com/ithtelab/workbuddy-manager</a> — we just passed <strong>2k stars</strong>; thank you to everyone who starred, filed an issue or sent a PR.
+  If this project is useful to you, a <a href="https://github.com/ithtelab/workbuddy-manager">star</a> is a real show of support.
+</p>
 
 ---
 
@@ -124,6 +130,14 @@ Usage: daily / hourly, failures and latency
 Request logs: model, status, TTFB and billing per call
 
 More screenshots: [full gallery](docs/screenshots.md).
+
+---
+
+## Official download source
+
+**We recommend downloading from this repository's [Releases](https://github.com/ithtelab/workbuddy-manager/releases).** Official packages ship with a sha256 digest and `.sig` signature, and the updater verifies both. Packages obtained elsewhere cannot be verified through that chain, so judge the source yourself — and **never disable the digest or signature checks** (`WB_SKIP_SIGNATURE=1`, etc.) to install one.
+
+This project is open source under the MIT licence, and anyone may use, modify and redistribute it within that licence. Builds from other sources existing is expected; treat this repository's release notes and checksums as the reference.
 
 ---
 
@@ -226,6 +240,8 @@ Threat model and hardening notes: [security notes](docs/security-notes.md) and t
 - [Deployment guide](deploy/README.md) — reverse proxy, HTTPS, Windows, updates
 - [Account proxy routes](docs/account-proxy-routes.md) — per-account egress
 - [API tokens](docs/api-tokens.md) — read-only tokens and scopes
+- [Page watchdog](docs/watchdog.md) — upstream page change detection, LLM triage, email / QQ alerts
+- [QQ notifications & open API](docs/qq-bot.md) — AstrBot integration, UMO, bot control boundaries
 
 ---
 

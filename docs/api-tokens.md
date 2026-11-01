@@ -138,6 +138,8 @@ CREATE INDEX IF NOT EXISTS idx_tokens_prefix ON api_tokens(prefix);
   吊销/停用必须主动失效。
 - 高危接口（如一键更新 `/api/system/update`）建议**额外要求会话**，
   即便调用者持有 `admin` scope 的 token——让「能改代码的入口」只对真人开放。
+- 同理，**自动更新开关** `PUT /api/settings/auto-update` 也只对会话开放：打开它
+  等于授权面板在无人值守时自行下载安装新版本并重启服务，与一键更新同一风险级别。
 
 ## 与前端 / SDK 的衔接
 
@@ -145,6 +147,9 @@ CREATE INDEX IF NOT EXISTS idx_tokens_prefix ON api_tokens(prefix);
   scope / 最后使用时间与 IP）、停用 / 删除；创建时按 scope 给出用途说明。
 - Go SDK 已提供 `WithAdminToken("wbt_...")`（本设计落地后即可直接使用），
   走 `Authorization: Bearer`，优先级高于 Cookie，且不参与 401 重登。
+- 用 QQ 机器人控制管理面时，建议单独建一个 `readonly` token（如
+  `qq-bot-readonly`）；可调用的只读端点、写操作的人工确认与高危接口边界见
+  [docs/qq-bot.md](qq-bot.md) 的「开放接口操作」一节。
 
 ## 兼容与迁移
 

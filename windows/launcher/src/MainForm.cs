@@ -37,6 +37,7 @@ namespace WorkBuddyLauncher
         private TextBox _txtHost;
         private TextBox _txtPort;
         private Button _btnSave;
+        private CheckBox _chkAutostart;
         private Button _btnUpdate;
         private TextBox _log;
 
@@ -48,13 +49,25 @@ namespace WorkBuddyLauncher
         private bool _openBrowserOnHealthy;
         private bool _updating;
         private bool _credentialLookupRunning;
+        private bool _autostartLoading;
+        private bool _startHidden;
+        private bool _updating;
+        private readonly EventWaitHandle _wake;
         private string _currentHost = EnvConfig.DefaultHost;
         private int _currentPort = EnvConfig.DefaultPort;
 
-        public MainForm(string root)
+        public MainForm(string root) : this(root, false, null)
+        {
+        }
+
+        /// <param name="startHidden">开机自启：首帧不显示窗口，只驻留托盘（issue #269）。</param>
+        /// <param name="wake">第二个实例用来唤出本窗口的命名事件（可为 null）。</param>
+        public MainForm(string root, bool startHidden, EventWaitHandle wake)
         {
             _root = root;
             _settings = new AppSettings(LauncherPaths.SettingsFile);
+            _startHidden = startHidden;
+            _wake = wake;
 
             Text = LauncherPaths.AppName;
             Icon = AppIcon.Value;
@@ -68,7 +81,26 @@ namespace WorkBuddyLauncher
             // 横幅后添加（Dock 计算顺序：横幅先停靠顶部，内容面板填充剩余）
             var banner = new BannerPanel(LauncherPaths.AppName, "项目服务控制台", 60);
             Controls.Add(banner);
-            SetupTray();
+            try
+            {
+                SetupTray();
+            }
+            catch (Exception ex)
+            {
+                // 托盘注册失败时**回退为显示窗口**：否则开机静默启动会变成
+                // 「既无窗口也无图标」，用户只能去任务管理器结束进程（issue #269）。
+                _startHidden = false;
+                AppendLog("[WARN] 托盘初始化失败，已改为显示主窗口：" + ex.Message);
+            }
+
+            if (_wake != null)
+            {
+                // 第二个实例的唤醒信号：把已经在托盘的窗口拉回前台。
+                ThreadPool.RegisterWaitForSingleObject(_wake, delegate
+                {
+                    BeginInvokeSafe(RestoreFromTray);
+                }, null, Timeout.Infinite, false);
+            }
 
             _timer.Interval = 2000;
             _timer.Tick += OnTick;
@@ -77,8 +109,28 @@ namespace WorkBuddyLauncher
             LoadConfig();
             SetState(ProjectState.Stopped, null);
             AppendLog("[INFO] 控制窗口已就绪，安装目录：" + _root);
+            if (_startHidden)
+            {
+                AppendLog("[INFO] 已按开机自启静默启动，驻留托盘（双击托盘图标打开窗口）。");
+                ShowTrayBalloonOnce();
+            }
 
             Shown += delegate { ProbeAsync(); };
+        }
+
+        /// 开机静默启动：Application.Run 会请求显示窗口，这里拦下第一次，
+        /// 只创建句柄（托盘与 BeginInvoke 都需要）但不让窗口出现。
+        /// 不要用「先 Show 再 Hide」——那会在开机瞬间闪一下窗口。
+        protected override void SetVisibleCore(bool value)
+        {
+            if (_startHidden)
+            {
+                _startHidden = false;
+                base.SetVisibleCore(false);
+                if (!IsHandleCreated) { CreateHandle(); }
+                return;
+            }
+            base.SetVisibleCore(value);
         }
 
         private Panel _content;
@@ -141,6 +193,14 @@ namespace WorkBuddyLauncher
             _btnSave.Click += OnSaveClick;
             configBox.Controls.Add(_btnSave);
 
+            // 开机自启（issue #269）：HKCU Run，当前用户即可，不需要管理员。
+            // 默认关闭；勾选后下次登录静默驻留托盘。
+            _chkAutostart = new CheckBox();
+            _chkAutostart.Text = "开机自动启动（静默驻留托盘）";
+            _chkAutostart.SetBounds(24, 204, 300, 22);
+            _chkAutostart.CheckedChanged += OnAutostartChanged;
+            _content.Controls.Add(_chkAutostart);
+
             // 检查更新（issue #288）：查最新 Release → 下载安装包 + 校验 sha256 → 启动安装向导。
             _btnUpdate = new Button();
             _btnUpdate.Text = "检查更新";
@@ -160,6 +220,34 @@ namespace WorkBuddyLauncher
             _log.BackColor = SystemColors.Window;
             _log.SetBounds(24, 258, 432, 178);
             _content.Controls.Add(_log);
+        }
+
+        /// 勾选 / 取消开机自启：写或删 HKCU Run。写失败时把勾选状态退回去，
+        /// 不能让界面显示「已开启」而注册表里其实没有。
+        private void OnAutostartChanged(object sender, EventArgs e)
+        {
+            if (_autostartLoading) { return; }
+            try
+            {
+                if (_chkAutostart.Checked)
+                {
+                    Autostart.Enable();
+                    AppendLog("[CFG] 已开启开机自启：" + Autostart.CommandLine());
+                }
+                else
+                {
+                    Autostart.Disable();
+                    AppendLog("[CFG] 已关闭开机自启。");
+                }
+            }
+            catch (Exception ex)
+            {
+                _autostartLoading = true;
+                _chkAutostart.Checked = !_chkAutostart.Checked;
+                _autostartLoading = false;
+                MessageBox.Show(this, "设置开机自启失败：" + ex.Message, "开机自启",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private Button MakeActionButton(string text, int x, EventHandler onClick)
@@ -302,6 +390,11 @@ namespace WorkBuddyLauncher
             _txtHost.Text = _currentHost;
             _txtPort.Text = _currentPort.ToString();
             UpdateAddressLabel();
+
+            // 初始勾选状态不能触发写入：用 _autostartLoading 静音 CheckedChanged。
+            _autostartLoading = true;
+            _chkAutostart.Checked = Autostart.IsEnabled();
+            _autostartLoading = false;
         }
 
         private string AddressUrl()
@@ -648,12 +741,25 @@ namespace WorkBuddyLauncher
         private void HideToTray()
         {
             Hide();
-            if (_settings.Get("tray_balloon_shown", null) == null)
+            ShowTrayBalloonOnce();
+        }
+
+        /// 托盘气泡只弹一次（用户已经知道托盘图标之后不再打扰）。
+        /// 开机静默启动复用同一标记：第一次开机会看到一次提示，之后安静驻留。
+        private void ShowTrayBalloonOnce()
+        {
+            if (_settings.Get("tray_balloon_shown", null) != null) { return; }
+            try
             {
                 _tray.ShowBalloonTip(3000, LauncherPaths.AppName,
                     "已最小化到托盘，双击图标可恢复窗口。", ToolTipIcon.Info);
                 _settings.Set("tray_balloon_shown", "1");
                 _settings.Save();
+            }
+            catch
+            {
+                // 开机瞬间 explorer 可能还没准备好接收气泡：不写标记，
+                // 下次最小化到托盘时还能再提示一次。
             }
         }
 

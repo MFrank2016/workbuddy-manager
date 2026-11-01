@@ -40,7 +40,9 @@ HOST = _env('WB_MANAGER_HOST', '0.0.0.0')
 WB2API_BASE = _env('WB2API_BASE', 'http://127.0.0.1:7863').rstrip('/')
 WB2API_KEY = _env('WB2API_KEY', '')
 WB2API_CONTAINER = _env('WB2API_CONTAINER', 'workbuddy2api')
-WB2API_MODE = _env('WB2API_MODE', 'docker').lower()  # docker | native
+WB2API_MODE = _env('WB2API_MODE', 'docker').lower()  # docker | native | systemd
+# systemd 模式（宿主机直跑上游二进制、由 systemd 托管）下上游的 unit 名
+WB2API_SERVICE = _env('WB2API_SERVICE', 'workbuddy2api')
 
 # 上游数据文件（与 workbuddy2api 共享）
 AUTH_DIR = Path(_env('WB_AUTH_DIR', '/opt/workbuddy2api/auths'))
@@ -54,6 +56,16 @@ WB2API_STOP_SCRIPT = Path(_env(
 ))
 WB2API_LOG_FILE = Path(_env(
     'WB2API_LOG_FILE', str(UPSTREAM_DIR / 'data' / 'server.err.log'),
+))
+# 上游把日志**分流**写两个流：每请求一行的对话记录（含实际使用的账号）是
+# `fmt.Fprintf(os.Stdout, ...)`（上游 internal/server/logging.go），签到 / 活跃 /
+# 旅行等业务编排走 Go log → stderr。原生启动脚本（start-workbuddy2api.cmd）把
+# 两路分别重定向到 server.out.log 与 server.err.log。
+#
+# 所以账号回填必须读**对话日志**这个文件：读 WB2API_LOG_FILE 只会拿到业务日志，
+# 一条 chat 行都解析不到，账号列恒为空（Docker 模式不区分，`docker logs` 合并两路）。
+WB2API_CHAT_LOG_FILE = Path(_env(
+    'WB2API_CHAT_LOG_FILE', str(UPSTREAM_DIR / 'data' / 'server.out.log'),
 ))
 
 # 本管理端数据
@@ -442,6 +454,12 @@ def _render_for(auth: dict, url: str) -> str:
         if SESSION_PLACEHOLDER in url else url
 
 
+# 账号级「强制直连」的保留线路名。与上游 `upstream.DirectRouteName` 是**同一个值**
+# （它写在账号文件顶层 proxy 字段里，两边都读；改一处必须同时改另一处）。
+# 上游对它的语义是「绕过进程级环境代理」，面板这边对应「绕过代理池与全局上游代理」。
+DIRECT_ROUTE = '__direct__'
+
+
 def resolve_account_proxy(auth: dict) -> str | None:
     """这个账号这次该走哪条线路。顺序（与参考项目的语义一致）：
 
@@ -462,6 +480,12 @@ def resolve_account_proxy(auth: dict) -> str | None:
         # `_build_client` 里「不挂 transport」的分支。
         return ''
     if bound:
+        if bound == DIRECT_ROUTE:
+            # 强制直连：返回空串（而不是 None）—— None 会让调用方回落到
+            # `effective_http_proxy()`，也就是仍走 WB_HTTP_PROXY；空串在
+            # `_build_client` 里是「不建 proxy transport + trust_env=False」，
+            # 那才是真正的直连。
+            return ''
         # 走公开访问器（而不是自己重读文件）：既有调用点/测试按这两个函数打桩，
         # 绕过它们会出现「线路表长什么样」的第二个真相来源。
         on = proxy_route_enabled()

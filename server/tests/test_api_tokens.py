@@ -332,6 +332,9 @@ class WriteEndpointScopeMatrixTest(unittest.TestCase):
         'POST /api/settings/proxy/probe',
         'POST /api/settings/upstash/reload',   # 评审补：与 /api/restart 同动作
         'POST /api/system/update',
+        # 自动更新开关：开了就等于授权面板无人值守时自行下载安装新版本并重启，
+        # 与一键更新同级，只对会话开放。
+        'PUT /api/settings/auto-update',
         'POST /api/task-logs/clear',
         'POST /api/tokens',
         'POST /api/users',

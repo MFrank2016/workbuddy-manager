@@ -176,27 +176,6 @@ export interface AccountsResponse {
   manageable?: boolean;
 }
 
-/** 账号 × 模型探测的单条结果（issue #270） */
-export type ProbeStatus = 'ok' | 'rate' | 'credit' | 'auth' | 'no_model' | 'error';
-
-export interface ProbeModelResult {
-  file: string;
-  uid: string;
-  nickname: string;
-  realm: string;
-  model: string;
-  status: ProbeStatus;
-  code: string | null;
-  message: string;
-  latency_ms: number;
-}
-
-export interface ProbeModelsResponse {
-  results: ProbeModelResult[];
-  summary: Record<ProbeStatus, number>;
-  requests: number;
-}
-
 /**
  * 批量 refresh token 导入的逐条结果（`POST /api/accounts/import-tokens`）。
  *
@@ -758,6 +737,14 @@ export interface RequestLog {
    * （例如以为客户端一直在要 max）。
    */
   effort: string | null;
+  /**
+   * 客户端渠道（issue #233）：按 User-Agent 归类（codex / vscode / cli / wb /
+   * web / api / other / unknown）。
+   *
+   * 只用于排查「哪类客户端在把账号打进 429」，**不改变网关行为**。
+   * null = 该列上线前的历史记录（界面显示「—」）。
+   */
+  channel: string | null;
   status: number;
   prompt_tokens: number;
   completion_tokens: number;
@@ -1154,6 +1141,8 @@ export interface TaskRunStatus {
   running: boolean;
   mode: string;
   target: string;
+  /** 执行的分组名（issue #274）；空串 = 默认分组 */
+  group?: string;
   started_at: number;
   finished_at: number;
   exit_code: number | null;
@@ -1174,6 +1163,32 @@ export interface TaskRunStatus {
   schedule: {enabled?: boolean; hours?: number[]};
 }
 
+
+/** 账号 × 模型探测的单条结果（issue #270） */
+export type ProbeStatus = 'ok' | 'rate' | 'credit' | 'auth' | 'no_model' | 'error';
+
+export interface ProbeModelResult {
+  /** 探测成功且已同步网关（解除该模型 11102 误标）；上游没开管理接口时缺省 */
+  gateway_synced?: boolean;
+  /** 上游未注册管理接口（admin.enabled=false）：不是失败，只是无从同步 */
+  gateway_sync_skipped?: boolean;
+  gateway_sync_message?: string;
+  file: string;
+  uid: string;
+  nickname: string;
+  realm: string;
+  model: string;
+  status: ProbeStatus;
+  code: string | null;
+  message: string;
+  latency_ms: number;
+}
+
+export interface ProbeModelsResponse {
+  results: ProbeModelResult[];
+  summary: Record<ProbeStatus, number>;
+  requests: number;
+}
 
 /** 签到记录分页返回 */
 export interface CheckinLogPage {
@@ -1329,6 +1344,61 @@ export interface Versions {
  * GitHub 镜像（issue #216）：国内机器直连 GitHub 超时时，用加速服务取
  * Release 元信息与发布包。走镜像时**不会**发送 GitHub Token。
  */
+/**
+ * 账号列的自诊断（issue #232）。
+ *
+ * 请求日志的「账号」来自上游运行日志回填，面板转发时并不知道用了哪个号。
+ * 这一列空的时候有四种完全不同的原因，后端把事实与判断依据一起返回。
+ */
+export interface AccountBackfillInfo {
+  /** native = 读日志文件；docker = docker logs */
+  mode: 'native' | 'docker';
+  /** native 是文件路径，docker 是容器名 */
+  source: string;
+  /** 最近一次采集的时刻（epoch 秒，0 = 还没跑过） */
+  checked_at: number;
+  /** 那次读到的日志行数 */
+  lines: number;
+  /** 解析出的请求行数 */
+  parsed: number;
+  /** 成功回填到本地请求记录的行数 */
+  filled: number;
+  /** 采集抛出的异常原文（空 = 没有异常） */
+  error: string;
+  /** native: 日志文件是否存在；docker: 能否操作 docker */
+  exists: boolean;
+  /** native 的日志文件大小（字节） */
+  size?: number;
+  /** 人读的判断结论；空串表示当前没有异常 */
+  hint: string;
+}
+
+/** 自动更新设置（设置 → 更新） */
+export interface AutoUpdateConfig {
+  enabled: boolean;
+  /** 检测间隔（小时，1–168） */
+  interval_hours: number;
+  /** 允许动手的时间窗（服务器本地时间整点，[start, end)，相等 = 全天） */
+  window_start: number;
+  window_end: number;
+  /** auto：上游变了且能操作 docker 时一起更新；manager：只更新管理端 */
+  target: 'auto' | 'manager';
+}
+
+export interface AutoUpdateInfo extends AutoUpdateConfig {
+  state: {
+    last_check_at: number;
+    /** none / wait / started / error / 空 = 还没跑过 */
+    last_action: string;
+    last_message: string;
+    pending_version: string;
+  };
+  docker_ok: boolean;
+  /** 非空 = 当前部署形态不支持自动更新（如 Windows 原生），开关禁用 */
+  unsupported_reason: string;
+  server_tz_offset_minutes: number;
+}
+
 export interface GithubMirror {
   /** 生效的镜像基址（规范化后带尾斜杠）；空串 = 直连 */
   mirror: string;
@@ -1991,7 +2061,14 @@ export interface PanelCreditHistory {
 }
 
 /* ── 页面监控（watchdog）──────────────────────────────── */
-
+/**
+ * 监控目标。`kind` 决定「比什么」：
+ *   · `html`   —— 页面结构行（标签 + 可见文本）；
+ *   · `assets` —— 页面骨架 + 它引用的前端 bundle（JS 里的字符串与端点）。
+ *     前端发版时页面骨架往往一个字都不变，变的是 bundle 的哈希与内容——
+ *     活动入口和领取文案都在那里，所以默认目标用的是这个。
+ *   · `js` / `text` —— 目标本身就是一个 JS 文件 / 纯文本，直接比其中的字符串。
+ */
 export interface WatchdogTarget {
   name: string;
   url: string;

@@ -1,4 +1,4 @@
-"""设置页 8 个 Tab 的可寻址子路由（批次 4 的 P1-2）+ 结构不变式。
+"""设置页 10 个 Tab 的可寻址子路由（批次 4 的 P1-2）+ 结构不变式。
 
 为什么值得有：这一批把「一页 2060 行的单页」改成 `/settings/<tab>`，做错了**界面
 不报错**，只是行为悄悄变差——
@@ -187,7 +187,7 @@ class SettingsTabsInvariantTest(unittest.TestCase):
         )
 
     def test_route_pages_render_nothing(self) -> None:
-        """7 个子路由的 page **不渲染内容**，内容由外壳渲染。
+        """10 个子路由的 page **不渲染内容**，内容由外壳渲染。
 
         这不是疏忽，而是本批次的核心取舍：切 Tab 是一次路由跳转，App Router 会重挂载
         page，而设置页的表单状态（配置副本、乐观值、改动基线）必须活过这次跳转。

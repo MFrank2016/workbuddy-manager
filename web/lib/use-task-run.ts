@@ -17,15 +17,18 @@ export type TaskRunMode = 'preview' | 'claim' | 'full';
  * 那一刻触发一次。
  *
  * @param target  `ALL`（全部账号）或单个账号 uid
+ * @param upstreamId 分组 id（issue #274）；null = 默认分组
  * @param enabled 弹窗关闭时传 false，停止轮询；重新打开会从当前状态继续
  * @param onFinished 一次执行结束时通知调用方（例如刷新账号列表）
  */
 export function useTaskRun({
   target,
+  upstreamId = null,
   enabled = true,
   onFinished,
 }: {
   target: string;
+  upstreamId?: number | null;
   enabled?: boolean;
   onFinished?: () => void;
 }) {
@@ -73,7 +76,7 @@ export function useTaskRun({
   const run = useCallback(async (mode: TaskRunMode, confirm = false) => {
     setBusy(true);
     try {
-      await accountApi.taskRunStart(mode, target, confirm);
+      await accountApi.taskRunStart(mode, target, confirm, upstreamId);
       // 描述用界面的模式名（后端回的是「已开始执行（preview）」这类中文原文）
       notify.ok(t('tasks.runStarted'), t(`tasks.runMode_${mode}`));
       await load();
@@ -82,7 +85,7 @@ export function useTaskRun({
     } finally {
       setBusy(false);
     }
-  }, [load, t, target]);
+  }, [load, t, target, upstreamId]);
 
   const stop = useCallback(async () => {
     setBusy(true);

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from .. import config, db, retention, security
 from ..services.filelock import file_lock
 from ..iputil import client_ip
-from ..services import billing, modelmap, modelrouteadmin, reload, updater, wb2api
+from ..services import autoupdate, billing, modelmap, modelrouteadmin, reload, updater, wb2api
 
 router = APIRouter(prefix='/api', tags=['settings'])
 
@@ -692,6 +692,54 @@ def save_github_mirror(body: dict, user: dict = Depends(security.require_admin))
     db.set_setting('github_mirror', value)
     security.audit(user, 'update_github_mirror', '', value)
     return get_github_mirror(user)
+
+
+# ── 自动更新 ─────────────────────────────────────────────────
+def _auto_update_payload() -> dict:
+    cfg = autoupdate.get_config()
+    state = autoupdate.get_state()
+    return {
+        **cfg,
+        'state': {
+            'last_check_at': int(float(state.get('last_check_at') or 0)),
+            'last_action': str(state.get('last_action') or ''),
+            'last_message': str(state.get('last_message') or ''),
+            'pending_version': str(state.get('pending_version') or ''),
+        },
+        # 当前环境能否连上游一起更新（不能时 target=auto 会退化成只更新管理端）
+        'docker_ok': updater.can_control_docker(),
+        # 部署形态不支持一键更新时（如 Windows 原生）给出原因，前端据此禁用开关
+        'unsupported_reason': autoupdate.unsupported_reason(),
+        # 面板显示「服务器本地时间」，时间窗按它算
+        'server_tz_offset_minutes': autoupdate.server_tz_offset_minutes(),
+    }
+
+
+@router.get('/settings/auto-update')
+def get_auto_update(user: dict = Depends(security.require_admin)) -> dict:
+    """自动更新配置 + 最近一次巡检的结果。"""
+    return _auto_update_payload()
+
+
+@router.put('/settings/auto-update')
+def save_auto_update(body: dict, user: dict = Depends(security.require_session_admin)) -> dict:
+    """保存自动更新配置。
+
+    与一键更新同一权限（需要会话管理员）：开了它就等于授权面板在无人值守时
+    自行下载并安装新版本、重启服务。
+    """
+    cfg, err = autoupdate.validate_config(body)
+    if cfg is None:
+        raise HTTPException(status_code=400, detail=err)
+    blocked = autoupdate.unsupported_reason()
+    if blocked and cfg['enabled']:
+        raise HTTPException(status_code=409, detail=blocked)
+    saved = autoupdate.save_config(cfg)
+    security.audit(user, 'update_auto_update', '',
+                   (f"开启，每 {saved['interval_hours']} 小时检测，"
+                    f"时间窗 {saved['window_start']:02d}–{saved['window_end']:02d}，"
+                    f"对象 {saved['target']}") if saved['enabled'] else '关闭')
+    return _auto_update_payload()
 
 
 # ── 管理端用户 ───────────────────────────────────────────

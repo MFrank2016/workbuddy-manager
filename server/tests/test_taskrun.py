@@ -125,10 +125,40 @@ class AvailabilityTest(unittest.TestCase):
         self.assertIn('workbuddy2api', why, '要说清这是上游的脚本')
 
     def test_refuses_to_start_when_unavailable(self) -> None:
-        with mock.patch.object(taskrun, 'available', lambda: (False, '脚本不在')):
+        # _prepare 会把分组的账号目录传进来（issue #274），lambda 必须收下它
+        with mock.patch.object(taskrun, 'available',
+                               lambda auth_dir=None: (False, '脚本不在')):
             ok, msg = taskrun.start('claim', 'ALL')
         self.assertFalse(ok)
         self.assertIn('脚本不在', msg)
+
+    def test_available_checks_the_selected_group_dir(self) -> None:
+        """分组任务要按**该分组**的账号目录判断可用性（issue #274）。"""
+        with tempfile.TemporaryDirectory() as td:
+            script = Path(td) / 'task_runner.py'
+            script.write_text('# stub\n', encoding='utf-8')
+            missing = Path(td) / 'missing'
+            with mock.patch.object(taskrun, '_script_path', return_value=script):
+                ok, why = taskrun.available(missing)
+                self.assertFalse(ok)
+                self.assertIn(str(missing), why)
+                ok, _ = taskrun.available(td)
+                self.assertTrue(ok)
+
+    def test_prepare_carries_group_auth_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            script = Path(td) / 'task_runner.py'
+            script.write_text('# stub\n', encoding='utf-8')
+            prev = taskrun._state['running']
+            taskrun._state['running'] = False
+            try:
+                with mock.patch.object(taskrun, '_script_path', return_value=script):
+                    ok, payload = taskrun._prepare('claim', 'ALL', td, '分组B')
+            finally:
+                taskrun._state['running'] = prev
+        self.assertTrue(ok, payload)
+        self.assertEqual(payload['auth_dir'], str(Path(td)))
+        self.assertEqual(payload['group'], '分组B')
 
 
 class ScriptExtractionTest(unittest.TestCase):

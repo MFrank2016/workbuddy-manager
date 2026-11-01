@@ -142,26 +142,64 @@ class IsDueTest(unittest.TestCase):
         self.assertTrue(dailyplan.is_due('claim', p, now=_ts(2026, 10, 14, 10)))
 
 
+class TaskGroupsTest(unittest.TestCase):
+    """定时任务的分组遍历：跳过只做转发的分组、按目录去重（issue #274）。"""
+
+    def test_skips_groups_without_auth_dir_and_dedupes(self) -> None:
+        groups = [
+            {'id': None, 'name': '默认', 'auth_dir': '/tmp/x', 'is_default': True},
+            {'id': 1, 'name': '空目录', 'auth_dir': '', 'is_default': False},
+            {'id': 2, 'name': '同一目录', 'auth_dir': '/tmp/x', 'is_default': False},
+            {'id': 3, 'name': 'B', 'auth_dir': '/tmp/y', 'is_default': False},
+        ]
+        with mock.patch.object(dailyplan.upstreamsvc, 'list_upstreams',
+                               lambda **kw: groups):
+            out = dailyplan._task_groups()
+        self.assertEqual([g['name'] for g in out], ['默认', 'B'])
+
+
 class RunTaskTest(unittest.TestCase):
+    def _groups(self):
+        return [
+            {'id': None, 'name': '默认上游', 'auth_dir': '/tmp/a', 'is_default': True},
+            {'id': 7, 'name': '分组B', 'auth_dir': '/tmp/b', 'is_default': False},
+        ]
+
     def test_checkin_dispatches_to_checkin_all(self) -> None:
+        seen: list = []
+
         async def fake(upstream_id=None, user=None):
-            return {'total': 3, 'succeeded': 2, 'already': 1}
-        with mock.patch.object(accounts_router, 'checkin_all', fake):
+            seen.append(upstream_id)
+            return {'total': 3, 'succeeded': 3, 'already': 1}
+        with mock.patch.object(dailyplan, '_task_groups', self._groups), \
+             mock.patch.object(accounts_router, 'checkin_all', fake):
             ok, msg = asyncio.run(dailyplan.run_task('checkin'))
         self.assertTrue(ok)
-        self.assertIn('2/3', msg)
+        self.assertIn('6/6', msg, '两个分组各 3 个 → 合计 6/6')
+        self.assertEqual(seen, [None, 7], '两个分组都要签到（issue #274）')
+        self.assertIn('组B', msg, '多分组时结果里要能看出各组情况')
 
     def test_claim_and_full_dispatch_to_taskrun(self) -> None:
         calls: list = []
 
-        async def fake_start(mode, target='ALL'):
-            calls.append((mode, target))
+        async def fake_start(mode, target='ALL', auth_dir=None, group_name=''):
+            calls.append((mode, target, str(auth_dir), group_name))
             return True, 'started'
 
-        with mock.patch.object(dailyplan.taskrun, 'start_async', fake_start):
+        async def fake_wait(poll_seconds=1.0, timeout_seconds=None):
+            return True
+
+        with mock.patch.object(dailyplan, '_task_groups', self._groups), \
+             mock.patch.object(dailyplan.taskrun, 'start_async', fake_start), \
+             mock.patch.object(dailyplan.taskrun, 'wait_idle', fake_wait):
             asyncio.run(dailyplan.run_task('claim'))
             asyncio.run(dailyplan.run_task('full'))
-        self.assertEqual(calls, [('claim', 'ALL'), ('full', 'ALL')])
+        self.assertEqual(calls, [
+            ('claim', 'ALL', '/tmp/a', '默认上游'),
+            ('claim', 'ALL', '/tmp/b', '分组B'),
+            ('full', 'ALL', '/tmp/a', '默认上游'),
+            ('full', 'ALL', '/tmp/b', '分组B'),
+        ])
 
     def test_unknown_task_rejected(self) -> None:
         with self.assertRaises(ValueError):

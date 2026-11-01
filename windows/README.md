@@ -48,8 +48,8 @@ v1.0.86 起发布包不再带 `.sig`，仓库里的 `update.ps1` 也从「验签
 | `build.ps1` | 从源码构建安装包：组装 payload、编译上游 `wb2api.exe`（本机无 Go 时自动下载便携工具链）、预置 Python 3.11 运行时与依赖、csc 编译 |
 | `dist\WorkBuddyManagerSetup.exe` | 双击进入安装向导：选择目录安装、生成桌面与开始菜单快捷方式、注册「设置 → 应用」卸载入口 |
 | `dist\WorkBuddyManagerSetup.exe.sha256` | 安装包的 SHA-256（与 CI 产物同构）；分发后可用 `certutil -hashfile WorkBuddyManagerSetup.exe SHA256` 核对 |
-| 安装目录里的 `WorkBuddyManager.exe` | 控制窗口：启动 / 重启 / 关闭项目、运行状态、修改监听 IP 与端口、打开面板；点 X 可选最小化到托盘或退出（可记住选择） |
-| 安装目录里的 `Uninstall.exe` | 卸载程序：停止服务、清理快捷方式与注册表，可选保留账号与配置数据 |
+| 安装目录里的 `WorkBuddyManager.exe` | 控制窗口：启动 / 重启 / 关闭项目、运行状态、修改监听 IP 与端口、打开面板、勾选「开机自动启动（静默驻留托盘）」、点「检查更新」下载并校验新安装包；点 X 可选最小化到托盘或退出（可记住选择） |
+| 安装目录里的 `Uninstall.exe` | 卸载程序：停止服务、清理快捷方式与注册表（含开机自启项），可选保留账号与配置数据 |
 
 ```powershell
 # 构建安装包（产物在 windows\launcher\dist\）

@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as _StarletteHTTPException
 
 import json
 import logging
@@ -21,8 +22,10 @@ from .routers import (
     proxies, settings, stats, system, tokens, tools, upstreams,
     watchdog as watchdog_router,
 )
-from .services import (accountlog, cooling, dailyplan, modelroutes, pgsync, renew,
-                       tasklog, taskrun, watchdog as watchdog_service)
+from .services import (
+    accountlog, autoupdate, cooling, dailyplan, modelrecovery, modelroutes, pgsync,
+    renew, tasklog, taskrun, watchdog as watchdog_service,
+)
 
 # 最早时刻把标准输出/错误钉成 UTF-8：Windows 中文区域默认按 cp936 编码，日志里
 # 一旦出现 emoji（账号昵称就可能带）就会抛 UnicodeEncodeError —— 与「成长任务」
@@ -67,6 +70,7 @@ async def lifespan(app: FastAPI):
     # 强制冷却到期清理：manual_disabled 不会随 until 自动消失，不清理会让
     # 定时冷却变成永久停用（见 services/cooling.py）。
     cooling.start_scheduler()
+    modelrecovery.start_scheduler()
     # 每日任务计划（签到 / 领奖 / 做任务）：管理端自己的调度器，把「一键」动作
     # 做成每天到点自动跑。默认全部关闭，由用户在账号页显式开启（full 有风控风险）。
     dailyplan.start_scheduler()
@@ -76,8 +80,12 @@ async def lifespan(app: FastAPI):
     # PostgreSQL 定时备份（用户反馈：怕服务器暴雷丢数据）。默认关闭 ——
     # 只有配好连接、打开开关并设了间隔才会真的推数据出去。
     pgsync.start_scheduler()
-    # 上游页面改版监控：默认关闭，开启后按 interval 巡检并落快照/告警。
+    # 上游网页改版监控：抓结构指纹 → 变化时 LLM 判读 / 查活动补偿 → 邮件上报。
+    # 默认关闭；邮件启用前会先探 SMTP 出口（出口不通就不给开）。
     watchdog_service.start_scheduler()
+    # 自动更新：按「设置 → 更新」里的开关与时间窗定时检测并执行一键更新。
+    # 默认关闭；真正的更新仍走 updater.start_update（与按钮同一条路）。
+    autoupdate.start_scheduler()
     try:
         yield
     finally:
@@ -85,10 +93,12 @@ async def lifespan(app: FastAPI):
         taskrun.stop_scheduler()
         renew.stop_scheduler()
         cooling.stop_scheduler()
+        modelrecovery.stop_scheduler()
         dailyplan.stop_scheduler()
         accountlog.stop_collector()
         pgsync.stop_scheduler()
         watchdog_service.stop_scheduler()
+        autoupdate.stop_scheduler()
         # 出站客户端是共享的（issue #144：Windows 上每次新建要 ~1 秒），
         # 退出时统一关掉，别把连接池与 SSL 上下文丢在原地。
         await config.close_clients()
@@ -119,6 +129,8 @@ def _warn_weak_upstream_key() -> None:
             '上游 api_key 仍是样例值 %r：等同于公开，任何知道默认值的人都能'
             '消耗账号池积分。请立即改为强随机值。', key,
         )
+
+
 def _warn_if_exposed() -> None:
     """监听所有网卡时提醒：确保前面有反代，不要把 7864 直接暴露到公网。
 
@@ -138,7 +150,7 @@ def _warn_if_exposed() -> None:
 
 app = FastAPI(
     title='WorkBuddy Manager',
-    version='2.11.1-manager.1',
+    version='2.11.6-manager.1',
     lifespan=lifespan,
     # 生产环境默认关闭交互式文档与 OpenAPI 描述：
     # 它们会把管理接口全貌（路径、参数、结构）暴露给任何未认证访问者，
@@ -215,7 +227,12 @@ async def limit_api_body(request: Request, call_next):
 
 
 class _ApiBodyTooLarge(Exception):
-    """内部信号：/api/* 请求体在读取层超过上限。只被 ApiBodyLimitMiddleware 捕获。"""
+    """内部信号：/api/* 请求体在读取层超过上限。
+
+    注意：路由里 `except Exception` 很常见（`/api/login` 解析失败就转 400），
+    所以它不一定能到达中间件变成 413 —— 被就地转成 400 也是**安全**的：
+    超限时读取已经中止，内存不再增长。声明 413 只在这条异常成功穿透路由时生效。
+    """
 
 
 class ApiBodyLimitMiddleware:
@@ -472,6 +489,23 @@ def _rsc_page_for(full_path: str) -> str | None:
     return f'/{stem}' if stem else '/'
 
 
+@app.exception_handler(_StarletteHTTPException)
+async def _json_http_error(request: Request, exc: _StarletteHTTPException) -> JSONResponse:
+    """`/v1`、`/v2` 下的 404/405 一律回 JSON。
+
+    以前 `GET /v1/chat/completions` 会落到 SPA 兜底、返回整页 HTML（还带 404 的
+    Next 外壳），客户端解析 HTML 只能得到更难排查的错误。其余路径保持原样。
+    """
+    headers = getattr(exc, 'headers', None)
+    if request.url.path.startswith(('/v1/', '/v2/')):
+        code = 'method_not_allowed' if exc.status_code == 405 else 'not_found'
+        return JSONResponse({'error': {'message': str(exc.detail),
+                                       'type': 'invalid_request_error',
+                                       'code': code}},
+                            status_code=exc.status_code, headers=headers)
+    return JSONResponse({'detail': exc.detail}, status_code=exc.status_code, headers=headers)
+
+
 if config.STATIC_DIR.is_dir():
     app.mount('/_next', StaticFiles(directory=str(config.STATIC_DIR / '_next')), name='next-assets')
     if (config.STATIC_DIR / 'favicon.ico').exists():
@@ -485,6 +519,12 @@ if config.STATIC_DIR.is_dir():
 
     @app.get('/{full_path:path}', include_in_schema=False)
     def spa(full_path: str, request: Request):
+        # 网关路径绝不该落到 SPA 外壳：宁可回一条 JSON 404，也不要把首页 HTML
+        # 当成接口响应发给客户端。
+        if full_path.startswith(('v1/', 'v2/')):
+            return JSONResponse({'error': {'message': f'未知的接口路径 /{full_path}',
+                                           'type': 'invalid_request_error',
+                                           'code': 'not_found'}}, status_code=404)
         # 优先命中导出的静态页面 / 资源，否则回退到 404 页面。
         # 所有路径都必须先通过 _safe_static_path（越界即 None → 404）。
         #

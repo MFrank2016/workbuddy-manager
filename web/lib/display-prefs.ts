@@ -36,6 +36,34 @@ export function setExpiryDailyGroup(on: boolean): void {
   }
 }
 
+/** 仪表盘「积分收支」的图形：双轴折线（现状）或单轴发散柱。 */
+export type CreditsChartType = 'line' | 'bar';
+
+const CREDITS_CHART_KEY = 'wb.credits-chart';
+
+/**
+ * 读取「积分收支」图形偏好。
+ *
+ * **默认柱状**（issue #263）：双轴折线里两条线各自缩放，「哪根更高」不再代表
+ * 数值高低；单轴发散柱把收支放在同一根轴上，量级差与净增正负都能直接读。
+ * 折线仍保留，一键切回。
+ */
+export function getCreditsChartType(): CreditsChartType {
+  try {
+    return window.localStorage.getItem(CREDITS_CHART_KEY) === 'line' ? 'line' : 'bar';
+  } catch {
+    return 'bar';
+  }
+}
+
+export function setCreditsChartType(v: CreditsChartType): void {
+  try {
+    window.localStorage.setItem(CREDITS_CHART_KEY, v);
+  } catch {
+    /* 写不进去只影响下次打开；本次会话仍按调用方的 state 渲染 */
+  }
+}
+
 /**
  * 把到期明细按**本地日历日**归并：同一天到期的多笔合并成一条。
  *

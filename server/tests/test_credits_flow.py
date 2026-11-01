@@ -117,5 +117,66 @@ class CreditsFlowShapingTest(unittest.TestCase):
                          '空 uid 集合时不该再查 task_logs')
 
 
+class CreditsFlowHourlyTest(unittest.TestCase):
+    """days=1 时下探到小时（issue #285）。
+
+    单日范围按天聚合只剩一个点，折线画不出来。粒度规则沿用用量趋势图
+    （`/stats/hourly`）：固定 24 桶补零，支出取 `usage_hourly`、收入按
+    `task_logs` 的余额流水按小时归档。
+    """
+
+    def _run(self, *, hours=(), expense_hours=(), days=1, realm=None, uids=None):
+        seen: list[tuple[str, tuple]] = []
+        today = _day(0)
+
+        def fake_query(sql, args=()):
+            seen.append((sql, tuple(args)))
+            if 'task_logs' in sql:
+                if ' AS bucket' in sql:
+                    return [{'bucket': f'{today} {h:02d}', 'income': v} for h, v in hours]
+                return []
+            if 'usage_hourly' in sql:
+                return [{'hour': h, 'credit': v} for h, v in expense_hours]
+            if 'usage_daily' in sql:
+                return [{'day': today, 'credit': sum(v for _, v in expense_hours)}]
+            return []
+
+        with mock.patch.object(stats.db, 'query', fake_query), \
+             mock.patch.object(stats, '_realm_uids', lambda r: uids):
+            out = stats.credits_flow(days=days, realm=realm, user={'role': 'admin'})
+        return out, seen
+
+    def test_single_day_returns_24_buckets(self) -> None:
+        out, _ = self._run(hours=[(9, 300.0)], expense_hours=[(9, 50.0), (18, 20.0)])
+        self.assertEqual(out['granularity'], 'hour')
+        self.assertEqual(len(out['hourly']), 24, '固定 24 桶，X 轴不随时段抖动')
+        self.assertEqual([p['hour'] for p in out['hourly']], list(range(24)))
+        self.assertEqual(out['hourly'][9]['income'], 300.0)
+        self.assertEqual(out['hourly'][9]['expense'], 50.0)
+        self.assertEqual(out['hourly'][9]['net'], 250.0)
+        self.assertEqual(out['hourly'][18]['expense'], 20.0)
+        self.assertEqual(out['hourly'][0]['income'], 0.0, '无数据的小时补零')
+
+    def test_multi_day_keeps_old_shape(self) -> None:
+        out, _ = self._run(days=7)
+        self.assertEqual(out['granularity'], 'day')
+        self.assertNotIn('hourly', out, '多日范围不返回小时数据')
+
+    def test_hourly_filters_realm(self) -> None:
+        _, seen = self._run(realm='global', uids={'uid-a'})
+        usage = [(s, a) for s, a in seen if 'usage_hourly' in s][0]
+        self.assertIn('realm = ?', usage[0])
+        self.assertEqual(usage[1][-1], 'global')
+        income = [(s, a) for s, a in seen if 'task_logs' in s][0]
+        self.assertIn('uid IN (?)', income[0])
+        self.assertIn('uid-a', income[1])
+
+    def test_hourly_empty_realm_uid_set_yields_no_income(self) -> None:
+        out, seen = self._run(hours=[(9, 999.0)], realm='cn', uids=set())
+        self.assertFalse([s for s, _ in seen if 'task_logs' in s],
+                         '空 uid 集合时不该再查 task_logs')
+        self.assertEqual(out['hourly'][9]['income'], 0.0)
+
+
 if __name__ == '__main__':
     unittest.main()

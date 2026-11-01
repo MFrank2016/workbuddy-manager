@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -82,13 +82,35 @@ namespace WorkBuddyLauncher
             {
                 psi.RedirectStandardOutput = true;
                 psi.RedirectStandardError = true;
-                // Windows PowerShell 5.1 按控制台输出编码写管道（中文 Windows 为 GBK），
-                // 用 OEM 代码页解码才能正确显示脚本里的中文输出。
-                Encoding oem = Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
-                psi.StandardOutputEncoding = oem;
-                psi.StandardErrorEncoding = oem;
+                // Windows PowerShell 5.1 按**控制台输出代码页**写管道：中文 Windows
+                // 默认 GBK（OEM 代码页），但系统开了「Beta 版：使用 Unicode UTF-8
+                // 提供全球语言支持」之后变成 UTF-8（issue #306 的现场）。所以用
+                // Console.OutputEncoding 的代码页解码，而不是直接取 OEM 代码页——
+                // 后者在 UTF-8 系统上会把中文解成乱码。
+                psi.StandardOutputEncoding = ConsoleOutputEncoding();
+                psi.StandardErrorEncoding = ConsoleOutputEncoding();
             }
             return psi;
+        }
+
+        /// 当前控制台的输出编码。
+        ///
+        /// 取 `Console.OutputEncoding`（PowerShell 写管道用的就是它），而不是
+        /// `CultureInfo.CurrentCulture.TextInfo.OEMCodePage`：
+        ///   · 中文 Windows 默认 OEM 是 936(GBK)，与 PowerShell 一致；
+        ///   · 开了「Unicode UTF-8 全球语言支持」后控制台改成 65001(UTF-8)，
+        ///     再按 GBK 解码就是满屏乱码（issue #306）。
+        /// 取不到时（无控制台的启动方式）退回 OEM 代码页，保持原行为。
+        private static Encoding ConsoleOutputEncoding()
+        {
+            try
+            {
+                return Console.OutputEncoding;
+            }
+            catch
+            {
+                return Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
+            }
         }
     }
 

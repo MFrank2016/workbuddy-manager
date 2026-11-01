@@ -4,6 +4,7 @@ import {memo, useEffect} from 'react';
 import {useRouter} from 'next/navigation';
 import {ManagementBar} from '@/components/common/layout/ManagementBar';
 import {CommandPalette} from '@/components/common/layout/CommandPalette';
+import {WhatsNewDialog} from '@/components/common/layout/WhatsNewDialog';
 import {LanguageToggle} from '@/components/common/layout/LanguageToggle';
 import {RealmToggle} from '@/components/common/layout/RealmToggle';
 import {RealmProvider} from '@/lib/realm-context';
@@ -51,6 +52,8 @@ export default function MainLayout({
           </div>
         </div>
       </div>
+      {/* 升级后的「本次更新」公告：每个版本只弹一次（按 localStorage 记录的版本号）。 */}
+      <WhatsNewDialog />
     </RealmProvider>
   );
 }

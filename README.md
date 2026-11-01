@@ -14,6 +14,7 @@
 [![Release](https://img.shields.io/github/v/release/ithtelab/workbuddy-manager?color=22c55e&label=Release)](https://github.com/ithtelab/workbuddy-manager/releases)
 [![Changelog](https://img.shields.io/badge/更新日志-CHANGELOG-blue)](CHANGELOG.md)
 [![Issues](https://img.shields.io/github/issues/ithtelab/workbuddy-manager?color=f59e0b&label=反馈)](https://github.com/ithtelab/workbuddy-manager/issues)
+[![Stars](https://img.shields.io/github/stars/ithtelab/workbuddy-manager?color=f5c542&label=Stars)](https://github.com/ithtelab/workbuddy-manager)
 
 [English](README.en.md) · **简体中文** ｜ 本项目在 [LINUX DO](https://linux.do) 社区发布与交流
 
@@ -32,6 +33,11 @@
 **界面预览**
 
 </div>
+
+<p align="center">
+  仓库地址：<a href="https://github.com/ithtelab/workbuddy-manager">github.com/ithtelab/workbuddy-manager</a> —— 已经突破 <strong>2k Stars</strong>，感谢每一位 Star、Issue 与 PR。
+  觉得好用，欢迎点个 <a href="https://github.com/ithtelab/workbuddy-manager">Star</a> 给我们一个支持。
+</p>
 
 ---
 
@@ -127,6 +133,14 @@
 
 ---
 
+## 官方下载源
+
+**建议从本仓库的 [Releases](https://github.com/ithtelab/workbuddy-manager/releases) 下载。** 官方发布包提供 sha256 与 `.sig` 签名，更新器会核对它们；从别处获得的包无法按这条校验链确认来源与完整性，请自行判断，并**不要为此跳过摘要或签名校验**（`WB_SKIP_SIGNATURE=1` 等）。
+
+本项目以 MIT 许可开源，欢迎任何人在许可证范围内使用、修改与分发；出现其他来源的构建属于正常现象，请以本仓库的发布说明与校验值为准。
+
+---
+
 ## 快速开始
 
 服务器部署需要 Docker（1 核 1G 起）；Windows 桌面用户可直接用图形安装器。三种方式任选：
@@ -142,6 +156,10 @@
 3. 之后用桌面快捷方式打开控制台：点 **启动项目**，状态变「运行中」并自动打开管理面板；
    随时可 **重启 / 关闭项目**、修改监听 IP 与端口（保存后重启生效）、点 **打开面板** 回到页面。
 4. 点 X 可选「最小化到托盘」或「退出程序」（可记住选择，托盘图标随时恢复）。
+5. 需要「开机即驻留」时，在控制窗口勾选 **开机自动启动（静默驻留托盘）**：写入当前用户
+   的启动项（HKCU，无需管理员），下次登录不显示窗口、只驻留托盘；卸载时会自动清理。
+6. 需要升级时点控制窗口的 **检查更新**：查询本仓库最新 Release，下载安装包并用发布页
+   的 SHA-256 校验，校验通过后启动安装向导（`.env`、账号与 `data` 保留）。
 
 > 默认成功构建的单文件安装包内置全部运行环境（Python 运行时、上游网关、前端页面），
 > 目标机器**无需安装任何依赖**，Windows 10 (1903+) / 11 双击即用。当前安装器没有
@@ -153,7 +171,8 @@
 **② Docker（自己起容器）**
 
 ```bash
-docker run -d --name workbuddy-manager -p 7864:7864 -v /opt/workbuddy-manager/data:/app/data ghcr.io/ithtelab/workbuddy-manager:latest
+# 端口只绑本机：公网访问请走反向代理（HTTPS + 访问控制），直接暴露管理面风险高
+docker run -d --name workbuddy-manager -p 127.0.0.1:7864:7864 -v /opt/workbuddy-manager/data:/app/data ghcr.io/ithtelab/workbuddy-manager:latest
 ```
 
 **③ 服务器一键脚本（装依赖、拉包、配 systemd）**
@@ -238,6 +257,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ithtelab/workbuddy-manager/m
 - [部署指南](deploy/README.md) —— 反向代理、HTTPS、Windows 原生、一键更新
 - [账号出口线路](docs/account-proxy-routes.md) —— 每个账号走不同代理出口
 - [API 令牌](docs/api-tokens.md) —— 只读令牌与作用域
+- [页面监控](docs/watchdog.md) —— 上游网页改版检测、LLM 判读与邮件 / QQ 通知
+- [QQ 机器人通知与开放接口](docs/qq-bot.md) —— AstrBot 对接、UMO 与机器人控制边界
 
 ---
 

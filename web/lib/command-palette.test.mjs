@@ -78,7 +78,7 @@ check(
 );
 
 check(
-  '设置页 8 个 Tab 都在面板里，且标签键与清单模块一致',
+  '设置页 10 个 Tab 都在面板里，且标签键与清单模块一致',
   SETTINGS_TABS.map((tab) => {
     const found = byHref.get(settingsTabHref(tab));
     return found ? found.labelKey === SETTINGS_TAB_LABEL_KEYS[tab] : `缺 ${settingsTabHref(tab)}`;

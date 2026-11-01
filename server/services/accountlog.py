@@ -33,9 +33,10 @@ import asyncio
 import datetime
 import logging
 import re
+import time
 
-from .. import db
-from . import wb2api
+from .. import config, db
+from . import updater, wb2api
 
 logger = logging.getLogger('workbuddy.accountlog')
 
@@ -203,15 +204,125 @@ def parse_request_lines_with_mtime(lines: list[str], mtime: float | None) -> lis
     return out
 
 
+# 最近一次采集的事实快照，供「为什么账号列一直是空的」自诊断用。
+# 采集循环每轮覆盖，读侧拿到的是一份一致的小字典。
+_last: dict = {
+    'checked_at': 0, 'lines': 0, 'parsed': 0, 'filled': 0, 'error': '',
+}
+
+# 判断「回填是不是真的卡住」时回看的窗口（秒）。采集每 15 秒一轮，正常一条请求
+# 在一个窗口内就配上；超过这个时长仍空着，才值得提示用户。
+_PENDING_WINDOW = 300
+
+
+def _has_pending_accounts(since: int) -> bool:
+    """库里是否还有「在这个时刻之后、仍未回填」的请求记录。
+
+    `_last['filled']` 只是**本轮新填**的条数：`attach_request_accounts` 只匹配
+    `account IS NULL` 的行，已经填对的不再重复填，所以采集正常运行时它同样经常
+    是 0。只看 filled 会把「没有需要填的」误判成「填不上」——稳态下提示常驻，
+    真正的问题反而被盖住。
+
+    查库失败按「没有积压」处理：宁可少报一条提示，也不要因为一次查询异常就报
+    一个查不出原因的故障。
+    """
+    try:
+        row = db.query_one(
+            'SELECT 1 FROM request_logs WHERE account IS NULL AND ts >= ? LIMIT 1',
+            (since,),
+        )
+        return row is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _collect_once() -> int:
     """读一次上游日志并回填账号。返回回填条数（同步，供 to_thread 调用）。"""
-    lines, mtime = wb2api.read_container_logs(_TAIL, timestamps=True, with_mtime=True)
+    # 必须读**对话日志**那个文件：上游把每请求一行（含账号）写到 stdout，
+    # 签到/活跃/旅行等业务编排走 Go log → stderr，原生模式下是两个文件
+    # （见 config 的 WB2API_CHAT_LOG_FILE）。读错文件时一条 chat 行都解析不到，
+    # 账号列恒为空。Docker 模式这个参数被忽略，`docker logs` 本来就合并两路。
+    lines, mtime = wb2api.read_container_logs(
+        _TAIL, timestamps=True, with_mtime=True, path=config.WB2API_CHAT_LOG_FILE,
+    )
+    _last['checked_at'] = int(time.time())
+    _last['lines'] = len(lines)
     if not lines:
+        _last.update(parsed=0, error='')
         return 0
     entries = parse_request_lines_with_mtime(lines, mtime)
+    _last['parsed'] = len(entries)
     if not entries:
+        _last['error'] = ''
         return 0
-    return db.attach_request_accounts(entries)
+    filled = db.attach_request_accounts(entries)
+    _last.update(filled=filled, error='')
+    return filled
+
+
+def status() -> dict:
+    """账号回填的自诊断：日志从哪读、读到几行、解析出几条、为什么可能一直是空的。
+
+    为什么需要它（issue #232）：这一列空的时候，用户只看到「未采集（稍后自动
+    回填）」，而真实原因可能是「Windows 装成了 docker 模式」「日志路径写错」
+    「上游换了行格式」「时钟不同步」——处理方式完全不同，却都得靠维护者反复
+    索要现场信息。把事实直接摆出来，用户自己就能判断。
+    """
+    mode = config.WB2API_MODE
+    snap = dict(_last)
+    info: dict = {
+        'mode': mode,
+        'source': (str(config.WB2API_CHAT_LOG_FILE) if mode == 'native'
+                   else config.WB2API_SERVICE if mode == 'systemd'
+                   else config.WB2API_CONTAINER),
+        **snap,
+    }
+    if mode == 'native':
+        path = config.WB2API_CHAT_LOG_FILE
+        info['exists'] = path.is_file()
+        if not info['exists']:
+            info['hint'] = (f'对话日志文件不存在：{path}。确认上游以原生模式运行，'
+                            '并把它的 stdout 重定向到这个文件（.env 的 WB2API_CHAT_LOG_FILE）。')
+            return info
+        try:
+            info['size'] = path.stat().st_size
+        except OSError as exc:
+            info['hint'] = f'读不到日志文件：{exc}'
+            return info
+        if not info['size']:
+            info['hint'] = '日志文件是空的：上游还没写过任何请求，或输出没被重定向到这里。'
+            return info
+    elif mode == 'systemd':
+        # journalctl 读不到时也返回空列表，和「docker 不可用」一样是静默的；
+        # 这里至少把 unit 名与需要做的事说清楚（journal 权限 / unit 名写错）。
+        info['exists'] = True
+        if not snap['checked_at']:
+            info['hint'] = '采集还没跑过第一轮（启动后最多 15 秒）。稍等再看。'
+        elif not snap['lines']:
+            info['hint'] = (f'journalctl 读不到 {config.WB2API_SERVICE} 的日志：确认 unit 名正确，'
+                            '且面板进程能读 journal（加入 systemd-journal 组，或改用 '
+                            'WB2API_MODE=native + WB2API_LOG_FILE）。')
+        return info
+    else:
+        info['exists'] = updater.can_control_docker()
+        if not info['exists']:
+            info['hint'] = ('当前是 docker 模式但读不到 docker（面板进程没有 docker.sock 权限）。'
+                            '账号回填依赖 `docker logs`：挂载 socket 与 DOCKER_GID，'
+                            '或改用 WB2API_MODE=native / systemd。')
+            return info
+    if not snap['checked_at']:
+        info['hint'] = '采集还没跑过第一轮（启动后最多 15 秒）。稍等再看。'
+    elif snap['lines'] and not snap['parsed']:
+        info['hint'] = ('读到了日志，但没有一行符合上游的请求格式。多半是上游版本变化改了'
+                        '日志排版 —— 请把日志里一条 chat 请求的原文贴出来。')
+    elif snap['parsed'] and not snap['filled'] and _has_pending_accounts(
+            int(time.time()) - _PENDING_WINDOW):
+        info['hint'] = ('解析出了请求行，但在匹配窗口内找不到对应的本地记录'
+                        '（时间窗口 3 秒、模型名需一致）。常见于上游与面板时钟不同步，'
+                        '或日志里只有更早的请求。')
+    else:
+        info['hint'] = ''
+    return info
 
 
 async def _loop() -> None:
@@ -224,6 +335,7 @@ async def _loop() -> None:
                 logger.debug('回填账号 %d 条', filled)
         except Exception as exc:  # noqa: BLE001
             # 采集失败只是这一轮没有数据，下一轮继续；不影响任何请求
+            _last['error'] = str(exc)[:200]
             logger.warning('账号回填失败（不影响请求）: %s', exc)
         await asyncio.sleep(_POLL_SECONDS)
 

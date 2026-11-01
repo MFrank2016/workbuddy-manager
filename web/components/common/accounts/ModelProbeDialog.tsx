@@ -1,6 +1,6 @@
 'use client';
 
-import {useMemo, useState} from 'react';
+import {useMemo, useRef, useState} from 'react';
 import {Loader2, ScanSearch, TriangleAlert} from 'lucide-react';
 import {Button} from '@/components/ui/button';
 import {
@@ -14,6 +14,7 @@ import {
 import {useAsyncAll} from '@/lib/use-async-data';
 import {accountApi, errText, modelApi} from '@/lib/api';
 import {useI18n} from '@/lib/i18n/provider';
+import {planProbeBatches} from '@/lib/probe-batches';
 import type {Realm} from '@/lib/realm-context';
 import type {
   Account,
@@ -21,11 +22,6 @@ import type {
   ProbeModelsResponse,
   ProbeStatus,
 } from '@/lib/types';
-
-/** 单次最多 60 条组合（与后端一致）：每一条都是一次真实对话请求。 */
-const MAX_COMBOS = 60;
-const MAX_ACCOUNTS = 20;
-const MAX_MODELS = 10;
 
 const STATUS_KEY: Record<ProbeStatus, string> = {
   ok: 'accounts.probeStatusOk',
@@ -56,7 +52,7 @@ const STATUS_ORDER: ProbeStatus[] = ['ok', 'rate', 'credit', 'auth', 'no_model',
  *
  * 探测会发**真实请求**（max_tokens=1 的最小对话），所以：
  *   · 账号内串行、每条间隔 600ms，账号间最多 4 路并发（后端实现）；
- *   · 上限 60 条组合，界面先显示「本次将发起 N 次请求」；
+ *   · 每批最多 60 条组合，界面先显示总请求数、批次数与进度；
  *   · `11102 无此模型` 不算错误——账号本身没问题。
  */
 export function ModelProbeDialog({
@@ -65,6 +61,7 @@ export function ModelProbeDialog({
   accounts,
   upstreamId,
   realm,
+  onFinished,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -72,21 +69,26 @@ export function ModelProbeDialog({
   accounts: Account[];
   upstreamId: number | null;
   realm: Realm;
+  onFinished?: () => void;
 }) {
   const {t} = useI18n();
   const [pickedAccounts, setPickedAccounts] = useState<string[]>(
-    () => accounts.slice(0, MAX_ACCOUNTS).map((a) => a.file),
+    () => accounts.map((a) => a.file),
   );
   const [pickedModels, setPickedModels] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState<ProbeModelsResponse | null>(null);
+  const [completed, setCompleted] = useState(0);
+  const [stopping, setStopping] = useState(false);
+  const stopRequested = useRef(false);
 
   const catalog = useAsyncAll({catalog: () => modelApi.catalog(realm)}, [realm]);
   const models = catalog.values.catalog?.models ?? [];
   const modelName = (id: string) => models.find((m) => m.id === id)?.name || id;
 
   const combos = pickedAccounts.length * pickedModels.length;
+  const batches = planProbeBatches(pickedAccounts, pickedModels);
 
   const matrix = useMemo(() => {
     const map = new Map<string, ProbeModelResult>();
@@ -96,9 +98,8 @@ export function ModelProbeDialog({
     return map;
   }, [result]);
 
-  function toggle(list: string[], value: string, limit: number): string[] {
+  function toggle(list: string[], value: string): string[] {
     if (list.includes(value)) return list.filter((v) => v !== value);
-    if (list.length >= limit) return list;
     return [...list, value];
   }
 
@@ -106,18 +107,32 @@ export function ModelProbeDialog({
     setBusy(true);
     setError('');
     setResult(null);
+    setCompleted(0);
+    setStopping(false);
+    stopRequested.current = false;
+    const merged: ProbeModelsResponse = {
+      results: [], summary: {ok: 0, rate: 0, credit: 0, auth: 0, no_model: 0, error: 0}, requests: 0,
+    };
     try {
-      const r = await accountApi.probeModels(pickedAccounts, pickedModels, upstreamId);
-      setResult(r);
+      for (const batch of batches) {
+        if (stopRequested.current) break;
+        const r = await accountApi.probeModels(batch.accounts, batch.models, upstreamId);
+        merged.results.push(...r.results);
+        merged.requests += r.requests;
+        for (const status of STATUS_ORDER) merged.summary[status] += r.summary[status] ?? 0;
+        setResult({...merged, results: [...merged.results], summary: {...merged.summary}});
+        setCompleted(merged.requests);
+        onFinished?.();
+      }
     } catch (e) {
       setError(errText(e));
     } finally {
       setBusy(false);
+      setStopping(false);
     }
   }
 
-  const canRun = !busy && pickedAccounts.length > 0 && pickedModels.length > 0
-    && combos <= MAX_COMBOS;
+  const canRun = !busy && pickedAccounts.length > 0 && pickedModels.length > 0;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!busy) onOpenChange(v); }}>
@@ -139,12 +154,13 @@ export function ModelProbeDialog({
               <span>{t('accounts.probeAccounts')}</span>
               <button
                 type="button"
+                disabled={busy}
                 className="text-[11px] text-primary hover:underline"
                 onClick={() => setPickedAccounts(
-                  pickedAccounts.length ? [] : accounts.slice(0, MAX_ACCOUNTS).map((a) => a.file),
+                  pickedAccounts.length === accounts.length ? [] : accounts.map((a) => a.file),
                 )}
               >
-                {pickedAccounts.length ? t('accounts.probeClear') : t('accounts.probeSelectAll')}
+                {pickedAccounts.length === accounts.length ? t('accounts.probeClear') : t('accounts.probeSelectAll')}
               </button>
             </div>
             <div className="max-h-[150px] overflow-y-auto rounded-xl border p-2">
@@ -158,8 +174,9 @@ export function ModelProbeDialog({
                        className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-[12px] hover:bg-muted">
                   <input
                     type="checkbox"
+                    disabled={busy}
                     checked={pickedAccounts.includes(a.file)}
-                    onChange={() => setPickedAccounts((v) => toggle(v, a.file, MAX_ACCOUNTS))}
+                    onChange={() => setPickedAccounts((v) => toggle(v, a.file))}
                   />
                   <span className="truncate">{a.nickname || a.uid || a.file}</span>
                 </label>
@@ -173,12 +190,13 @@ export function ModelProbeDialog({
               <span>{t('accounts.probeModels')}</span>
               <button
                 type="button"
+                disabled={busy}
                 className="text-[11px] text-primary hover:underline"
                 onClick={() => setPickedModels(
-                  pickedModels.length ? [] : models.slice(0, MAX_MODELS).map((m) => m.id),
+                  pickedModels.length === models.length ? [] : models.map((m) => m.id),
                 )}
               >
-                {pickedModels.length ? t('accounts.probeClear') : t('accounts.probeSelectAll')}
+                {pickedModels.length === models.length ? t('accounts.probeClear') : t('accounts.probeSelectAll')}
               </button>
             </div>
             <div className="max-h-[150px] overflow-y-auto rounded-xl border p-2">
@@ -192,8 +210,9 @@ export function ModelProbeDialog({
                        className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-[12px] hover:bg-muted">
                   <input
                     type="checkbox"
+                    disabled={busy}
                     checked={pickedModels.includes(m.id)}
-                    onChange={() => setPickedModels((v) => toggle(v, m.id, MAX_MODELS))}
+                    onChange={() => setPickedModels((v) => toggle(v, m.id))}
                   />
                   <span className="truncate" title={m.id}>{m.name || m.id}</span>
                 </label>
@@ -204,12 +223,19 @@ export function ModelProbeDialog({
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
           <span>{t('accounts.probeRequests', {n: combos})}</span>
-          {combos > MAX_COMBOS && (
-            <span className="text-amber-600">
-              {t('accounts.probeTooMany', {n: combos})}
-            </span>
-          )}
+          <span>{t('accounts.probeBatchProgress', {done: completed, total: combos, batches: batches.length})}</span>
+          <button type="button" className="text-primary hover:underline" disabled={busy}
+                  onClick={() => {
+                    const restricted = accounts.filter((a) => (a.rate_limited_models ?? []).some((m) => m.reason?.startsWith('11102')));
+                    setPickedAccounts(restricted.map((a) => a.file));
+                    setPickedModels([...new Set(restricted.flatMap((a) => (a.rate_limited_models ?? [])
+                      .filter((m) => m.reason?.startsWith('11102')).map((m) => m.model)))]);
+                  }}>
+            {t('accounts.probeSelectRestricted')}
+          </button>
         </div>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">{t('accounts.probeAutoRecoveryHint')}</p>
+        {busy && <progress className="h-1.5 w-full accent-primary" max={Math.max(1, combos)} value={completed} />}
 
         {error && (
           <div className="flex items-start gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-[11px] text-red-600">
@@ -221,6 +247,9 @@ export function ModelProbeDialog({
         {result && (
           <div className="space-y-2">
             <div className="flex flex-wrap gap-1.5">
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
+                {t('accounts.probeSynced', {n: result.results.filter((r) => r.gateway_synced).length})}
+              </span>
               {STATUS_ORDER.filter((s) => (result.summary[s] ?? 0) > 0).map((s) => (
                 <span key={s}
                       className={`rounded-full px-2 py-0.5 text-[10px] ${STATUS_STYLE[s]}`}>
@@ -228,9 +257,12 @@ export function ModelProbeDialog({
                 </span>
               ))}
             </div>
-            <div className="overflow-x-auto rounded-xl border">
+            {result.results.some((r) => r.gateway_synced === false && !r.gateway_sync_skipped) && (
+              <p className="text-[11px] text-amber-600">{t('accounts.probeSyncFailed')}</p>
+            )}
+            <div className="max-h-[32vh] overflow-auto rounded-xl border">
               <table className="w-full border-collapse text-[11px]">
-                <thead>
+                <thead className="sticky top-0 z-10 bg-background">
                   <tr className="border-b bg-muted/50">
                     <th className="whitespace-nowrap px-2 py-1.5 text-left font-medium">
                       {t('accounts.probeAccounts')}
@@ -256,7 +288,7 @@ export function ModelProbeDialog({
                             {r ? (
                               <span
                                 className={`inline-block rounded-full px-2 py-0.5 ${STATUS_STYLE[r.status]}`}
-                                title={`${t(STATUS_KEY[r.status])}\n${r.message}`}
+                                title={`${t(STATUS_KEY[r.status])}\n${r.message}${r.gateway_sync_message ? `\n${r.gateway_sync_message}` : ''}`}
                               >
                                 {t(STATUS_KEY[r.status])}
                               </span>
@@ -274,10 +306,13 @@ export function ModelProbeDialog({
           </div>
         )}
 
-        <DialogFooter>
+        <DialogFooter className="sticky bottom-0 bg-background pt-2">
           <Button variant="ghost" size="sm" className="rounded-full"
-                  disabled={busy} onClick={() => onOpenChange(false)}>
-            {t('common.cancel')}
+                  disabled={stopping} onClick={() => {
+                    if (busy) { stopRequested.current = true; setStopping(true); }
+                    else onOpenChange(false);
+                  }}>
+            {busy ? t(stopping ? 'accounts.probeStopping' : 'accounts.probeStop') : t('common.cancel')}
           </Button>
           <Button size="sm" className="rounded-full" disabled={!canRun} onClick={run}>
             {busy ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}

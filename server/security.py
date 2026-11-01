@@ -382,6 +382,10 @@ def cookie_secure(request: Request) -> bool:
     """会话 cookie 是否带 `Secure` 标志。`WB_SECURE_COOKIE` = auto | true | false。
 
     `auto` 的判据是 `X-Forwarded-Proto`（反代终止 TLS 时由它告知原始协议）。
+    该头与 X-Real-IP 一样是普通请求头，只在 **TCP 对端是可信代理**时才采信
+    （与 `iputil.client_ip` 同一份判据）：直连的攻击者发
+    `X-Forwarded-Proto: http` 不能让 HTTPS 部署漏发 `Secure`。
+
     **这里有个隐蔽的失效形态**：反代没传该头时（1Panel / nginx 默认配置就未必传），
     后端只看到明文 HTTP，于是 `auto` 静默地不加 `Secure` —— 而用户访问的确实是
     HTTPS，他以为自己受保护。这类「以为安全其实没有」比明确的报错更危险，

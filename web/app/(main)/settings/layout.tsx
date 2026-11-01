@@ -57,11 +57,11 @@ import {RetentionPanel} from '@/components/common/settings/RetentionPanel';
 import {ProxyPanel} from '@/components/common/settings/ProxyPanel';
 import {TokensPanel} from '@/components/common/settings/TokensPanel';
 import {ChangelogPanel} from '@/components/common/settings/ChangelogPanel';
+import {WatchdogPanel} from '@/components/common/settings/WatchdogPanel';
 import {UpstreamReloadNotice} from '@/components/common/settings/UpstreamReloadNotice';
 import {ModelRoutesPanel} from '@/components/common/settings/ModelRoutesPanel';
 import {ResponsesPanel} from '@/components/common/settings/ResponsesPanel';
 import {ToolsPanel} from '@/components/common/settings/ToolsPanel';
-import {WatchdogPanel} from '@/components/common/settings/WatchdogPanel';
 import {CopyButton} from '@/components/ui/copy-button';
 import {Button} from '@/components/ui/button';
 import {Badge} from '@/components/ui/badge';
@@ -722,6 +722,14 @@ const UPSTREAM_FIELDS: Field[] = [
     label: '图片能力预检',
     desc: '开启后，模型目录**显式**声明不支持图片时，带图请求在选号前直接 400；目录未声明能力时放行（fail-open）。只作用于默认上游',
     def: false,
+  },
+  {
+    key: 'gzip_body',
+    kind: 'bool',
+    label: '压缩大请求体（gzip）',
+    desc: '超过 64 KB 的对话请求先 gzip 压缩再发给上游。服务器出口带宽窄时长上下文的'
+      + '首字节能快 20 秒以上；短对话不压缩、无额外开销。上游不接受压缩时会自动改用未压缩重发',
+    def: true,
   },
 ];
 
@@ -2332,6 +2340,11 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
           <UpdatePanel />
           {/* 日志保留策略：与「系统更新」同属运维面（都回答「这台机器怎么运转」）。 */}
           <RetentionPanel />
+        </TabsContent>
+
+        {/* ═══ 页面监控 ═══ */}
+        <TabsContent value="watchdog" className="mt-4 space-y-4">
+          <WatchdogPanel />
         </TabsContent>
 
         {/* ═══ 页面监控 ═══ */}

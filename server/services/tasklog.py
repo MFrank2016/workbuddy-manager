@@ -276,6 +276,15 @@ def _parse_checkin_summary(ts: int, rest: str) -> dict:
     fail = kv.get('fail', '0')
     skipped = kv.get('skipped', '0')
     msg = f'本轮签到完成：共 {total} 个，成功 {ok}，已签到 {already}，失败 {fail}，跳过 {skipped}'
+    # 新版汇总行把失败拆成「签到失败 / 余额查询失败」（issue #256）：口径不同，
+    # 前者影响当天积分，后者只是余额没刷新，排障时不能混为一谈。
+    split = []
+    if 'fail_checkin' in kv:
+        split.append(f"签到失败 {kv['fail_checkin']}")
+    if 'fail_resource' in kv:
+        split.append(f"余额查询失败 {kv['fail_resource']}")
+    if split:
+        msg += f"（{'，'.join(split)}）"
     level = 'warn' if fail not in ('0', '') else 'ok'
     return _event(ts, 'checkin', '', level, 0, msg)
 

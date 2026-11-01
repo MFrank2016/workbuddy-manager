@@ -70,7 +70,20 @@ def _load() -> dict:
 def _save(cfg: dict) -> None:
     if not cfg.get('proxies'):
         cfg.pop('proxies', None)      # 空表就把键删掉，保持文件干净（读侧两种都认）
-    _atomic_write_json(_config_path(), cfg)
+    path = _config_path()
+    try:
+        _atomic_write_json(path, cfg)
+    except OSError as exc:
+        # 写不进去**必须**翻译成用户能处理的话（issue #341 的现场：界面上只弹
+        # 一句英文 Internal Server Error，而真实原因是面板进程对该文件没有写
+        # 权限 —— 只读挂载、root 属主、或 SELinux 标签）。读得到、写不了是最
+        # 迷惑的一种：页面能把线路全列出来，一保存就 500。
+        raise RouteError(
+            f'上游配置文件写不进去：{path}（{exc}）。'
+            '请确认面板进程对该文件所在目录有写权限（容器部署注意不要以 :ro 挂载），'
+            '宿主机部署可执行 chown 让面板用户可写。', 409) from exc
+    except ValueError as exc:
+        raise RouteError(f'上游配置文件写入失败：{exc}', 409) from exc
 
 
 def routes() -> dict[str, str]:

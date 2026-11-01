@@ -531,6 +531,19 @@ def _write_initial_status(target: str, pid: int) -> None:
         pass
 
 
+def unsupported_reason() -> str:
+    """当前部署形态不支持网页一键更新时返回原因；支持时返回空串。
+
+    **唯一判据**：`start_update` 的前置拒绝与自动更新的开关/巡检都读这里。
+    两处各写一份的话，新增一种部署形态时只改一处，另一处就会拿过期的判断
+    去放行或误拒 —— 而这类不一致只会在无人值守时才暴露。
+    """
+    if os.name == 'nt' and config.WB2API_MODE == 'native':
+        return ('Windows 原生部署暂不支持网页一键更新；'
+                '请手动替换代码、重新构建前端，然后运行 windows\\service-tools.ps1 restart。')
+    return ''
+
+
 def start_update(target: str, *, source: str = 'release') -> tuple[bool, str]:
     """启动更新（后台脱离运行）。返回 (是否已启动, 说明)。
 
@@ -560,11 +573,8 @@ def start_update(target: str, *, source: str = 'release') -> tuple[bool, str]:
                 '请重新上传并填写发布页上那串 64 位 sha256；'
                 '确实无法核对的离线环境，设 WB_ALLOW_UNVERIFIED_PACKAGE=1 后重试。'
             )
-    if os.name == 'nt' and config.WB2API_MODE == 'native':
-        return False, (
-            'Windows 原生部署暂不支持网页一键更新；'
-            '请手动替换代码、重新构建前端，然后运行 windows\\service-tools.ps1 restart。'
-        )
+    if unsupported_reason():
+        return False, unsupported_reason()
     if target in ('upstream', 'both') and not can_control_docker():
         # 重建上游容器需要操作宿主 docker。判定按**实际能力**（能否跑通
         # docker info），而不是"是否在容器里"：容器挂了 docker.sock 就完全

@@ -25,7 +25,7 @@ class TaskRunSingleFlightTest(unittest.TestCase):
     """并发点两次「执行」只能起一个脚本。"""
 
     def setUp(self) -> None:
-        taskrun._state.update({'running': False, 'mode': '', 'target': '',
+        taskrun._state.update({'running': False, 'mode': '', 'target': '', 'group': '', 'auth_dir': '',
                                'started_at': 0, 'finished_at': 0, 'exit_code': None,
                                'timed_out': False, 'error': '', 'lines': []})
         taskrun._task = None
@@ -39,7 +39,7 @@ class TaskRunSingleFlightTest(unittest.TestCase):
     def test_two_concurrent_starts_launch_once(self) -> None:
         started: list[str] = []
 
-        async def fake_run(argv, mode, target):  # noqa: ANN001, ANN202
+        async def fake_run(argv, mode, target, auth_dir='', group=''):  # noqa: ANN001, ANN202
             started.append(mode)
             try:
                 await asyncio.sleep(0.2)
@@ -47,7 +47,7 @@ class TaskRunSingleFlightTest(unittest.TestCase):
                 taskrun._state['running'] = False
 
         async def go():  # noqa: ANN202
-            with mock.patch.object(taskrun, '_prepare', return_value=(True, ['x'])), \
+            with mock.patch.object(taskrun, '_prepare', return_value=(True, {'argv': ['x'], 'auth_dir': '', 'group': ''})), \
                  mock.patch.object(taskrun, '_run', fake_run):
                 return await asyncio.gather(taskrun.start_async('preview', 'ALL'),
                                             taskrun.start_async('preview', 'ALL'))
@@ -59,7 +59,7 @@ class TaskRunSingleFlightTest(unittest.TestCase):
     def test_stop_waits_for_cleanup(self) -> None:
         cleaned: list[bool] = []
 
-        async def fake_run(argv, mode, target):  # noqa: ANN001, ANN202
+        async def fake_run(argv, mode, target, auth_dir='', group=''):  # noqa: ANN001, ANN202
             try:
                 await asyncio.sleep(30)
             finally:
@@ -67,7 +67,7 @@ class TaskRunSingleFlightTest(unittest.TestCase):
                 taskrun._state['running'] = False
 
         async def go():  # noqa: ANN202
-            with mock.patch.object(taskrun, '_prepare', return_value=(True, ['x'])), \
+            with mock.patch.object(taskrun, '_prepare', return_value=(True, {'argv': ['x'], 'auth_dir': '', 'group': ''})), \
                  mock.patch.object(taskrun, '_run', fake_run):
                 ok, _ = await taskrun.start_async('preview', 'ALL')
                 self.assertTrue(ok)

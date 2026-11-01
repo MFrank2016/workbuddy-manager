@@ -174,15 +174,11 @@ class RestartBehaviorTest(unittest.TestCase):
 class UpstreamUpdateGuardTest(unittest.TestCase):
     """「能否更新上游」按**实际能力**判定，不按是否容器。
 
-    这是本项目的一处**判断修正**，值得写下来：
-      初版按「在容器里就不允许更新上游」实现，理由写成"挂 docker.sock 等于把
-      宿主 root 交给容器，比少一个功能危险得多"。这个理由**不成立**——宿主
-      部署时本服务本来就是 root 运行（systemd 单元无 User=、安装脚本要求 root），
-      而 root 进程本来就能 `docker run -v /:/host` 拿到宿主文件系统。也就是说
-      宿主部署的权限**已经等价于**挂 docker.sock。
-
-    结论：按能力判定才正确 —— 容器挂了 socket 就能（与宿主部署对齐），宿主没装
-    docker 反而不能。按「是否容器」判会把可用场景误判为不可用。
+    历史注记：初版按「在容器里就不允许」实现；后来修正为按能力判定（容器挂了
+    socket 就能，宿主没装 docker 反而不能），这个判定至今正确。当年支撑它的
+    另一个论据（"宿主本来就是 root，与挂 socket 权限等价"）已随 2026-10-21
+    安全检查失效：宿主形态降权为专用账号，docker.sock 也改为显式开启，两种
+    形态都不再默认持有宿主 root。
     """
 
     def _start(self, target: str, docker_ok: bool):
@@ -225,8 +221,8 @@ class UpstreamUpdateGuardTest(unittest.TestCase):
     def test_capability_not_derived_from_container(self) -> None:
         """关键断言：能力**不看**是否容器。
 
-        容器挂了 socket 就能更新上游；按容器判定会把这种（我们推荐的默认
-        配置）误判为不可用。
+        容器挂了 socket 就能更新上游；按容器判定会把这种（显式开启 docker.sock
+        后的）部署误判为不可用。
         """
         from server.services import updater
         with mock.patch.object(updater, 'in_container', return_value=True),                 mock.patch.object(updater, 'can_control_docker', return_value=True):
@@ -689,6 +685,7 @@ class DockerAssetsTest(unittest.TestCase):
         想恢复完整能力的用户仍可按 compose 注释里保留的那行手动打开 —— 那是
         显式选择，不是默认，故这里同时断言 opt-in 说明没有丢失。
         """
+        compose = (_ROOT / 'docker-compose.yml').read_text(encoding='utf-8')
         import yaml
         dc = yaml.safe_load((_ROOT / 'docker-compose.yml').read_text(encoding='utf-8'))
         svc = dc['services']['workbuddy-manager']

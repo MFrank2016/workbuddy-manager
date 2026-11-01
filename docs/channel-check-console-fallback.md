@@ -20,8 +20,11 @@
    「已禁用（需重新登录）」，用户重扫也没用（凭证从来没问题）。
    → 新增 `upstream.IsChannelCheck`：**业务码（`11-128` 与报告方另见的无横线写法，两种都认）
    且文案含「渠道校验 / channel verification / official client」**同时成立才算渠道校验。
-   判在 `request illegal` 之前 —— 渠道校验**永不禁用**，只软冷却（灰度/策略随时可能变，
-   禁用会逼用户白重新扫码）。
+   判在 `request illegal` 之前 —— 渠道校验**永不禁用**。
+   2026-10-28 起连软冷却也去掉了（issue #324）：渠道校验拒的是**这次请求的报文**，
+   不是账号；给它写 10 分钟冷却会让一个坏请求把整池账号挨个冷却一遍。现在只做
+   一次请求级抢救（把 system 文本搬进首条 user 后重试），仍被拦就直接把上游原文
+   透传给客户端（错误码 `channel_check_rejected`），不冷却、不禁用、不换号。
 
 2. **不换路径就整池被拦**
    `chatPaths` 加 `/console` 兜底：**主路径仍是 `/v2`**（#119 实测 `/console` 挂腾讯云 WAF
@@ -40,7 +43,8 @@
 
 ## 上游源码发布条件
 
-实现位于 `dev/upstream-patches/0006-channel-check-console-fallback.patch`，基于
+实现位于 `dev/upstream-patches/0006-channel-check-console-fallback.patch`
+（请求级语义见后面的 `0039-channel-check-request-scope.patch`），基于
 
 ```text
 size:   874638

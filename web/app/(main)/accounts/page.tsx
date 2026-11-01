@@ -105,6 +105,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip';
 
 /**
  * 一页显示多少个账号。
@@ -532,6 +533,12 @@ export default function AccountsPage() {
     [visible],
   );
 
+  /** 封禁账号的「解禁出路」提示：按上游管理接口开关是否已开启，如实告知。 */
+  const reloginHint =
+    adminApiEnabled === false
+      ? t('accounts.disabledQueueHintAdminOff')
+      : t('accounts.disabledQueueHint');
+
   /** 执行单账号操作（签到 / 测活 / 刷新 / 删除），成功后同步底栏计数 */
   async function run(
     file: string,
@@ -631,14 +638,31 @@ export default function AccountsPage() {
 
     if (tier === 'disabled') {
       const reason = String(a.disabled_reason || '');
+      // 悬停提示两行：封禁原因 + （管理员）解禁出路。
+      // 为什么用 Tooltip 而不是原生 title：原生提示有 1~2 秒延迟且部分环境
+      // 根本不弹（用户实测「移上去没效果」）；Radix Tooltip 悬停即显。
+      // 移动端没有 hover，原因在下方卡片里直接铺一行小字（见移动端卡片区）。
+      const tipLines = [
+        reason ? t('accounts.disabledReason', {reason}) : null,
+        isAdmin ? reloginHint : null,
+      ].filter(Boolean) as string[];
       return (
-        <Badge
-          variant="destructive"
-          className="rounded-full"
-          title={reason ? t('accounts.disabledReason', {reason}) : undefined}
-        >
-          {label}
-        </Badge>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="destructive" className="cursor-help rounded-full">
+              {label}
+            </Badge>
+          </TooltipTrigger>
+          {tipLines.length > 0 && (
+            <TooltipContent className="max-w-[280px] py-2">
+              <div className="space-y-1 text-left leading-4">
+                {tipLines.map((line, i) => (
+                  <p key={i}>{line}</p>
+                ))}
+              </div>
+            </TooltipContent>
+          )}
+        </Tooltip>
       );
     }
     if (tier === 'disabledByPanel') {
@@ -1112,9 +1136,8 @@ export default function AccountsPage() {
             task_runner.py），区别是只对这一个账号跑 —— 池子里某个号想单独
             补一轮任务时，不必把全部账号再跑一遍。国际版不适用 CN 任务中心
             （脚本自己会 skip），所以与签到按钮同一个可见条件。
-            分组账号暂不在这里跑任务（任务脚本目前只覆盖默认分组的目录，
-            见 server/services/taskrun.py），所以非默认分组下不显示这个按钮。 */}
-        {(!off || viaBit) && canCheckin && groupId == null && (
+            分组账号同样可用（issue #274）：脚本通过 WB2A_AUTHS 读该分组的目录。 */}
+        {(!off || viaBit) && canCheckin && (
           <Button
             variant="ghost"
             size="icon"
@@ -1287,6 +1310,7 @@ export default function AccountsPage() {
   return (
     <div className="flex flex-col gap-4 md:gap-6" aria-busy={isRefreshing}>
       <PageHeader
+        stacked
         title={t('accounts.title')}
         description={
           realm === 'global'
@@ -1295,6 +1319,7 @@ export default function AccountsPage() {
         }
         actions={
           <>
+            {/* 「强制重启」= 重启上游容器（确认后执行）。 */}
             {isAdmin && (
               <ConfirmDialog
                 title={t('accounts.restartTitle')}
@@ -1315,18 +1340,18 @@ export default function AccountsPage() {
                 对它们没有意义 —— 显示出来只会点了报 403（issue #56 之后权限
                 是明确的：force 仍限管理员）。与上面几个管理员操作同一个口径。 */}
             {isAdmin && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="rounded-full"
-              onClick={refreshCredits}
-              disabled={creditsBusy || !visible.length}
-              title={t('accounts.refreshCreditsTitle')}
-            >
-              <Coins className={creditsBusy ? 'animate-pulse' : ''} />
-              <span className="hidden sm:inline">{t('accounts.refreshCredits')}</span>
-              <span className="sm:hidden">{t('accounts.creditsShort')}</span>
-            </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="rounded-full"
+                onClick={refreshCredits}
+                disabled={creditsBusy || !visible.length}
+                title={t('accounts.refreshCreditsTitle')}
+              >
+                <Coins className={creditsBusy ? 'animate-pulse' : ''} />
+                <span className="hidden sm:inline">{t('accounts.refreshCredits')}</span>
+                <span className="sm:hidden">{t('accounts.creditsShort')}</span>
+              </Button>
             )}
             {/* 「一键刷新令牌」= 对所有账号真实续期 accessToken（逐个用 refreshToken
                 换新令牌），末尾只重载一次上游。与逐行那个 KeyRound 按钮同一套实现，
@@ -1432,66 +1457,68 @@ export default function AccountsPage() {
         }
       />
 
-      {/* 二级导航（批次 4 ②：本页吸收了「任务记录」——账号是「主体」，
-          任务记录是「这个主体干了什么」，用户在两分钟内必然要一起看）。
-          本页没有早返回的整页守卫（取不到账号时只在下面给错误态），
-          所以放在这里一处即可。 */}
-      <PageSectionTabs />
-
-
       {/* 账号分组（多账号池）：默认分组 = 升级前那套（环境变量 / 上游
           config.json）；「添加分组」只填名称即可（地址默认沿用默认分组的、
           账号目录自动带出建议路径，其余字段到「设置 → 上游」再调）。
-          密钥绑定哪个分组，请求就走那一组的接入点。 */}
+          密钥绑定哪个分组，请求就走那一组的接入点。
+          */}
+      {/* 二级导航（批次 4 ②：本页吸收了「任务记录」——账号是「主体」，
+          任务记录是「这个主体干了什么」，用户在两分钟内必然要一起看）。
+          位置与 /tasks 页保持一致：都紧跟 PageHeader 靠左单独一行 —— 若在
+          本页塞进分组条右侧（justify-between），切到任务页时同一个控件会
+          从右边跳到左边，看起来像按钮错位（issue #337）。
+          本页没有早返回的整页守卫（取不到账号时只在下面给错误态）。 */}
+      <PageSectionTabs />
+
       <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant={groupId == null ? 'default' : 'outline'}
-          size="sm"
-          className="rounded-full"
-          onClick={() => setGroupId(null)}
-        >
-          {t('accounts.groupDefault')}
-        </Button>
-        {groups
-          .filter((g) => !g.is_default && g.id != null)
-          .map((g) => (
-            <Button
-              key={g.id}
-              variant={groupId === g.id ? 'default' : 'outline'}
-              size="sm"
-              className="rounded-full"
-              onClick={() => setGroupId(g.id as number)}
-            >
-              {g.name}
-              {!g.enabled ? t('accounts.groupDisabledSuffix') : ''}
-            </Button>
-          ))}
-        {isAdmin && (
           <Button
-            variant="ghost"
+            variant={groupId == null ? 'default' : 'outline'}
             size="sm"
             className="rounded-full"
-            onClick={() => setGroupDialogOpen(true)}
+            onClick={() => setGroupId(null)}
           >
-            <Plus className="h-3.5 w-3.5" />
-            {t('accounts.groupAdd')}
+            {t('accounts.groupDefault')}
           </Button>
-        )}
-        {isAdmin && groupId != null && (
-          <ConfirmDialog
-            title={t('accounts.groupDeleteTitle', {name: groupInfo?.name || ''})}
-            description={t('accounts.groupDeleteDesc')}
-            confirmText={t('accounts.groupDelete')}
-            destructive
-            onConfirm={() => deleteGroup()}
-            trigger={
-              <Button variant="ghost" size="sm" className="rounded-full text-destructive">
-                <Trash2 className="h-3.5 w-3.5" />
-                {t('accounts.groupDelete')}
+          {groups
+            .filter((g) => !g.is_default && g.id != null)
+            .map((g) => (
+              <Button
+                key={g.id}
+                variant={groupId === g.id ? 'default' : 'outline'}
+                size="sm"
+                className="rounded-full"
+                onClick={() => setGroupId(g.id as number)}
+              >
+                {g.name}
+                {!g.enabled ? t('accounts.groupDisabledSuffix') : ''}
               </Button>
-            }
-          />
-        )}
+            ))}
+          {isAdmin && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="rounded-full"
+              onClick={() => setGroupDialogOpen(true)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {t('accounts.groupAdd')}
+            </Button>
+          )}
+          {isAdmin && groupId != null && (
+            <ConfirmDialog
+              title={t('accounts.groupDeleteTitle', {name: groupInfo?.name || ''})}
+              description={t('accounts.groupDeleteDesc')}
+              confirmText={t('accounts.groupDelete')}
+              destructive
+              onConfirm={() => deleteGroup()}
+              trigger={
+                <Button variant="ghost" size="sm" className="rounded-full text-destructive">
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {t('accounts.groupDelete')}
+                </Button>
+              }
+            />
+          )}
       </div>
       {groupInfo && !groupInfo.manageable && groupId != null && (
         <p className="px-1 text-[11px] leading-4 text-muted-foreground">
@@ -1650,6 +1677,19 @@ export default function AccountsPage() {
                 </div>
               </div>
 
+              {/* 封禁原因直接铺出来：移动端没有 hover，title 提示不可见（用户实测反馈）。
+                  管理员额外给出解禁出路 —— 与桌面端徽章的悬停提示同一套文案。 */}
+              {availabilityOf(a) === 'disabled' && (a.disabled_reason || isAdmin) && (
+                <div className="text-[11px] leading-4 text-rose-600 dark:text-rose-400">
+                  {a.disabled_reason
+                    ? t('accounts.disabledReason', {reason: String(a.disabled_reason)})
+                    : t('accounts.badgeDisabled')}
+                  {isAdmin && (
+                    <span className="text-muted-foreground"> · {reloginHint}</span>
+                  )}
+                </div>
+              )}
+
               <div className="flex items-center justify-between gap-3">
                 <div className="flex shrink-0 items-center gap-1.5">
                   <Coins className="h-3.5 w-3.5 text-muted-foreground" />
@@ -1667,6 +1707,13 @@ export default function AccountsPage() {
         </div>
 
         {/* 桌面端：表格 */}
+        {/* 桌面端表格：固定列宽（table-fixed）+ UID 单行省略。
+            此前这里是 auto 布局，列宽由内容撑开 —— UID 是 36 字符的 UUID、
+            操作列最多有 10 个图标按钮，两者加起来必然把表格推宽，于是容器
+            （Table 组件自带的 overflow-x-auto）出现横向滚动条，用户每次都要
+            拖动才能看到最右侧的操作按钮（issue #151 的后续反馈）。
+            固定布局把「列宽」从内容手里拿走：内容超宽就在本列内省略 / 换行，
+            表格永远等于容器宽度，不再需要横向拖动。 */}
         <div className="hidden md:block">
         <Table className="table-fixed [&_td]:overflow-hidden">
           <TableHeader>
@@ -1725,7 +1772,6 @@ export default function AccountsPage() {
                 <TableCell>
                   <div className="flex flex-wrap items-center gap-1.5 [&_[data-slot=badge]]:max-w-full [&_[data-slot=badge]]:whitespace-normal">
                     {renderStatus(a)}
-                    {renderModelLimit(a)}
                     {a.checkin_plan_at && (
                       <div
                         className="w-full text-[10px] text-muted-foreground"
@@ -1737,6 +1783,12 @@ export default function AccountsPage() {
                       </div>
                     )}
                   </div>
+                  {/* 模型限流/缺模的提示放在状态**下面**另起一行：原先它与状态徽章
+                      挤在同一个 flex 行里，长模型名会把这一列撑宽、盖住右侧 UID 列
+                      （issue #313）。整行宽度给它，长名字也能读全。 */}
+                  {renderModelLimit(a) && (
+                    <div className="mt-1 max-w-full">{renderModelLimit(a)}</div>
+                  )}
                 </TableCell>
                 <TableCell className="text-[11px]">
                   {a.effective_profile ? (
@@ -1844,6 +1896,14 @@ export default function AccountsPage() {
 
       <AddAccountDialog open={addOpen} onOpenChange={setAddOpen} onSuccess={reloadAll}
                         upstreamId={groupId} />
+      <ReloginQueueDialog
+        open={queueOpen}
+        onOpenChange={setQueueOpen}
+        accounts={visible}
+        upstreamId={groupId}
+        onSuccess={reloadAll}
+        adminApiEnabled={adminApiEnabled}
+      />
       <MoveAccountDialog
         account={moveTarget}
         open={moveTarget !== null}
@@ -1888,17 +1948,11 @@ export default function AccountsPage() {
       />
       <AccountTaskDialog
         account={taskTarget}
+        upstreamId={groupId}
+        groupName={groups.find((g) => g.id === groupId)?.name ?? ''}
         open={taskTarget !== null}
         onOpenChange={(open) => { if (!open) setTaskTarget(null); }}
         onFinished={reloadAll}
-      />
-      <ReloginQueueDialog
-        open={queueOpen}
-        onOpenChange={setQueueOpen}
-        accounts={visible}
-        upstreamId={groupId}
-        onSuccess={reloadAll}
-        adminApiEnabled={adminApiEnabled}
       />
       {probeOpen && (
         <ModelProbeDialog
@@ -1907,6 +1961,7 @@ export default function AccountsPage() {
           accounts={visible}
           upstreamId={groupId}
           realm={realm}
+          onFinished={reloadAll}
         />
       )}
       <PanelCompensationPanel upstreamId={groupId} onChanged={reloadAll} />

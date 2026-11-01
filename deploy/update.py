@@ -75,6 +75,8 @@ def _default_install_dir() -> Path:
 INSTALL_DIR = Path(os.environ.get('WB_INSTALL_DIR') or _default_install_dir())
 UPSTREAM_DIR = Path(os.environ.get('WB_UPSTREAM_DIR') or '/opt/workbuddy2api')
 UPSTREAM_PORT = int(os.environ.get('WB_UPSTREAM_PORT') or 7863)
+# 上游容器名（与上游 compose 的 container_name 一致；面板侧 WB2API_CONTAINER 同名）
+UPSTREAM_CONTAINER = os.environ.get('WB2API_CONTAINER') or 'workbuddy2api'
 MANAGER_PORT = int(os.environ.get('WB_MANAGER_PORT') or 7864)
 MANAGER_REPO = os.environ.get('WB_MANAGER_REPO') or 'ithtelab/workbuddy-manager'
 
@@ -894,7 +896,12 @@ def rebuild_upstream(rep: Reporter) -> None:
             '  宿主机部署请安装 docker compose 插件或 docker-compose。\n'
             '  自查：容器内执行 `docker compose version` 与 `ls /usr/local/lib/docker/cli-plugins/`。'
         )
-    rc, out = run(compose_cmd + ['up', '-d', '--build'], cwd=UPSTREAM_DIR, rep=rep, check=False)
+    # `--force-recreate` 不是可选项（issue #334）：只改源码时 compose 判定
+    # 「配置没变」，可能直接打出 `Container workbuddy2api  Running` 而**不换容器**。
+    # 于是构建出来的新镜像躺在一边，跑着的还是旧代码：界面继续提示「随包上游与
+    # 本机不一致」、上游的行为也没变，而日志里看起来每一步都成功了。
+    before_container = _container_id(UPSTREAM_CONTAINER)
+    rc, out = run(compose_cmd + ['up', '-d', '--build', '--force-recreate'], cwd=UPSTREAM_DIR, rep=rep, check=False)
     if rc != 0:
         hint = _diagnose_build_failure(out)
         rep.log(f'重建失败（exit {rc}）', 'error')
@@ -913,6 +920,13 @@ def rebuild_upstream(rep: Reporter) -> None:
         _report_service_state(rep)
         raise RuntimeError('上游重建失败' + (f'：{hint}' if hint else '，请查看上方日志'))
 
+    # 核对容器确实换了（issue #334）：compose 返回 0 却沿用旧容器时，后面的每一步
+    # 都会「成功」，唯一的症状就是界面上那句「随包上游与本机不一致」消不掉。
+    after_container = _container_id(UPSTREAM_CONTAINER)
+    if before_container and after_container and before_container == after_container:
+        rep.log(f'警告：容器 {UPSTREAM_CONTAINER} 的 ID 未变化（{after_container[:12]}），'
+                '可能仍在跑旧代码。请手动执行 '
+                'docker compose up -d --build --force-recreate。', 'warn')
     # 6) 等待就绪（地址按部署形态取：容器里不是回环，见 upstream_health_url）
     wait_upstream_ready(rep)
 
@@ -1153,6 +1167,24 @@ def _health_ok(url: str, timeout: int = 3) -> bool:
             return resp.status == 200
     except Exception:  # noqa: BLE001
         return False
+
+
+def _container_id(name: str) -> str:
+    """容器 ID（取不到返回空串）。
+
+    用来核对「重建之后跑的还是不是同一个容器」（issue #334）。只是尽力而为：
+    docker 不可用或容器不存在时返回空，调用方据此跳过核对 —— 不能因为读不到
+    ID 就把一次成功的更新报成失败。
+    """
+    try:
+        proc = subprocess.run(
+            ['docker', 'inspect', '--format', '{{.Id}}', name],
+            capture_output=True, text=True, timeout=10)
+    except Exception:  # noqa: BLE001
+        return ''
+    if proc.returncode != 0:
+        return ''
+    return (proc.stdout or '').strip()
 
 
 def _report_service_state(rep: Reporter) -> None:

@@ -79,12 +79,18 @@ const STATE_BADGE: Record<'pending' | 'claimed' | 'skipped' | 'failed', string> 
 
 export function AccountTaskDialog({
   account,
+  upstreamId = null,
+  groupName = '',
   open,
   onOpenChange,
   onFinished,
 }: {
   /** null = 未选中任何账号（弹窗关闭态） */
   account: Account | null;
+  /** 账号所在分组（issue #274）；null = 默认分组 */
+  upstreamId?: number | null;
+  /** 分组名（与任务状态的 group 比较，判断「在跑的是不是本账号」） */
+  groupName?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** 一次任务跑完时通知外部（积分/状态可能变了，账号列表要重拉） */
@@ -97,6 +103,7 @@ export function AccountTaskDialog({
   const uid = account?.uid ?? '';
   const {status, busy, run: runTask, stop} = useTaskRun({
     target: uid,
+    upstreamId,
     enabled: open,
     onFinished,
   });
@@ -114,8 +121,9 @@ export function AccountTaskDialog({
   }
 
   const running = status?.running === true;
-  /** 正在跑的**就是本账号**（全局单例，所以必须逐字比 target） */
-  const runningThis = running && status?.target === uid;
+  /** 正在跑的**就是本账号**（全局单例，所以必须逐字比 target 与分组） */
+  const runningThis = running && status?.target === uid &&
+    (status?.group ?? '') === (groupName ?? '');
   /** 正在跑，但跑的是别的账号或全部账号 */
   const runningOther = running && !runningThis;
   const unavailable = status !== null && !status.available;

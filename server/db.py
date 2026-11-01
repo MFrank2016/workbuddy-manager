@@ -161,7 +161,10 @@ CREATE TABLE IF NOT EXISTS request_logs (
   realm             TEXT,
   -- 工具参数修复结果（契约 §5）：none / fixed / failed / recalled。
   -- 默认 none = 未开启修复（或参数本来就合法）；历史记录也是 none。
-  tool_repair       TEXT    NOT NULL DEFAULT 'none'
+  tool_repair       TEXT    NOT NULL DEFAULT 'none',
+  -- 客户端渠道（issue #233）：由 User-Agent 归类（codex / vscode / cli / web …）。
+  -- 用来回答「哪类客户端在把账号打进 429」，网关行为本身不因它改变。
+  channel           TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON request_logs(ts);
 
@@ -735,6 +738,9 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # NULL = 客户端没传（走模型默认档）或该字段上线前的历史记录——两者界面都显示
     # 「—」，不做推断，避免把「默认」写成某个具体档位误导排查。
     ('request_logs', 'effort', 'TEXT'),
+    # 客户端渠道（issue #233）：UA 归类结果，用于排查「哪类客户端在打冷账号」。
+    # 旧记录为 NULL（界面显示「—」），不推断。
+    ('request_logs', 'channel', 'TEXT'),
 )
 
 
@@ -1288,8 +1294,8 @@ def add_request_log(**fields: object) -> None:
         'INSERT INTO request_logs(ts, key_id, ip, model, mapped_model, status, '
         'prompt_tokens, completion_tokens, latency_ms, first_token_ms, ua, error, '
         'stream, credit, realm, account, cache_hit_tokens, cache_miss_tokens, '
-        'cache_write_tokens, tool_repair, effort) '
-        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'cache_write_tokens, tool_repair, effort, channel) '
+        'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         (fields.get('ts'), fields.get('key_id'), fields.get('ip'),
          fields.get('model'), fields.get('mapped_model'), fields.get('status'),
          fields.get('prompt_tokens'), fields.get('completion_tokens'),
@@ -1300,7 +1306,9 @@ def add_request_log(**fields: object) -> None:
          # 工具参数修复结果：调用方不传时走列默认值 `none`（契约 §5）。
          fields.get('tool_repair') or 'none',
          # 思考强度：客户端没传就是 NULL（不推断默认档）。
-         fields.get('effort')),
+         fields.get('effort'),
+         # 客户端渠道：UA 归类结果；旧记录为 NULL。
+         fields.get('channel')),
     )
     _request_log_writes += 1
     if _request_log_writes >= _REQUEST_LOG_CHECK_EVERY:

@@ -11,10 +11,23 @@ namespace WorkBuddyLauncher
     internal static class Program
     {
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            // 开机自启带 --tray：只驻留托盘，不显示主窗口（issue #269）。
+            // 必须在构造 MainForm 之前解析：是否显示窗口由构造参数决定，而不是
+            // 「先 Show 再 Hide」——那样开机瞬间会闪一下窗口。
+            bool silent = false;
+            foreach (string arg in args)
+            {
+                if (String.Equals(arg, Autostart.SilentArgument, StringComparison.OrdinalIgnoreCase) ||
+                    String.Equals(arg, "--silent", StringComparison.OrdinalIgnoreCase))
+                {
+                    silent = true;
+                }
+            }
 
             // 卸载模式：安装目录里的 Uninstall.exe（按文件名判定）
             string exeName = Path.GetFileName(Application.ExecutablePath);
@@ -30,15 +43,19 @@ namespace WorkBuddyLauncher
             if (LauncherPaths.LooksInstalled(exeDir))
             {
                 bool createdNew = false;
+                // 第二个实例不再弹「已经在运行」的对话框：
+                //   · 手动再点一次快捷方式 → 唤出已在运行的窗口；
+                //   · 开机静默启动时已有实例 → 直接退出（用户已经在托盘里了）。
+                using (var wake = new EventWaitHandle(false, EventResetMode.AutoReset,
+                           @"Local\WorkBuddyManagerLauncherWake"))
                 using (new Mutex(true, @"Local\WorkBuddyManagerLauncher", out createdNew))
                 {
                     if (!createdNew)
                     {
-                        MessageBox.Show("WorkBuddy Manager 控制窗口已经在运行中。", LauncherPaths.AppName,
-                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        if (!silent) { wake.Set(); }
                         return;
                     }
-                    Application.Run(new MainForm(exeDir));
+                    Application.Run(new MainForm(exeDir, silent, wake));
                 }
                 return;
             }

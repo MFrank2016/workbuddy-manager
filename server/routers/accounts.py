@@ -1356,6 +1356,22 @@ def _checkin_semaphore() -> asyncio.Semaphore:
     return asyncio.Semaphore(config.CHECKIN_CONCURRENCY)
 
 
+# 批量签到的退避序列（issue #256）：上游偶发 `10001 签到失败，请稍后重试`，
+# 隔几秒单号重试即可成功。5s + 15s 总等待 20s，仍在面板 60s 超时内。
+_CHECKIN_RETRY_DELAYS = (5.0, 15.0)
+
+
+async def _checkin_with_retry(payload: dict, realm) -> tuple[int, str]:
+    """执行签到；仅对 -3（上游瞬时拒绝）按 5s/15s 退避重试。"""
+    code, message = await tencent.checkin(payload, realm)
+    for delay in _CHECKIN_RETRY_DELAYS:
+        if code != -3:
+            break
+        await asyncio.sleep(delay)
+        code, message = await tencent.checkin(payload, realm)
+    return code, message
+
+
 @router.post('/accounts/checkin-all')
 async def checkin_all(upstream_id: int | None = Query(None),
                       user: dict = Depends(security.require_admin)) -> dict:
@@ -1407,7 +1423,9 @@ async def checkin_all(upstream_id: int | None = Query(None),
 
         async with sem:
             # 传完整 auth dict：billing 域要带 X-User-Id 等身份头
-            code, message = await tencent.checkin({
+            # 瞬时 10001（上游短时限流）在 sem 内退避重试：放掉信号量再睡会让
+            # 其他账号涌入，重新制造并发峰值（issue #256）。
+            code, message = await _checkin_with_retry({
                 'access_token': token,
                 'uid': str((raw.get('account') or {}).get('uid') or uid),
                 'enterprise_id': str((raw.get('account') or {}).get('enterpriseId') or ''),
@@ -1757,10 +1775,13 @@ async def task_run_start(
     body: dict = Body(...),
     user: dict = Depends(security.require_admin),
 ) -> dict:
-    """启动一次执行。body: {mode, target}。
+    """启动一次执行。body: {mode, target, confirm, upstream_id}。
 
     `full`（点亮 + 领奖）会伪造活跃上报，因此要求显式传 `confirm: true` ——
     与「领奖」区分开，避免手滑点到风险最高的那个。
+
+    `upstream_id` 选分组（issue #274）：不传 = 默认分组；其他分组要求配置了
+    本地账号目录（`_require_dir`），脚本通过 `WB2A_AUTHS` 读那一组账号。
     """
     mode = str(body.get('mode') or '').strip()
     target = str(body.get('target') or 'ALL').strip() or 'ALL'
@@ -1772,10 +1793,24 @@ async def task_run_start(
             detail='「点亮任务」会向腾讯发送活跃上报（造画布、连发对话等），'
                    '请先确认：该操作有风控风险，建议先用「预览」看清将要做的事。',
         )
+    # 分组参数严格解析：字符串 "3" 静默落到默认分组会让用户在 B 组点任务、
+    # 实际跑了 A 组的账号（且界面显示成功）——宁可报 400。
+    raw_uid = body.get('upstream_id')
+    upstream_id: int | None = None
+    if raw_uid not in (None, '', 0, '0'):
+        try:
+            upstream_id = int(raw_uid)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail='upstream_id 不合法') from None
+    group = _group(upstream_id)
+    auth_dir = _require_dir(group) if not group.get('is_default') else _group_dir(group)
     # 走线程池版本：start() 内部会解析脚本路径（脚本缺失时还要 fork docker
     # 提取，最长 60 秒），本接口是 async，同步跑它会冻住整个事件循环——
     # 连带把对外网关一起卡住。
-    ok, msg = await taskrun.start_async(mode, target)
+    ok, msg = await taskrun.start_async(
+        mode, target, auth_dir=auth_dir,
+        group_name='' if group.get('is_default') else str(group.get('name') or ''),
+    )
     if not ok:
         # 前置拒绝（脚本缺失/已有任务在跑/参数不合法）用 409 表达「状态冲突」，
         # 与「请求本身有错」（400）区分开。
@@ -1855,6 +1890,7 @@ _PROBE_MODELS_MAX = 10
 _PROBE_ACCOUNT_GAP_SECONDS = 0.6
 _PROBE_CONCURRENCY = 4
 _PROBE_REQUEST_TIMEOUT = 30
+_MODEL_PROBE_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 
 
 def _probe_model_name(raw: object) -> str:
@@ -1879,7 +1915,8 @@ async def probe_models(body: dict = Body(...),
     限流保护：同一账号内串行、每条之间 600ms；不同账号最多 4 路并发；
     一次最多 60 条组合。看到 6004 也**不重试**（探测不能变成新的限流来源）。
     """
-    base_dir = _require_dir(_group(upstream_id))
+    group = _group(upstream_id)
+    base_dir = _require_dir(group)
     raw_accounts = body.get('accounts')
     raw_models = body.get('models')
     if not isinstance(raw_accounts, list) or not isinstance(raw_models, list):
@@ -1941,7 +1978,8 @@ async def probe_models(body: dict = Body(...),
     results: list[dict] = []
 
     async def one(target: dict) -> None:
-        async with sem:
+        lock = _MODEL_PROBE_LOCKS.setdefault((group['base_url'], target['uid']), asyncio.Lock())
+        async with sem, lock:
             for idx, model in enumerate(models):
                 if idx:
                     await asyncio.sleep(_PROBE_ACCOUNT_GAP_SECONDS)
@@ -1954,6 +1992,17 @@ async def probe_models(body: dict = Body(...),
                     detail = {'status': 'error', 'code': None,
                               'message': f'探测超时（>{_PROBE_REQUEST_TIMEOUT}s）',
                               'latency_ms': _PROBE_REQUEST_TIMEOUT * 1000}
+                if detail.get('status') == 'ok':
+                    recovered, recovery_message, recovery_code = await wb2api.clear_model_block(
+                        target['uid'], model, base_url=group['base_url'],
+                        api_key=group['api_key'])
+                    if recovery_code == 'no_route':
+                        # admin.enabled 默认 false：没有这条同步通道≠同步失败。
+                        detail['gateway_sync_skipped'] = True
+                    else:
+                        detail['gateway_synced'] = recovered
+                    if recovery_message:
+                        detail['gateway_sync_message'] = recovery_message
                 results.append({
                     'file': target['file'],
                     'uid': target['uid'],

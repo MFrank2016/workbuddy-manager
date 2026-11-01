@@ -341,7 +341,7 @@ def _save_state(**updates: object) -> dict:
 
 
 def _snapshot_dir() -> Path:
-    path = config.WATCHDOG_DIR
+    path = config.DATA_DIR / 'watchdog'
     path.mkdir(parents=True, exist_ok=True)
     return path
 

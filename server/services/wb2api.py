@@ -16,6 +16,7 @@ import ssl
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from .. import config
 from .filelock import file_lock
@@ -751,6 +752,20 @@ async def _admin_account_call(uid: str, action: str, *, reason: str = '',
     return True, '', 'ok', payload if isinstance(payload, dict) else {}
 
 
+async def clear_model_block(uid: str, model: str, *, base_url: str | None = None,
+                            api_key: str | None = None) -> tuple[bool, str, str]:
+    """成功探测同步到运行中的网关；只清 11102，不清真实模型配额或账号状态。
+
+    第三项是 `_admin_account_call` 的结果码：`no_route` 表示上游没注册管理接口
+    （`admin.enabled` 默认 false）。那不是同步失败，只是没有这条同步通道 ——
+    调用方据此按「不可用」处理，别把它报成错误、也别反复重试。
+    """
+    action = f'models/{quote(model, safe="")}/available'
+    ok, message, code, _ = await _admin_account_call(
+        uid, action, base_url=base_url, api_key=api_key)
+    return ok, message, code
+
+
 async def set_manual_disabled(uid: str, disabled: bool, reason: str = '',
                               *, base_url: str | None = None,
                               api_key: str | None = None) -> tuple[bool, str, str]:
@@ -1091,6 +1106,9 @@ async def _set_upstream_running(running: bool) -> tuple[bool, str]:
         except Exception as exc:  # noqa: BLE001
             return False, f'执行 {script.name} 失败：{exc}'
 
+    if config.WB2API_MODE == 'systemd':
+        return await _systemctl('start' if running else 'stop')
+
     action = 'start' if running else 'stop'
     cmd = ['docker', action]
     if not running:
@@ -1108,9 +1126,55 @@ async def _set_upstream_running(running: bool) -> tuple[bool, str]:
         detail = err.decode(errors='ignore').strip()
         return False, detail or f'docker {action} 退出码 {proc.returncode}'
     except FileNotFoundError:
-        return False, '未找到 docker 命令'
+        return False, _NO_DOCKER_HINT
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
+
+
+# 默认 WB2API_MODE=docker 却找不到 docker：多半是宿主机直跑上游（issue #329）。
+# 光说「未找到 docker 命令」用户不知道怎么办，把出路一并说清。
+_NO_DOCKER_HINT = (
+    '未找到 docker 命令。若上游不是 docker 容器：由 systemd 托管的请在 .env 设 '
+    'WB2API_MODE=systemd 与 WB2API_SERVICE=<上游 unit 名>；其它原生进程设 '
+    'WB2API_MODE=native 并配置 WB2API_START_SCRIPT / WB2API_STOP_SCRIPT'
+)
+
+_SYSTEMCTL_TIMEOUT = 60
+
+
+async def _systemctl(action: str) -> tuple[bool, str]:
+    """`systemctl <action> <WB2API_SERVICE>`，供 systemd 托管的上游使用（issue #329）。
+
+    非 root 运行时需要 polkit 放行该 unit 的 manage-units（与 install.sh 给
+    workbuddy-web 写的规则同一做法，见 deploy/README.md）。`--no-ask-password`
+    保证没授权时立刻失败并给出原因，而不是挂在交互式提权上。
+    """
+    unit = config.WB2API_SERVICE
+    cmd = ['systemctl', '--no-ask-password', action, unit]
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=_SYSTEMCTL_TIMEOUT)
+    except FileNotFoundError:
+        return False, '未找到 systemctl 命令（WB2API_MODE=systemd 需要 systemd 环境）'
+    except asyncio.TimeoutError:
+        if proc is not None:
+            _kill_quietly(proc)
+        return False, f'systemctl {action} {unit} 超过 {_SYSTEMCTL_TIMEOUT} 秒未结束'
+    except Exception as exc:  # noqa: BLE001
+        return False, f'执行 systemctl 失败：{exc}'
+    if proc.returncode == 0:
+        verb = {'start': '启动', 'stop': '停止', 'restart': '重启'}.get(action, action)
+        return True, f'上游服务 {unit} 已{verb}'
+    detail = (err or b'').decode(errors='ignore').strip()
+    if 'authentication' in detail.lower() or 'access denied' in detail.lower() \
+            or 'interactive' in detail.lower():
+        detail += '（管理端服务账号无权操作该 unit，请按 deploy/README.md 写入 polkit 规则）'
+    return False, detail or f'systemctl {action} {unit} 退出码 {proc.returncode}'
 
 
 async def _wait_for_upstream(timeout: float = 35.0) -> dict:
@@ -1122,6 +1186,61 @@ async def _wait_for_upstream(timeout: float = 35.0) -> dict:
             return last
         await asyncio.sleep(1)
     return last
+
+
+def _account_blocks_cleared(account: dict | None) -> bool:
+    if account is None:
+        return False
+    freeze = bool(account.get('manual_disabled')
+                  and _is_manual_cooling_reason(account.get('manual_reason')))
+    return not (account.get('cooling') or account.get('rate_limited_models') or freeze)
+
+
+async def _clear_cooling_online(uid: str, account: dict,
+                                has_freeze: bool) -> tuple[bool, str, dict] | None:
+    """先走上游在线管理接口清除，**不停上游**（issue #329）。
+
+    在线接口只覆盖两类状态，正好是最常见、也最需要急救的两类：
+
+      · 模型级限流里原因为 `11102` 的误标 → `models/{m}/available`
+        （#328：兜底路径的 11102 被当成账号缺模型，整池被 6h 冷却打穿）；
+      · 本模块写入的强制冷却（manual_disabled + 冷却标记）→ `enable`。
+
+    账号级冷却 / 熔断 / 降权、真实 6004 等其它模型限流没有在线接口，返回
+    None 交给原来的「停上游 → 改 state.json → 启上游」。上游没开 admin
+    接口（`no_route`）或在线调用失败时同样返回 None 回退，**不会**因为在线
+    这一步而让原本能成功的离线路径失败。
+    """
+    if account.get('cooling'):
+        return None
+    models = account.get('rate_limited_models') or []
+    names: list[str] = []
+    for item in models:
+        if not isinstance(item, dict) or not str(item.get('reason') or '').startswith('11102'):
+            return None
+        name = str(item.get('model') or '').strip()
+        if not name:
+            return None
+        names.append(name)
+    if not names and not has_freeze:
+        return None
+
+    for name in names:
+        ok, _msg, _code = await clear_model_block(uid, name)
+        if not ok:
+            return None
+    if has_freeze:
+        ok, _msg, _code = await set_manual_disabled(uid, False)
+        if not ok:
+            return None
+
+    status = await get_status()
+    after = next((x for x in status.get('accounts') or []
+                  if str(x.get('uid') or '') == uid), None)
+    if not status.get('connected') or not _account_blocks_cleared(after):
+        return None
+    return True, '已通过上游管理接口在线清除（无需重启上游）', {
+        'uid': uid, 'online': True, 'models': names, 'unfrozen': has_freeze}
 
 
 async def force_clear_account_cooling(uid: str) -> tuple[bool, str, dict]:
@@ -1144,6 +1263,9 @@ async def force_clear_account_cooling(uid: str) -> tuple[bool, str, dict]:
         )
         if not account.get('cooling') and not account.get('rate_limited_models') and not has_freeze:
             return True, '该账号当前没有冷却或模型级限流状态，无需清除', {}
+        online = await _clear_cooling_online(uid, account, has_freeze)
+        if online is not None:
+            return online
 
     stopped, stop_message = await _set_upstream_running(False)
     if not stopped:
@@ -1505,6 +1627,9 @@ async def restart_container(container: str | None = None) -> tuple[bool, str]:
                 return False, f'{script.name} 退出码 {proc.returncode}'
         return True, '原生 workbuddy2api 已重启'
 
+    if config.WB2API_MODE == 'systemd':
+        return await _systemctl('restart')
+
     return await _docker_restart(config.WB2API_CONTAINER)
 
 
@@ -1521,13 +1646,14 @@ async def _docker_restart(name: str) -> tuple[bool, str]:
             return True, f'容器 {name} 已重启'
         return False, (err.decode(errors='ignore').strip() or f'docker 退出码 {proc.returncode}')
     except FileNotFoundError:
-        return False, '未找到 docker 命令'
+        return False, _NO_DOCKER_HINT
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
 
 
 def read_container_logs(limit: int = 200, timestamps: bool = True,
-                        with_mtime: bool = False) -> list[str] | tuple[list[str], float | None]:
+                        with_mtime: bool = False,
+                        path: Path | None = None) -> list[str] | tuple[list[str], float | None]:
     """读取上游日志（原生日志文件或 Docker，失败返回空列表）。
 
     默认带 `--timestamps`：docker 会在每行前面加上精确到纳秒的 RFC3339 时间，
@@ -1535,18 +1661,27 @@ def read_container_logs(limit: int = 200, timestamps: bool = True,
 
     `with_mtime=True` 额外返回原生日志文件的 mtime；Docker 模式返回 None。
     账号回填需要它：原生日志行只有 `HH:MM:SS`，没有日期，不能单独还原 epoch。
+
+    `path` 指定原生模式读哪个文件，缺省仍是 `WB2API_LOG_FILE`。账号回填必须传
+    `WB2API_CHAT_LOG_FILE`：上游把对话行写 stdout、业务行写 stderr，原生模式两者
+    是两个文件。Docker 模式忽略它 —— `docker logs` 本来就把两路合并在一起。
     """
     if config.WB2API_MODE == 'native':
+        source = path or config.WB2API_LOG_FILE
         try:
             count = max(1, min(5000, limit))
-            mtime = config.WB2API_LOG_FILE.stat().st_mtime
-            with config.WB2API_LOG_FILE.open('r', encoding='utf-8', errors='replace') as fh:
+            mtime = source.stat().st_mtime
+            with source.open('r', encoding='utf-8', errors='replace') as fh:
                 lines = [ln.rstrip('\r\n') for ln in deque(fh, maxlen=count) if ln.strip()]
             return (lines, mtime) if with_mtime else lines
         except Exception:  # noqa: BLE001
             return ([], None) if with_mtime else []
 
     import subprocess
+
+    if config.WB2API_MODE == 'systemd':
+        lines = _journal_lines(max(1, min(5000, limit)), timestamps)
+        return (lines, None) if with_mtime else lines
 
     cmd = ['docker', 'logs', '--tail', str(max(1, min(5000, limit)))]
     if timestamps:
@@ -1560,6 +1695,43 @@ def read_container_logs(limit: int = 200, timestamps: bool = True,
         return (lines, None) if with_mtime else lines
     except Exception:  # noqa: BLE001
         return ([], None) if with_mtime else []
+
+
+# journalctl -o short-iso-precise --utc 的行。注意**偏移量是 `+0000`，不带冒号**：
+#
+#   2026-10-28T04:00:00.123456+0000 workbuddy2api[812]: [checkin] ok
+#
+# systemd 的 short-iso / short-iso-precise 两种格式都用 `+HHMM`（文档与源码一致），
+# 而带冒号的 `+00:00` 只在别的工具里常见。两种都收，否则 systemd 部署下**每一行**
+# 都匹配不上、日志静默为空 —— 账号回填与任务日志会一起失效，且没有任何报错。
+_JOURNAL_LINE = re.compile(
+    r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?)[+-]00:?00\s+[^\s:]+(?:\[\d+\])?:\s?(.*)$')
+
+
+def _journal_lines(limit: int, timestamps: bool) -> list[str]:
+    """systemd 托管上游的日志（issue #329）。
+
+    转成与 `docker logs --timestamps` 相同的形状（`<RFC3339>Z <原文>`），
+    任务日志 / 账号回填的解析器因此不用为第三种部署形态再写一套。
+    """
+    import subprocess
+
+    cmd = ['journalctl', '-u', config.WB2API_SERVICE, '-n', str(limit),
+           '--no-pager', '--utc', '-o', 'short-iso-precise']
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[str] = []
+    for raw in (proc.stdout or '').splitlines():
+        m = _JOURNAL_LINE.match(raw)
+        if not m:
+            continue  # `-- No entries --` 等 journalctl 自己的提示行
+        ts, msg = m.group(1), m.group(2)
+        if not msg.strip():
+            continue
+        out.append(f'{ts}Z {msg}' if timestamps else msg)
+    return out
 
 
 # 管理端**允许读写**的上游配置段。既是 `save_upstream_config` 的写入白名单，

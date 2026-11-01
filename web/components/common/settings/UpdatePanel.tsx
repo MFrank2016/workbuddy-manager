@@ -4,6 +4,7 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  Clock,
   DownloadCloud,
   Globe,
   Loader2,
@@ -19,7 +20,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import {errText, systemApi} from '@/lib/api';
-import type {GithubMirror, UpdateCheck, UpdatePackageMeta, UpdateStatus} from '@/lib/types';
+import type {AutoUpdateConfig, AutoUpdateInfo, GithubMirror, UpdateCheck, UpdatePackageMeta, UpdateStatus} from '@/lib/types';
 import {notify} from '@/lib/toast';
 import {fmtAgo, fmtDateTime} from '@/lib/format';
 import {useAuth} from '@/lib/auth-context';
@@ -27,6 +28,14 @@ import {Button} from '@/components/ui/button';
 import {Badge} from '@/components/ui/badge';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
+import {Switch} from '@/components/ui/switch';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {ConfirmDialog} from '@/components/common/layout/ConfirmDialog';
 import {LoadError} from '@/components/common/states/LoadError';
 import {RichText} from '@/lib/i18n/rich-text';
@@ -153,6 +162,45 @@ export function UpdatePanel() {
   const [mirror, setMirror] = useState<GithubMirror | null>(null);
   const [mirrorInput, setMirrorInput] = useState('');
   const [mirrorBusy, setMirrorBusy] = useState(false);
+
+  /** 自动更新：定时检测，在时间窗内自动执行一键更新 */
+  const [auto, setAuto] = useState<AutoUpdateInfo | null>(null);
+  const [autoForm, setAutoForm] = useState<AutoUpdateConfig | null>(null);
+  const [autoBusy, setAutoBusy] = useState(false);
+
+  useEffect(() => {
+    systemApi.autoUpdate().then((a) => {
+      setAuto(a);
+      setAutoForm({
+        enabled: a.enabled, interval_hours: a.interval_hours,
+        window_start: a.window_start, window_end: a.window_end, target: a.target,
+      });
+    }).catch(() => setAuto(null));
+  }, []);
+
+  const saveAuto = useCallback(async (next: AutoUpdateConfig) => {
+    setAutoBusy(true);
+    try {
+      const r = await systemApi.saveAutoUpdate(next);
+      setAuto(r);
+      setAutoForm({
+        enabled: r.enabled, interval_hours: r.interval_hours,
+        window_start: r.window_start, window_end: r.window_end, target: r.target,
+      });
+      notify.ok(r.enabled ? t('updatePanel.autoSavedOn') : t('updatePanel.autoSavedOff'));
+    } catch (e) {
+      notify.err(errText(e));
+    } finally {
+      setAutoBusy(false);
+    }
+  }, [t]);
+
+  const autoDirty = useMemo(() => !!auto && !!autoForm && (
+    auto.interval_hours !== autoForm.interval_hours
+    || auto.window_start !== autoForm.window_start
+    || auto.window_end !== autoForm.window_end
+    || auto.target !== autoForm.target
+  ), [auto, autoForm]);
 
   useEffect(() => {
     systemApi.githubToken().then(setGh).catch(() => setGh(null));
@@ -563,6 +611,112 @@ export function UpdatePanel() {
                 ? t('updatePanel.mirrorActive', {value: mirror.mirror})
                 : t('updatePanel.mirrorNone')}
           </div>
+        </div>
+      )}
+
+      {/* 自动更新：定时检测，只在时间窗内自动执行一键更新（默认关闭） */}
+      {isAdmin && autoForm && (
+        <div className="rounded-[20px] bg-muted p-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-1.5 text-xs font-medium">
+                <Clock className="h-3.5 w-3.5" />
+                {t('updatePanel.autoTitle')}
+              </div>
+              <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                <RichText text={t('updatePanel.autoDesc')} />
+              </div>
+            </div>
+            <Switch
+              aria-label={t('updatePanel.autoTitle')}
+              checked={autoForm.enabled}
+              disabled={autoBusy || (!!auto!.unsupported_reason && !autoForm.enabled)}
+              onCheckedChange={(v) => void saveAuto({...autoForm, enabled: v})}
+            />
+          </div>
+          {auto!.unsupported_reason && (
+            <div className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {t('updatePanel.autoUnsupported')}
+            </div>
+          )}
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <div className="space-y-1">
+              <Label className="text-[11px] text-muted-foreground">{t('updatePanel.autoInterval')}</Label>
+              <Input
+                type="number"
+                min={1}
+                max={168}
+                value={autoForm.interval_hours}
+                onChange={(e) => setAutoForm({...autoForm, interval_hours: Number(e.target.value) || 0})}
+                className="h-8 bg-background text-xs"
+                aria-label={t('updatePanel.autoInterval')}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[11px] text-muted-foreground">{t('updatePanel.autoWindow')}</Label>
+              <div className="flex items-center gap-1.5">
+                <Input
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={autoForm.window_start}
+                  onChange={(e) => setAutoForm({...autoForm, window_start: Number(e.target.value)})}
+                  className="h-8 bg-background text-xs"
+                  aria-label={t('updatePanel.autoWindowStart')}
+                />
+                <span className="text-xs text-muted-foreground">–</span>
+                <Input
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={autoForm.window_end}
+                  onChange={(e) => setAutoForm({...autoForm, window_end: Number(e.target.value)})}
+                  className="h-8 bg-background text-xs"
+                  aria-label={t('updatePanel.autoWindowEnd')}
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[11px] text-muted-foreground">{t('updatePanel.autoTarget')}</Label>
+              <Select value={autoForm.target}
+                      onValueChange={(v) => setAutoForm({...autoForm, target: v as AutoUpdateConfig['target']})}>
+                <SelectTrigger className="h-8 w-full bg-background text-xs" aria-label={t('updatePanel.autoTarget')}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">{t('updatePanel.autoTargetAuto')}</SelectItem>
+                  <SelectItem value="manager">{t('updatePanel.autoTargetManager')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[11px] leading-4 text-muted-foreground">
+              {t('updatePanel.autoWindowHint', {
+                tz: `UTC${auto!.server_tz_offset_minutes >= 0 ? '+' : '-'}${
+                  String(Math.floor(Math.abs(auto!.server_tz_offset_minutes) / 60)).padStart(2, '0')}:${
+                  String(Math.abs(auto!.server_tz_offset_minutes) % 60).padStart(2, '0')}`,
+              })}
+              {autoForm.target === 'auto' && !auto!.docker_ok && (
+                <> {t('updatePanel.autoNoDocker')}</>
+              )}
+            </div>
+            {autoDirty && (
+              <Button size="sm" className="rounded-full" disabled={autoBusy}
+                      onClick={() => void saveAuto(autoForm)}>
+                {t('common.save')}
+              </Button>
+            )}
+          </div>
+          {auto!.state.last_check_at > 0 && (
+            <div className="mt-2 text-[11px] leading-4 text-muted-foreground">
+              {t('updatePanel.autoLastRun', {
+                ago: fmtAgo(auto!.state.last_check_at),
+                msg: auto!.state.last_message || '-',
+              })}
+            </div>
+          )}
         </div>
       )}
 
