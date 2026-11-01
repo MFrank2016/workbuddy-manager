@@ -393,8 +393,44 @@ def model_allowed(key: dict, model: object) -> bool:
     # （另一版本根本进不来），两边都按裸名比。否则会出现一种死锁（issue #255）：
     # 国际版密钥的白名单写裸名 `deepseek-v4.1-flash`，客户端按界面提示加
     # `global:` 前缀调用，反而被白名单拒掉；不加前缀又被版本校验拒掉。
-    norm = _strip_realm_prefix if _norm_realm(key.get('realm')) else _bare_model
-    return norm(model) in {norm(x) for x in allow}
+    want = _norm_realm(key.get('realm'))
+    if want:
+        # 版本已被密钥锁死：前缀不再承担路由信息（另一版本根本进不来），
+        # 两边都按裸名比（issue #255 的死锁）。
+        return (_strip_realm_prefix(str(model))
+                in {_strip_realm_prefix(str(x)) for x in allow})
+
+    # 未锁定版本：**显式前缀只匹配同版本，裸名视为「不限版本」**。
+    #
+    # 裸名当通配符是 issue #357 的修法：密钥编辑器按版本分组展示模型，国际版
+    # 那一组给的是**裸名**（目录本身就是按版本取的），勾选后存进白名单的也是
+    # 裸名；而客户端调用时要带 `global:` 前缀才能路由到国际版账号池。严格的
+    # 字面比对让这两条路互相堵死——列表里能选、一调用就 400「不在白名单内」。
+    # 裸名没有携带版本信息，把它解释成「这个模型的任意版本」才是用户的意图；
+    # 想只放行某一版，写 `cn:` / `global:` 前缀即可（编辑器现在也会带前缀）。
+    req_realm, req_bare = _split_realm(model)
+    req_realm = req_realm or 'cn'  # 裸名默认国内版，与上游路由口径一致
+    for entry in allow:
+        entry_realm, entry_bare = _split_realm(entry)
+        if entry_bare != req_bare:
+            continue
+        if not entry_realm or entry_realm == req_realm:
+            return True
+    return False
+
+
+def _split_realm(model: object) -> tuple[str, str]:
+    """把模型名拆成（版本, 裸名）；不带前缀返回 `('', 原名)`。
+
+    与 `_bare_model` 的区别：这里把两种前缀都拆出来，供白名单**按版本比对**；
+    `_bare_model` 只去 `cn:`，保留 `global:` 参与字面比对。
+    """
+    m = str(model or '').strip()
+    low = m.lower()
+    for pref in ('cn:', 'global:'):
+        if low.startswith(pref):
+            return pref[:-1], m[len(pref):]
+    return '', m
 
 
 def _strip_realm_prefix(name: str) -> str:

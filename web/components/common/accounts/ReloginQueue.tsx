@@ -6,7 +6,7 @@ import {notify} from '@/lib/toast';
 import {useT} from '@/lib/i18n/provider';
 import {accountApi, errText} from '@/lib/api';
 import type {Account} from '@/lib/types';
-import {availabilityLabelKey, availabilityOf} from '@/lib/account-status';
+import {availabilityLabelKey, availabilityOf, needsRelogin} from '@/lib/account-status';
 import {Badge} from '@/components/ui/badge';
 import {Button} from '@/components/ui/button';
 import {
@@ -19,8 +19,7 @@ import {
 import {AddAccountDialog} from './AddAccountDialog';
 
 /**
- * 解禁队列弹窗：把「封控」账号（上游自动禁用，含 11140 被封）排成一列，
- * 支持依次或按指定账号进行重新扫码登录解封。
+ * 重登队列只收可尝试修复凭证的系统禁用账号，排除上游账号封禁。
  */
 export function ReloginQueueDialog({
   open,
@@ -44,9 +43,9 @@ export function ReloginQueueDialog({
   const [busyFile, setBusyFile] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  // 封控 = 上游自动禁用（`disabled`）。「已停用」（面板改名 / 上游手动位）是用户主动摘除，不进封控队列。
+  // 用户主动停用及上游封禁都不进入重登队列。
   const queue = useMemo(
-    () => accounts.filter((a) => availabilityOf(a) === 'disabled'),
+    () => accounts.filter(needsRelogin),
     [accounts],
   );
 

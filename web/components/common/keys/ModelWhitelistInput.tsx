@@ -104,6 +104,12 @@ export function ModelWhitelistInput({
     // 整个数组就不再是声明的那个类型（tsc 报过）。
     groups.sort((a, b) => (a.key === realm ? -1 : b.key === realm ? 1 : 0));
   }
+  // 国际版条目在目录里是裸名（目录按版本取），但调用时必须带 `global:` 前缀
+  // 才能路由到国际版账号池；白名单是按**请求里的实际名字**比对的。存裸名会出现
+  // 「列表里能选、一调用就 400 不在白名单内」（issue #357），所以勾选时存限定名。
+  // 密钥已锁定版本时后端会把两种前缀都归一，带不带前缀都能用。
+  const qualified = (realm: Realm, id: string) =>
+    realm === 'global' && !id.toLowerCase().startsWith('global:') ? `global:${id}` : id;
   const needle = query.trim().toLowerCase();
   const filtered = groups
     .map((g) => ({
@@ -218,7 +224,7 @@ export function ModelWhitelistInput({
               {freeOnly && filtered.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => emit([...names, ...filtered.flatMap((g) => g.models.map((m) => m.id))])}
+                  onClick={() => emit([...names, ...filtered.flatMap((g) => g.models.map((m) => qualified(g.key, m.id)))])}
                   className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
                 >
                   {t('keys.freeSelectAll')}
@@ -245,14 +251,15 @@ export function ModelWhitelistInput({
                 <div key={group.key} className="mb-1">
                   <div className="px-2 py-1 text-[11px] text-muted-foreground">{group.label}</div>
                   {group.models.map((m) => {
-                    const picked = names.includes(m.id);
+                    const value = qualified(group.key, m.id);
+                    const picked = names.includes(value);
                     return (
                       <button
                         key={m.id}
                         type="button"
                         role="checkbox"
                         aria-checked={picked}
-                        onClick={() => (picked ? remove(m.id) : add(m.id))}
+                        onClick={() => (picked ? remove(value) : add(value))}
                         className={cn(
                           'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs',
                           'hover:bg-muted',

@@ -75,17 +75,18 @@ class DashboardCreditExpiryTest(unittest.TestCase):
         """
         code = _code(_PAGE)
         match = re.search(
-            r'useMemo\(\s*\(\)\s*=>\s*collectScopedExpiries\(\s*scoped\s*,\s*creditsMeta\s*\)'
+            r'useMemo\(\s*\(\)\s*=>\s*collectScopedExpiries\(\s*creditTotals\.usableAccounts\s*,\s*creditsMeta\s*\)'
             r'\s*,\s*\[([^\]]*)\]',
             code,
         )
         self.assertIsNotNone(
             match,
-            '仪表盘没有用 collectScopedExpiries(scoped, creditsMeta)，'
+            '仪表盘没有用当前版本可用账号的到期明细，'
             '或者没有放进会随名单与元数据重算的 useMemo',
         )
         deps = match.group(1)
-        self.assertIn('scoped', deps, '切版本时名单变了，到期明细却不重算')
+        self.assertIn('creditTotals', deps, '可用账号名单变了，到期明细却不重算')
+        self.assertIn('partitionCredits(scoped, liveCredits)', code, '积分统计未按当前版本过滤')
         self.assertIn('creditsMeta', deps, '刷新积分后元数据变了，到期明细却不重算')
         self.assertRegex(
             code, r'scopedExpiries\[0\]',

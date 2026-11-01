@@ -62,6 +62,17 @@ class AlreadyAppliedTest(unittest.TestCase):
         self.assertEqual(self.mod.apply_patches(self.src, self.root),
                          ['already applied: 0001-x.patch'])
 
+    def test_removes_stray_patch_copy_at_source_root(self) -> None:
+        """历史事故：0040 外层 diff 把补丁自身当成新增文件，源码根多了 0040.patch。
+
+        它会随载体一起发布，纯属垃圾；流水线重入时要自动清掉。
+        """
+        stray = self.src / '0040.patch'
+        stray.write_bytes(b'leftover' + bytes([10]))
+        self._patch(_hunk('inserted'), '0001-x.patch')
+        self.mod.apply_patches(self.src, self.root)
+        self.assertFalse(stray.exists(), '源码根的补丁副本没有被清理')
+
     def test_context_drift_does_not_break_detection(self) -> None:
         """后一个补丁改动前一个补丁的**上下文邻域**——按内容判定仍要认出「已应用」。
 

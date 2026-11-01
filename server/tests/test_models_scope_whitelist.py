@@ -222,13 +222,15 @@ class SharedCriterionTest(unittest.TestCase):
         self.assertIn('不在密钥白名单内', str(not_allowed))
 
     def test_predicate_semantics(self) -> None:
-        """判据本身：空白名单放行一切；`cn:` 归一化；`global:` 不归一化。"""
+        """判据本身：空白名单放行一切；裸名通配两版；显式前缀只放行本版。"""
         self.assertTrue(keysvc.model_allowed(_key(), 'anything'))
         self.assertTrue(keysvc.model_allowed(_key(models=['cn:glm-5.2']), 'glm-5.2'))
         self.assertTrue(keysvc.model_allowed(_key(models=['glm-5.2']), 'cn:glm-5.2'))
-        # global: 决定路由，两个版本的同名模型不是一回事
+        # 显式 global: 只放行国际版，不放行国内版裸名
         self.assertFalse(keysvc.model_allowed(_key(models=['global:glm-5.2']), 'glm-5.2'))
-        self.assertFalse(keysvc.model_allowed(_key(models=['glm-5.2']), 'global:glm-5.2'))
+        # 裸名不带版本信息 → 视为「这个模型的任意版本」（issue #357：密钥编辑器
+        # 国际版组存的是裸名，客户端调用带 global: 前缀，严格比对会互相堵死）
+        self.assertTrue(keysvc.model_allowed(_key(models=['glm-5.2']), 'global:glm-5.2'))
         # 畸形输入不放行
         self.assertFalse(keysvc.model_allowed(_key(models=['glm-5.2']), None))
         self.assertFalse(keysvc.model_allowed(_key(models=['glm-5.2']), '   '))
@@ -245,9 +247,41 @@ class SharedCriterionTest(unittest.TestCase):
         self.assertTrue(keysvc.model_allowed(
             _key(realm='global', models=['global:deepseek-v4.1-flash']),
             'deepseek-v4.1-flash'))
-        # 未锁定版本时仍保留原语义（global: 决定路由，不能混）
+        # 未锁定版本时，显式 global: 条目仍只放行国际版
         self.assertFalse(keysvc.model_allowed(
+            _key(models=['global:glm-5.2']), 'glm-5.2'))
+        # 而裸名条目放行两个版本（issue #357）
+        self.assertTrue(keysvc.model_allowed(
             _key(models=['glm-5.2']), 'global:glm-5.2'))
+
+
+class PrefixedRequestAgainstBareWhitelistTest(unittest.TestCase):
+    """issue #357：白名单存裸名（编辑器国际版组的形态）时必须能调用 global: 请求。
+
+    现场：在密钥编辑器里勾选「国际版 deepseek-v4.1-flash」，保存后白名单是
+    `deepseek-v4.1-flash`；Codex 按模型列表加前缀调用 `global:deepseek-v4.1-flash`，
+    被 400 拒掉。裸名没有携带版本信息，解释成「任意版本」才是用户意图。
+    """
+
+    def test_bare_entry_allows_global_request(self) -> None:
+        key = _key(models=['deepseek-v4.1-flash'])
+        self.assertIsNone(keysvc.validate(key, '1.2.3.4', 'global:deepseek-v4.1-flash'))
+
+    def test_bare_entry_allows_global_listing(self) -> None:
+        """列表与调用同一口径：白名单写裸名时，global: 条目仍出现在 /v1/models。"""
+        listed = _listed(_key(models=['deepseek-v4.1-flash']))
+        self.assertIn('global:deepseek-v4.1-flash', listed)
+        self.assertIn('deepseek-v4.1-flash', listed)
+
+    def test_explicit_global_entry_stays_scoped(self) -> None:
+        """显式写了 global: 就是「只要国际版」，不要把裸名请求也放进来。"""
+        key = _key(models=['global:deepseek-v4.1-flash'])
+        self.assertIsNotNone(keysvc.validate(key, '1.2.3.4', 'deepseek-v4.1-flash'))
+
+    def test_locked_realm_unchanged(self) -> None:
+        self.assertIsNone(keysvc.validate(
+            _key(realm='global', models=['deepseek-v4.1-flash']), '1.2.3.4',
+            'global:deepseek-v4.1-flash'))
 
 
 class CatalogShrinkTest(unittest.TestCase):

@@ -970,9 +970,8 @@ _revive_tasks: set[asyncio.Task] = set()
 async def _revive_after_login(uid: str, group: dict) -> None:
     """登录成功后的后台收尾：等账号入池，若仍被系统禁用就自动解除。
 
-    **为什么重新登录应当自动恢复**：登录在语义上就是「刷新账号状态」—— 用户重新
-    授权了一次，凭证是全新的，上游那句「需重新登录」的禁用理由已经消失，没有道理
-    还让它留在池外。上游自己不做这件事（upsert 只换凭证），所以由面板补上。
+    新凭证可修复会话失效，但不能解除腾讯侧账号封禁。统一交给 revive_account
+    再次核对当前状态：拒绝封禁账号，只恢复仍可通过登录修复的系统禁用。
     """
     base_url = group.get('base_url')
     api_key = upstreamsvc.forward_api_key(group)
@@ -1066,8 +1065,7 @@ def _save_and_finish(result: dict, realm_of_result: str, region_msg: str,
     # 「登录成功却要等 20-30 秒」。详见 reload.request_reload_or_restart。
     reload.request_reload_or_restart(str(result.get('uid') or ''),
                                      upstream=_reload_target(group))
-    # 重新登录 = 刷新账号状态：若它此前被系统禁用（12153 连败 / 11140 被封），
-    # 这时后台自动解除 —— 否则「重新登录」救不回账号，用户报的就是这条。
+    # 登录后尝试恢复会话失效导致的系统禁用；revive_account 会拒绝上游封禁账号。
     _schedule_revive_after_login(str(result.get('uid') or ''), group)
 
     return {

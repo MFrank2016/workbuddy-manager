@@ -259,13 +259,49 @@ export function availabilityOf(a: Account): AvailabilityTier {
  * 分档对应的文案键。**两页共用同一套文案**——这正是为了让两处说法逐字一致；
  * 各写各的字符串，迟早又会出现「一个叫在线、一个叫正常」这种漂移。
  */
+/** 11140 也用于模型限流；只按封禁语义判断，不能只看错误码。 */
+export function isAccountBanned(a?: Account): boolean {
+  const reason = String(a?.disabled_reason || '');
+  if (a?.disabled !== true || /11128|11-128|channel check|渠道校验/i.test(reason)) return false;
+  return /账号存在异常行为|已被限制使用/.test(reason)
+    || (/\b11140\b/.test(reason) && /request illegal|account banned/i.test(reason));
+}
+
+export function needsRelogin(a: Account): boolean {
+  return availabilityOf(a) === 'disabled' && !isAccountBanned(a);
+}
+
+export function disabledReasonText(a: Account): string {
+  const reason = String(a.disabled_reason || '');
+  return isAccountBanned(a) ? reason.replace(/,?\s*re-login required\.?/gi, '') : reason;
+}
+
+/** 同一 uid 跨组只算一次；任一组可用时，其余额归入可用部分。 */
+export function partitionCredits(accounts: readonly Account[], live: Record<string, number>) {
+  const unique = new Map<string, Account>();
+  const isUsable = (a: Account) => availabilityOf(a) === 'online' && a.healthy !== false;
+  for (const a of accounts) {
+    if (!unique.has(a.uid) || isUsable(a)) unique.set(a.uid, a);
+  }
+  let available = 0, unavailable = 0, known = 0, unknown = 0;
+  const usableAccounts: Account[] = [];
+  for (const a of unique.values()) {
+    const usable = isUsable(a);
+    if (usable) usableAccounts.push(a);
+    const balance = live[a.uid] ?? a.credits;
+    if (typeof balance !== 'number' || !Number.isFinite(balance)) { unknown += 1; continue; }
+    known += 1;
+    if (usable) available += balance;
+    else unavailable += balance;
+  }
+  return {available, unavailable, total: available + unavailable, known, unknown, usableAccounts};
+}
+
 export function availabilityLabelKey(tier: AvailabilityTier, a?: Account): string {
   switch (tier) {
     case 'disabled':
-      // 上游对 11140（request illegal）是硬禁用、到期也不自愈，必须重新登录；
-      // 只说「已禁用」会让人干等。
-      return /11140|request illegal/i.test(String(a?.disabled_reason || ''))
-        ? 'accounts.badgeDisabledRelogin'
+      return isAccountBanned(a)
+        ? 'accounts.badgeBanned'
         : 'accounts.badgeDisabled';
     case 'disabledByPanel':
       return 'accounts.badgeDisabledByPanel';
@@ -290,7 +326,7 @@ export function availabilityLabelKey(tier: AvailabilityTier, a?: Account): strin
 }
 
 /** 需要解释「为什么是这个状态」时对应的提示键；没有可解释的返回 null。 */
-export function availabilityTitleKey(tier: AvailabilityTier): string | null {
+export function availabilityTitleKey(tier: AvailabilityTier, a?: Account): string | null {
   switch (tier) {
     case 'unknown':
       return 'accounts.badgeUnknownTitle';
@@ -308,7 +344,7 @@ export function availabilityTitleKey(tier: AvailabilityTier): string | null {
     // 用户不知道能做什么。点「启用」现在会连同系统禁用位一起解除（面板会调上游
     // 的 revive 端点）——这一点以前不成立，所以老提示只能写「重新登录」。
     case 'disabled':
-      return 'accounts.badgeDisabledTitle';
+      return isAccountBanned(a) ? 'accounts.bannedHint' : 'accounts.badgeDisabledTitle';
     default:
       return null;
   }

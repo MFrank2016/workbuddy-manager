@@ -396,15 +396,13 @@ def merge_pool_status(accounts: list[dict], status: dict) -> list[dict]:
         )
         a['disabled'] = bool(p.get('disabled'))
         # 运维手动停用（上游 issue #138/#118，本面板 issue #45）。与 `disabled`
-        # **并列独立**：那个是上游按错误分类自动禁的（11140 需重新登录），
+        # **并列独立**：那个是上游按错误分类自动禁的（包括上游账号封禁），
         # 这个是运维主动摘的，前者可 revive、后者该 enable。上游对叠加态
         # 两个字段分别透出，我们照搬，前端才能把「系统判定坏了」与
         # 「我主动摘的」分开说——合并成一个字段会互相覆盖（上游注释的原话）。
         a['manual_disabled'] = bool(p.get('manual_disabled'))
         a['manual_reason'] = str(p.get('manual_reason') or '')
-        # 禁用原因：上游对 11140（request illegal，需重新 OAuth 登录）会**硬禁用**
-        # 账号（到期也不自愈），对 14017（试用未激活）只软冷却。展示原因才能
-        # 让用户知道该去重新登录，而不是干等冷却。
+        # request illegal 表示上游账号封禁，重登无法解封；14017 只软冷却。
         a['disabled_reason'] = str(p.get('disabled_reason') or '')
         # random 签到计划（core checkin_mode=random 时注入）；legacy 下缺省。
         _pa = p.get('checkin_plan_at')
@@ -799,6 +797,15 @@ async def set_manual_disabled(uid: str, disabled: bool, reason: str = '',
                   else '已通过上游状态位启用'), 'ok'
 
 
+def is_account_banned(account: dict) -> bool:
+    """11140 还可表示模型限流；封禁判断必须包含 request illegal 等语义。"""
+    reason = str(account.get('disabled_reason') or '')
+    if account.get('disabled') is not True or re.search(r'11128|11-128|channel check|渠道校验', reason, re.I):
+        return False
+    return bool(re.search(r'账号存在异常行为|已被限制使用', reason) or (
+        re.search(r'\b11140\b', reason) and re.search(r'request illegal|account banned', reason, re.I)))
+
+
 async def revive_account(uid: str, *, base_url: str | None = None,
                          api_key: str | None = None) -> tuple[bool, str, str]:
     """解除上游的**系统自动禁用**（`disabled`）—— 与 manual_disabled 是两位。
@@ -824,6 +831,16 @@ async def revive_account(uid: str, *, base_url: str | None = None,
 
     `changed=false`（本来就没被禁用）也算成功——幂等，调用方不必先查状态。
     """
+    uid = str(uid or '').strip()
+    if not uid:
+        return False, '账号 uid 不能为空', 'error'
+    # 换令牌不能解除腾讯侧风控；自动重登与手动启用均不得重新投放已封禁账号。
+    status = await get_status(base_url=base_url, api_key=api_key)
+    account = next((a for a in status.get('accounts') or [] if str(a.get('uid') or '') == uid), None)
+    if not status.get('connected') or account is None:
+        return False, '无法确认账号封禁状态，未解除系统禁用，请稍后重试', 'error'
+    if is_account_banned(account):
+        return False, '账号被封禁：上游限制使用，重新登录不能解除限制；如需申诉请向腾讯提交反馈', 'banned'
     ok, msg, code, payload = await _admin_account_call(
         uid, 'revive', base_url=base_url, api_key=api_key)
     if not ok:

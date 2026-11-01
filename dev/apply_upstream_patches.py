@@ -112,6 +112,11 @@ def apply_patches(source: Path, patch_dir: Path) -> list[str]:
     patches = sorted(patch_dir.glob('*.patch'))
     if not patches:
         raise ValueError(f'No upstream patches found in {patch_dir}')
+    # 历史遗留清理：0040 补丁曾把外层 diff 写成「新增一个 0040.patch」，于是源码根
+    # 多出一份补丁副本、还随载体发布了出去。上游根本没有这种文件，这里在应用前删掉
+    # 根目录的 `NNNN.patch` 残留，让下次重打包自动收敛（不碰任何真实源文件）。
+    for stray in source.glob('[0-9][0-9][0-9][0-9].patch'):
+        stray.unlink()
     results = []
     manifest = _load_manifest(source)
     manifest_dirty = False

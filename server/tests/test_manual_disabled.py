@@ -531,7 +531,10 @@ def _revive(resp: _Resp, uid: str = UID) -> tuple[tuple, list]:
     def fake_client(*a: object, **kw: object) -> _Client:
         return _Client(resp, calls)
 
-    with mock.patch.object(config, 'http_client', fake_client):
+    with mock.patch.object(config, 'http_client', fake_client), \
+         mock.patch.object(wb2api, 'get_status', new=mock.AsyncMock(return_value={
+             'connected': True, 'accounts': [{'uid': uid, 'disabled': True,
+                                             'disabled_reason': '12153 session dead'}]})):
         out = asyncio.run(wb2api.revive_account(uid))
     return out, calls
 
