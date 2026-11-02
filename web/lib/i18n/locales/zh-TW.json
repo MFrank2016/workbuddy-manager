@@ -2420,5 +2420,17 @@
     "resume": "已複核，解除保護暫停",
     "resumed": "保護暫停已解除；其他限制保留",
     "repeatCount": "恢復後短時重複限流：{n} 次"
+  },
+  "events": {
+    "title": "請求事件日誌",
+    "desc": "閘道視角的逐請求事件（唯讀，15 秒刷新）",
+    "refresh": "重新整理",
+    "allOutcomes": "全部 outcome",
+    "searchPlaceholder": "帳號 / 模型 / 請求 ID / IP",
+    "count": "共 {n} 筆",
+    "requestId": "請求 ID",
+    "tokens": "prompt / completion",
+    "cache": "快取 命中 / 未命中",
+    "empty": "暫無請求事件"
   }
 }

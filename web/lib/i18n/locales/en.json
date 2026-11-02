@@ -2447,5 +2447,17 @@
     "resume": "Reviewed — clear protection",
     "resumed": "Protection cleared; other restrictions preserved",
     "repeatCount": "Rapid repeat throttles after expiry: {n}"
+  },
+  "events": {
+    "title": "Request event log",
+    "desc": "Per-request events from the gateway (read-only, refreshed every 15s)",
+    "refresh": "Refresh",
+    "allOutcomes": "All outcomes",
+    "searchPlaceholder": "account / model / request id / IP",
+    "count": "{n} rows",
+    "requestId": "Request ID",
+    "tokens": "prompt / completion",
+    "cache": "Cache hit / miss",
+    "empty": "No request events yet"
   }
 }

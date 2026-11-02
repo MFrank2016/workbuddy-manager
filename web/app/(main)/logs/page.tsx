@@ -1,7 +1,8 @@
 'use client';
 
 import {useCallback, useRef, useState} from 'react';
-import {ScrollText, RotateCcw, Trash2, ChevronLeft, ChevronRight, TriangleAlert} from 'lucide-react';
+import Link from 'next/link';
+import {ScrollText, RotateCcw, Trash2, ChevronLeft, ChevronRight, TriangleAlert, Activity} from 'lucide-react';
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {notify} from '@/lib/toast';
 import {keyApi, logApi} from '@/lib/api';
@@ -283,6 +284,12 @@ export default function LogsPage() {
       description={t('logs.description')}
       actions={
         <>
+          <Link href="/logs/events">
+            <Button variant="outline" size="sm" className="rounded-full">
+              <Activity />
+              {t('events.title')}
+            </Button>
+          </Link>
           {isAdmin && (
             <ConfirmDialog
               title={t('logs.clearTitle')}

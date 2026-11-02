@@ -2420,5 +2420,17 @@
     "resume": "確認済み・保護停止を解除",
     "resumed": "保護停止を解除しました。他の制限は維持されます",
     "repeatCount": "期限後の短時間での再制限：{n} 回"
+  },
+  "events": {
+    "title": "リクエストイベントログ",
+    "desc": "ゲートウェイ視点のリクエスト単位イベント（読み取り専用、15 秒ごと更新）",
+    "refresh": "更新",
+    "allOutcomes": "すべての outcome",
+    "searchPlaceholder": "アカウント / モデル / リクエスト ID / IP",
+    "count": "{n} 件",
+    "requestId": "リクエスト ID",
+    "tokens": "prompt / completion",
+    "cache": "キャッシュ ヒット / ミス",
+    "empty": "リクエストイベントはまだありません"
   }
 }

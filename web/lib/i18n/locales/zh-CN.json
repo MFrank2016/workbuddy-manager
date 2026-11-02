@@ -2168,5 +2168,17 @@
     "resume": "已复核，解除保护暂停",
     "resumed": "保护暂停已解除；其他限制保持原状",
     "repeatCount": "恢复后短时重复限流：{n} 次"
+  },
+  "events": {
+    "title": "请求事件日志",
+    "desc": "网关视角的逐请求事件（只读，15 秒刷新）",
+    "refresh": "刷新",
+    "allOutcomes": "全部 outcome",
+    "searchPlaceholder": "账号 / 模型 / 请求 ID / IP",
+    "count": "共 {n} 条",
+    "requestId": "请求 ID",
+    "tokens": "prompt / completion",
+    "cache": "缓存 命中 / 未命中",
+    "empty": "暂无请求事件"
   }
 }
