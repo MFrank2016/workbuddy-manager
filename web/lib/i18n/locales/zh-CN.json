@@ -299,7 +299,10 @@
     "failedHint": "今日失败 {n} 次（不计入上方请求数）",
     "hourlyAgg": "按小时（当日汇总）",
     "tokensPerSec": "输出 tok/s",
-    "throughputHint": "按 {n} 条成功请求的生成耗时估算（只覆盖日志保留期）"
+    "throughputHint": "按 {n} 条成功请求的生成耗时估算（只覆盖日志保留期）",
+    "balanceTrend": "余额趋势",
+    "balanceTrendDesc": "每个账号每天取最后一次余额快照后跨账号求和；仅覆盖有积分变动记录的日期",
+    "balanceTrendEmpty": "暂无足够的余额变动记录"
   },
   "panel": {
     "expiryMoreBuckets": "随后 {count} 批",

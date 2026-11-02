@@ -299,7 +299,10 @@
     "failedHint": "本日 {n} 件失敗（上のリクエスト数には含まれません）",
     "hourlyAgg": "時間別（本日分）",
     "tokensPerSec": "出力 tok/s",
-    "throughputHint": "{n} 件の成功リクエストの生成時間から推定（ログ保持期間内のみ）"
+    "throughputHint": "{n} 件の成功リクエストの生成時間から推定（ログ保持期間内のみ）",
+    "balanceTrend": "残高推移",
+    "balanceTrendDesc": "各アカウントのその日の最後の残高スナップショットを合算。積分変動の記録がある日のみ対象",
+    "balanceTrendEmpty": "残高変動の記録がまだ十分ではありません"
   },
   "panel": {
     "expiryMoreBuckets": "続けて {count} バッチ",

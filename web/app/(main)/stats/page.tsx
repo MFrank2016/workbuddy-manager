@@ -33,6 +33,7 @@ import {
 } from '@/lib/usage-chart';
 import {fmtCompact, fmtNumber, fmtCredit} from '@/lib/format';
 import {PageHeader} from '@/components/common/layout/PageHeader';
+import {BalanceTrend} from '@/components/stats/BalanceTrend';
 import {StatCard} from '@/components/common/layout/StatCard';
 import {EmptyState} from '@/components/common/layout/EmptyState';
 import {ConfirmDialog} from '@/components/common/layout/ConfirmDialog';
@@ -503,6 +504,8 @@ export default function StatsPage() {
           )}
         </div>
       </section>
+
+      <BalanceTrend />
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <BreakdownPanel title={t('stats.byModel')} icon={Cpu} items={byModel} throughput cardTestId="stats-model-card" />

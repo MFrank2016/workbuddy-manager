@@ -45,11 +45,24 @@ async def call(upstream: dict, method: str, path: str,
         raise PanelAPIError(400, '分组未配置 base_url')
     key = upstreamsvc.forward_api_key(upstream)
     headers = {'Authorization': f'Bearer {key}'} if key else {}
-    try:
-        async with config.http_client(timeout, connect=5) as client:
-            resp = await client.request(method, base + path, headers=headers, json=body)
-    except Exception as exc:  # noqa: BLE001 - 传输层错误统一转 502
-        raise PanelAPIError(502, f'面板 API 不可达：{exc}') from exc
+    # 传输层重试：只对幂等方法（GET/HEAD）重试一次。面板 API 跑在同一个宿主上，
+    # 偶发 connect reset / 连接池抖动不该直接把一次只读查询变成 502；写请求不重试
+    # （上游可能已经执行，重发会重复写）。httpx 默认 HTTP/1.1，不需要额外禁 h2。
+    attempts = 2 if method.upper() in ('GET', 'HEAD') else 1
+    last_exc: Exception | None = None
+    resp = None
+    for attempt in range(attempts):
+        try:
+            async with config.http_client(timeout, connect=5) as client:
+                resp = await client.request(method, base + path, headers=headers, json=body)
+            last_exc = None
+            break
+        except Exception as exc:  # noqa: BLE001 - 传输层错误统一转 502
+            last_exc = exc
+            if attempt + 1 < attempts:
+                await asyncio.sleep(0.3 * (attempt + 1))
+    if last_exc is not None or resp is None:
+        raise PanelAPIError(502, f'面板 API 不可达：{last_exc}') from last_exc
 
     if resp.status_code >= 400:
         detail = ''

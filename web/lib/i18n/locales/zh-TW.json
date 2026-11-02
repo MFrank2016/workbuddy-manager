@@ -299,7 +299,10 @@
     "failedHint": "今日失敗 {n} 次（不計入上方請求數）",
     "hourlyAgg": "按小時（當日彙總）",
     "tokensPerSec": "輸出 tok/s",
-    "throughputHint": "依 {n} 筆成功請求的生成耗時估算（僅涵蓋日誌保留期間）"
+    "throughputHint": "依 {n} 筆成功請求的生成耗時估算（僅涵蓋日誌保留期間）",
+    "balanceTrend": "餘額趨勢",
+    "balanceTrendDesc": "每個帳號每天取最後一次餘額快照後跨帳號求和；僅涵蓋有積分變動記錄的日期",
+    "balanceTrendEmpty": "暫無足夠的餘額變動記錄"
   },
   "panel": {
     "expiryMoreBuckets": "隨後 {count} 批",

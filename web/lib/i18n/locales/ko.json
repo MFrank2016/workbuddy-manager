@@ -299,7 +299,10 @@
     "failedHint": "오늘 {n}건 실패 (위 요청 수에 포함되지 않음)",
     "hourlyAgg": "시간별(오늘)",
     "tokensPerSec": "출력 tok/s",
-    "throughputHint": "성공한 요청 {n}건의 생성 시간으로 추정(로그 보존 기간만)"
+    "throughputHint": "성공한 요청 {n}건의 생성 시간으로 추정(로그 보존 기간만)",
+    "balanceTrend": "잔액 추이",
+    "balanceTrendDesc": "각 계정의 하루 마지막 잔액 스냅샷을 합산합니다. 적립 변동 기록이 있는 날짜만 포함",
+    "balanceTrendEmpty": "잔액 변동 기록이 아직 충분하지 않습니다"
   },
   "panel": {
     "expiryMoreBuckets": "이어서 {count} 배치",

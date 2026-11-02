@@ -326,7 +326,10 @@
     "failedHint": "{n} failed today (not counted in the requests above)",
     "hourlyAgg": "Hourly (today)",
     "tokensPerSec": "Output tok/s",
-    "throughputHint": "Estimated from {n} successful requests (request-log retention window only)"
+    "throughputHint": "Estimated from {n} successful requests (request-log retention window only)",
+    "balanceTrend": "Balance trend",
+    "balanceTrendDesc": "Each account contributes its last balance snapshot per day, summed across accounts; only days with credit changes are covered",
+    "balanceTrendEmpty": "Not enough balance change records yet"
   },
   "panel": {
     "expiryMoreBuckets": "{count} more batches",
