@@ -1088,13 +1088,10 @@ export default function AccountsPage() {
       rateLimitedModels(a).length > 0 ||
       (a.manual_disabled === true &&
         Boolean(a.manual_reason && a.manual_reason.startsWith('手动冷却')));
-    // 手机卡片宽度只有 260–300px，必须换行（否则最右侧的停用/删除被裁掉）；
-    // 桌面表格改为固定列宽（table-fixed）后，操作列拿到 330px 定宽 —— 10 个图标
-    // 按钮按 h-7 + 2px 间距正好排成一行（9×28+8×2 是常见形态，留了余量）。
-    // 有备注时还要显示「本部署共享」提示，它的文案长度随语言变化；此时保留
-    // flex-wrap 让它落到第二行，而不是把定宽的操作列撑出横向滚动。
+    // 操作列按 27% 宽（1280px 表格下约 345px），11 个图标按钮在桌面宽度下
+    // 正好排成一行；更窄的视口允许换行，避免 table-fixed 把按钮裁掉。
     return (
-      <div className={`flex flex-wrap justify-end gap-1 md:gap-0.5 ${noteText(a) ? '' : 'md:flex-nowrap'}`}>
+      <div className="flex flex-wrap justify-end gap-1 md:gap-0.5">
         {/* 备注（issue #67）：只动本端库里的一行文本，不碰上游、不重启容器，
             所以放在最前——它是最轻的动作。任何状态下的账号都能写备注：
             停用的号恰恰更容易忘了它是谁。 */}
@@ -1759,22 +1756,26 @@ export default function AccountsPage() {
         {/* 桌面端：表格 */}
         {/* 桌面端表格：固定列宽（table-fixed）+ UID 单行省略。
             此前这里是 auto 布局，列宽由内容撑开 —— UID 是 36 字符的 UUID、
-            操作列最多有 10 个图标按钮，两者加起来必然把表格推宽，于是容器
+            操作列最多有 11 个图标按钮，两者加起来必然把表格推宽，于是容器
             （Table 组件自带的 overflow-x-auto）出现横向滚动条，用户每次都要
             拖动才能看到最右侧的操作按钮（issue #151 的后续反馈）。
             固定布局把「列宽」从内容手里拿走：内容超宽就在本列内省略 / 换行，
-            表格永远等于容器宽度，不再需要横向拖动。 */}
+            表格永远等于容器宽度，不再需要横向拖动。
+            注意：表头与表体的列数/列宽必须一致，且所有列宽合计 100%。
+            多出的表体单元格没有表头列宽，会被 table-fixed 压成 0，
+            操作按钮随即被 td 的 overflow-hidden 裁掉。 */}
         <div className="hidden md:block">
         <Table className="table-fixed [&_td]:overflow-hidden">
           <TableHeader>
             <TableRow className="border-b border-border/60 hover:bg-transparent">
               <TableHead className="w-[17%] pl-4 text-[11px] text-muted-foreground">{t('accounts.colNickname')}</TableHead>
-              <TableHead className="w-[14%] text-[11px] text-muted-foreground">UID</TableHead>
-              <TableHead className="w-[14%] text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
-              <TableHead className="w-[14%] text-[11px] text-muted-foreground">{t('metric.credits')}</TableHead>
-              <TableHead className="w-[9%] text-[11px] text-muted-foreground">{t('accounts.colExpiry')}</TableHead>
-              {hasProxyUi && <TableHead className="w-[10%] text-[11px] text-muted-foreground">{t('accounts.proxyLine')}</TableHead>}
-              {isAdmin && <TableHead className="w-[330px] whitespace-nowrap pr-4 text-right text-[11px] text-muted-foreground">{t('accounts.colActions')}</TableHead>}
+              <TableHead className="w-[10%] text-[11px] text-muted-foreground">UID</TableHead>
+              <TableHead className="w-[11%] text-[11px] text-muted-foreground">{t('accounts.colStatus')}</TableHead>
+              <TableHead className="w-[8%] text-[11px] text-muted-foreground">{t('accounts.colProfile')}</TableHead>
+              <TableHead className="w-[10%] text-[11px] text-muted-foreground">{t('metric.credits')}</TableHead>
+              <TableHead className="w-[8%] text-[11px] text-muted-foreground">{t('accounts.colExpiry')}</TableHead>
+              {hasProxyUi && <TableHead className="w-[9%] text-[11px] text-muted-foreground">{t('accounts.proxyLine')}</TableHead>}
+              {isAdmin && <TableHead className="w-[27%] whitespace-nowrap pr-4 text-right text-[11px] text-muted-foreground">{t('accounts.colActions')}</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1849,7 +1850,7 @@ export default function AccountsPage() {
                 <TableCell>{renderCredits(a)}</TableCell>
                 <TableCell>{renderExpiry(a)}</TableCell>
                 {hasProxyUi && <TableCell>{renderProxy(a)}</TableCell>}
-                {isAdmin && <TableCell className="whitespace-nowrap pr-4">{renderActions(a)}</TableCell>}
+                {isAdmin && <TableCell className="whitespace-nowrap">{renderActions(a)}</TableCell>}
               </TableRow>
             ))}
           </TableBody>
