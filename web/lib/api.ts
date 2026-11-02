@@ -815,6 +815,30 @@ export const panelApi = {
     post<{ok: boolean}>(`/api/panel/accounts/${encodeURIComponent(uid)}/pause${groupQs(upstreamId)}`, {}),
   resumeAccount: (uid: string, upstreamId?: number | null) =>
     post<{ok: boolean}>(`/api/panel/accounts/${encodeURIComponent(uid)}/resume${groupQs(upstreamId)}`, {}),
+  // —— 内嵌面板能力迁移 Phase 2：此前缺失的只读/全池动作 ——
+  requestLogs: (limit = 200, upstreamId?: number | null) =>
+    get<Record<string, unknown>>(
+      `/api/panel/request_logs?limit=${encodeURIComponent(String(limit))}${upstreamId == null ? '' : '&upstream_id=' + encodeURIComponent(String(upstreamId))}`),
+  loginRegions: (upstreamId?: number | null) =>
+    get<{ok: boolean; regions: {code: string; name: string}[]}>(
+      `/api/panel/login/regions${groupQs(upstreamId)}`),
+  saveUsage: (upstreamId?: number | null) =>
+    post<{ok: boolean}>(`/api/panel/usage/save${groupQs(upstreamId)}`, {}),
+  accountBalance: (uid: string, upstreamId?: number | null) =>
+    post<Record<string, unknown>>(
+      `/api/panel/accounts/${encodeURIComponent(uid)}/balance${groupQs(upstreamId)}`, {}),
+  reviveAccount: (uid: string, upstreamId?: number | null) =>
+    post<{ok: boolean}>(`/api/panel/accounts/${encodeURIComponent(uid)}/revive${groupQs(upstreamId)}`, {}),
+  removeAccount: (uid: string, upstreamId?: number | null) =>
+    post<{ok: boolean}>(`/api/panel/accounts/${encodeURIComponent(uid)}/remove${groupQs(upstreamId)}`, {}),
+  activityAll: (upstreamId?: number | null) =>
+    post<Record<string, unknown>>(`/api/panel/activity_all${groupQs(upstreamId)}`, {}),
+  keepaliveAll: (upstreamId?: number | null) =>
+    post<Record<string, unknown>>(`/api/panel/keepalive_all${groupQs(upstreamId)}`, {}),
+  travelAll: (upstreamId?: number | null) =>
+    post<Record<string, unknown>>(`/api/panel/travel_all${groupQs(upstreamId)}`, {}),
+  balanceAll: (upstreamId?: number | null) =>
+    post<Record<string, unknown>>(`/api/panel/balance_all${groupQs(upstreamId)}`, {}),
 };
 
 export const settingsApi = {
