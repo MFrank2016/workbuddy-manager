@@ -291,3 +291,128 @@ async def panel_account_resume(uid: str, upstream_id: int | None = Query(None),
         _raise(exc)
     security.audit(user, 'panel_account_resume', uid)
     return out
+
+
+@router.get('/panel/request_logs')
+async def panel_request_logs(limit: int = Query(200), upstream_id: int | None = Query(None),
+                             user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `GET /panel/api/request_logs`（逐请求指标/归档摘要，只读）。"""
+    lim = max(1, min(1000, int(limit or 200)))
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'GET', f'/panel/api/request_logs?limit={lim}')
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+
+
+@router.get('/panel/login/regions')
+async def panel_login_regions(upstream_id: int | None = Query(None),
+                              user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `GET /panel/api/login/regions`（国际版注册地区白名单，只读）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'GET', '/panel/api/login/regions')
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+
+
+@router.post('/panel/usage/save')
+async def panel_usage_save(upstream_id: int | None = Query(None),
+                           user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/usage/save`（把用量账本落盘）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(up, 'POST', '/panel/api/usage/save', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    security.audit(user, 'panel_usage_save', '')
+    return out
+
+
+@router.post('/panel/accounts/{uid}/balance')
+async def panel_account_balance(uid: str, upstream_id: int | None = Query(None),
+                                user: dict = Depends(security.current_user)) -> dict:
+    """代理 core `POST /panel/api/accounts/{uid}/balance`（实时查余额，只读语义）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        return await panelapi.call(up, 'POST', f'/panel/api/accounts/{_uid(uid)}/balance', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+
+
+@router.post('/panel/accounts/{uid}/revive')
+async def panel_account_revive(uid: str, upstream_id: int | None = Query(None),
+                               user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/accounts/{uid}/revive`（复活被禁用的账号）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(up, 'POST', f'/panel/api/accounts/{_uid(uid)}/revive', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    security.audit(user, 'panel_account_revive', uid)
+    return out
+
+
+@router.post('/panel/accounts/{uid}/remove')
+async def panel_account_remove(uid: str, upstream_id: int | None = Query(None),
+                               user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/accounts/{uid}/remove`（从池与磁盘移除凭据）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(up, 'POST', f'/panel/api/accounts/{_uid(uid)}/remove', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    security.audit(user, 'panel_account_remove', uid)
+    return out
+
+
+@router.post('/panel/activity_all')
+async def panel_activity_all(upstream_id: int | None = Query(None),
+                             user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/activity_all`（全池补活跃上报）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(up, 'POST', '/panel/api/activity_all', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    security.audit(user, 'panel_activity_all', '')
+    return out
+
+
+@router.post('/panel/keepalive_all')
+async def panel_keepalive_all(upstream_id: int | None = Query(None),
+                              user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/keepalive_all`（全池刷新 token）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(up, 'POST', '/panel/api/keepalive_all', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    security.audit(user, 'panel_keepalive_all', '')
+    return out
+
+
+@router.post('/panel/travel_all')
+async def panel_travel_all(upstream_id: int | None = Query(None),
+                           user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/travel_all`（全池推进猫猫旅行）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(up, 'POST', '/panel/api/travel_all', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    security.audit(user, 'panel_travel_all', '')
+    return out
+
+
+@router.post('/panel/balance_all')
+async def panel_balance_all(upstream_id: int | None = Query(None),
+                            user: dict = Depends(_admin)) -> dict:
+    """代理 core `POST /panel/api/balance_all`（全池刷新余额与到期快照）。"""
+    try:
+        up = panelapi.resolve_upstream(upstream_id)
+        out = await panelapi.call(up, 'POST', '/panel/api/balance_all', {})
+    except panelapi.PanelAPIError as exc:
+        _raise(exc)
+    security.audit(user, 'panel_balance_all', '')
+    return out
