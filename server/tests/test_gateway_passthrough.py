@@ -101,9 +101,18 @@ class GatewayPassthroughTest(unittest.TestCase):
         # 所有 yield 出来的都必须是上游原样的 chunk（不能有第二个变量名混进来）
         # 注意：这里按**出现次数**断言，只查包含太弱——文件里有两处 yield，
         # 改掉其中一处仍会通过（这个弱点是被反证试出来的）。
+        #
+        # 唯一的例外是「上游流中途断开」的失败收尾：补一帧 SSE error + [DONE]。
+        # 那不是改写上游内容，而是连接已断后给客户端一个可读的结束信号
+        # （否则客户端只看到 chunked body 没有结束块 → 裸 ECONNRESET）。
+        # 允许清单保持精确：新增任何非透传 yield 都必须在这里显式登记。
         yields = [ln.strip() for ln in src.splitlines() if ln.strip().startswith('yield ')]
-        self.assertEqual(yields, ['yield chunk'] * len(yields),
-                         f'转发热路径出现了非透传的 yield：{yields}')
+        extras = [y for y in yields if y != 'yield chunk']
+        self.assertEqual(
+            sorted(extras),
+            sorted({'yield _interrupt_frame(exc)', "yield b'data: [DONE]\\n\\n'"}),
+            f'转发热路径出现了未登记的非透传 yield：{extras}',
+        )
 
     def test_no_tool_calls_handling_anywhere(self) -> None:
         """转发热路径不碰 tool_calls —— 上游的修复通过透传自动生效。

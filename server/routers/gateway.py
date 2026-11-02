@@ -970,6 +970,23 @@ def _scan_sse(pending: str, usage: dict) -> tuple[str, bool]:
     return pending, saw_content
 
 
+def _interrupt_frame(exc: Exception) -> bytes:
+    """上游流中途断开时补发的 SSE error 帧。
+
+    HTTP 头已经发出，状态码改不了；补一帧结构化错误再以 [DONE] 收尾，
+    客户端（OpenCode / AI SDK）才能显示可读原因，而不是裸 ECONNRESET。
+    与 workbuddy2api 自身的 ``upstream_truncated`` 帧同形。
+    """
+    payload = {
+        'error': {
+            'message': 'upstream stream interrupted: ' + str(exc),
+            'type': 'upstream_error',
+            'code': 'upstream_stream_interrupted',
+        }
+    }
+    return ('data: ' + json.dumps(payload, ensure_ascii=False) + '\n\n').encode()
+
+
 # ── 密钥自查用量（issue #137）─────────────────────────────
 # 拿密钥自身鉴权、只回这把密钥自己的数字，**只读面板已记录的值、不触发任何上游请求**
 # （否则「查一下还剩多少」会变成一次真实调用，反过来加剧额度消耗与限流）。
@@ -1480,6 +1497,10 @@ async def _chat(request: Request, upstream_path: str):
         # 首字延迟：只记一次，取「首个含正文的 delta」到达时刻。
         # 注意起点含建连 + 上游排队 + 模型开始思考，这正是「上游多久开始回话」。
         first_token_ms: int | None = None
+        # 上游在流中途断开（容器重启 / 网络抖动 / 上游读超时）。HTTP 头已经
+        # 发出，状态码改不了；此时必须补一帧 SSE error + [DONE] 再收尾，否则
+        # 客户端只看到 chunked body 没有结束块，表现为裸 ECONNRESET。
+        interrupted = False
         try:
             async for chunk in resp.aiter_bytes():
                 if status_code >= 400:
@@ -1497,14 +1518,40 @@ async def _chat(request: Request, upstream_path: str):
                 if saw_content and first_token_ms is None:
                     first_token_ms = int((time.time() - started) * 1000)
                 yield chunk
+        except httpx.TransportError as exc:
+            # httpx 把 httpcore 的 RemoteProtocolError / ReadError / ReadTimeout
+            # 都收敛到 TransportError。**不捕 OSError**：客户端断连时 yield 也可能
+            # 抛 OSError，那不该被误判成「上游中断」并记 502。
+            interrupted = True
+            error_text = f'{type(exc).__name__}: {exc}'[:500]
+            logger.warning('流式上游中断 model=%s: %s', requested_model or '', error_text)
+            try:
+                yield _interrupt_frame(exc)
+                yield b'data: [DONE]\n\n'
+            except Exception:  # noqa: BLE001
+                # 客户端已经断开（写失败）：错误帧发不出去不是新问题，吞掉，
+                # 让 finally 照常记账，避免把原始传输错误盖成写错误。
+                pass
         finally:
-            await resp.aclose()
-            await client.aclose()
+            # 收尾失败不能盖掉上面的错误帧/原始错误：close 只是释放连接，
+            # 失败时吞掉，保证请求日志一定写下去。
+            try:
+                await resp.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await client.aclose()
+            except Exception:  # noqa: BLE001
+                pass
             latency = int((time.time() - started) * 1000)
             pt = int(usage.get('prompt_tokens') or 0)
             ct = int(usage.get('completion_tokens') or 0)
+            # 中途断流的请求在 HTTP 层仍是 200（头已发出），但内部日志必须记
+            # 502 + 原因：否则管理端「请求日志」会把失败显示成成功，排障时
+            # 只能去翻 uvicorn 的 traceback。
             _record(
-                key, ip, requested_model or '', mapped or '', status_code, pt, ct,
+                key, ip, requested_model or '', mapped or '',
+                502 if interrupted else status_code, pt, ct,
                 latency, ua, error_text, True, usage=usage,
                 first_token=first_token_ms, effort=effort,
             )
