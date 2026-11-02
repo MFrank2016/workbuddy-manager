@@ -1033,6 +1033,10 @@ export interface UpstreamConfig {
   upstream?: Record<string, unknown>;
   /** 国际版（workbuddy.ai）路由：enabled / chat_base / billing_base */
   global?: Record<string, unknown>;
+  /** 模型可见性：allowed（白名单）/ hidden（黑名单），条目支持 cn:/global: 前缀 */
+  models?: Record<string, unknown>;
+  /** 网关思考档位策略：enabled / default_effort / client_priority / override_scope / model_defaults */
+  thinking?: Record<string, unknown>;
   /**
    * 上游的运维管理端点开关：enabled。
    *

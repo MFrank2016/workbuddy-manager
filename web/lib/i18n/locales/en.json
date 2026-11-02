@@ -1918,7 +1918,9 @@
     "toolsNonDefaultHint": "Non-default upstream groups exist ({groups}): set core flags on that instance’s own panel or config file. Only the default group can be changed here.",
     "toolsCostHint": "Search/MCP produce no model usage, but every call hits the upstream and consumes account credit.",
     "toolsSaved": "Tool endpoint settings saved",
-    "toolsLoadError": "Failed to load tool endpoint settings. Refresh and try again."
+    "toolsLoadError": "Failed to load tool endpoint settings. Refresh and try again.",
+    "tabModelpolicy": "Model visibility",
+    "tabThinking": "Thinking effort"
   },
   "phrases": {
     "默认上游 · 出站标识与图片策略": "Default upstream · egress identity and image policy",

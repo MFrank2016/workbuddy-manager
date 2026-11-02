@@ -18,6 +18,8 @@
 export const SETTINGS_TABS = [
   'upstream',
   'proxy',
+  'modelpolicy',
+  'thinking',
   'models',
   'users',
   'tokens',
@@ -59,6 +61,8 @@ export function settingsTabHref(tab: SettingsTab): string {
 export const SETTINGS_TAB_LABEL_KEYS: Record<SettingsTab, string> = {
   upstream: 'settings.tabUpstream',
   proxy: 'settings.tabProxy',
+  modelpolicy: 'settings.tabModelpolicy',
+  thinking: 'settings.tabThinking',
   models: 'settings.tabModels',
   users: 'settings.tabUsers',
   tokens: 'settings.tabTokens',

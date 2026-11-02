@@ -1891,7 +1891,9 @@
     "toolsNonDefaultHint": "存在非預設上游分組（{groups}）：core 的開關需到該實例自己的面板或設定檔設定，這裡只能改預設分組。",
     "toolsCostHint": "搜尋/MCP 不產生模型用量，但每次呼叫都會真實請求上游並佔用帳號額度。",
     "toolsSaved": "工具端點設定已儲存",
-    "toolsLoadError": "讀取工具端點設定失敗，請重新整理後重試"
+    "toolsLoadError": "讀取工具端點設定失敗，請重新整理後重試",
+    "tabModelpolicy": "模型可見性",
+    "tabThinking": "思考檔位"
   },
   "phrases": {
     "默认上游 · 出站标识与图片策略": "預設上游 · 出站識別與圖片策略",

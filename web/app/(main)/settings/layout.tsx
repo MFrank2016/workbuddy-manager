@@ -22,6 +22,8 @@ import {
   KeyRound,
   Route,
   Radar,
+  Eye,
+  Brain,
 } from 'lucide-react';
 import {usePathname} from 'next/navigation';
 import {notify} from '@/lib/toast';
@@ -714,6 +716,15 @@ const UPSTREAM_FIELDS: Field[] = [
     def: false,
   },
   {
+    key: 'cn_chat_base',
+    kind: 'text',
+    label: '国内版 Chat 基址',
+    desc: '国内版的聊天 / 模型接口基址，留空用内置默认（copilot.tencent.com）。'
+      + '必须以 http:// 或 https:// 开头，否则上游启动失败',
+    placeholder: '留空 = https://copilot.tencent.com',
+    def: '',
+  },
+  {
     key: 'user_agent',
     kind: 'text',
     label: '出站 User-Agent',
@@ -854,7 +865,7 @@ const ADMIN_FIELDS: Field[] = [
   },
 ];
 
-type Group = 'schedule' | 'prompt' | 'cooldown' | 'features' | 'session' | 'pool' | 'server' | 'upstream' | 'global' | 'admin';
+type Group = 'schedule' | 'prompt' | 'cooldown' | 'features' | 'session' | 'pool' | 'server' | 'upstream' | 'global' | 'admin' | 'modelpolicy' | 'thinking';
 
 /** 高级 JSON 编辑器里可直写的上游配置段（与后端 _EDITABLE_SECTIONS 一致） */
 type WireSection =
@@ -879,6 +890,79 @@ interface GroupDef {
   desc: string;
   fields: Field[];
 }
+
+const MODEL_POLICY_FIELDS: Field[] = [
+  {
+    key: 'allowed',
+    kind: 'list',
+    label: '模型白名单',
+    desc: '只放行列表内模型；留空 = 全部放行。条目支持裸名（两域）与 cn:/global: 前缀（只该域）。'
+      + '白名单同时作用于 /v1/models 列表与点名调用，白名单外一律 400',
+    placeholder: 'deepseek-v4.1-flash, global:glm-5.3',
+    def: [],
+  },
+  {
+    key: 'hidden',
+    kind: 'list',
+    label: '模型黑名单',
+    desc: '隐藏列表内模型；留空 = 不隐藏。与白名单同时配置时取交集：'
+      + '白名单圈定可见集合，黑名单再从里面剔除',
+    placeholder: 'glm-5.2, global:secret-model',
+    def: [],
+  },
+];
+
+const THINKING_FIELDS: Field[] = [
+  {
+    key: 'enabled',
+    kind: 'bool',
+    label: '启用思考档位策略',
+    desc: '关闭时网关完全不碰 reasoning_effort，行为与改前一致',
+    def: false,
+  },
+  {
+    key: 'default_effort',
+    kind: 'select',
+    label: '默认思考档位',
+    desc: '客户端没带档位时补的档；max = 模型支持的最高档，不支持时落到不高于它的最高支持档',
+    options: [
+      {value: 'max', label: 'max（最高支持档）'},
+      {value: 'high', label: 'high'},
+      {value: 'medium', label: 'medium'},
+      {value: 'low', label: 'low'},
+      {value: 'minimal', label: 'minimal'},
+      {value: 'off', label: 'off（关闭思考）'},
+    ],
+    def: 'max',
+  },
+  {
+    key: 'client_priority',
+    kind: 'bool',
+    label: '客户端优先',
+    desc: '开启：客户端发了档位就按客户端（含关闭），只在缺档时补默认；'
+      + '关闭：网关优先改写客户端档位',
+    def: true,
+  },
+  {
+    key: 'override_scope',
+    kind: 'select',
+    label: '覆盖范围（网关优先时）',
+    desc: 'level：只覆盖档位，尊重客户端主动关闭；all：连关闭也覆盖为开启 + 目标档',
+    options: [
+      {value: 'level', label: 'level（只覆盖档位）'},
+      {value: 'all', label: 'all（连开关一起覆盖）'},
+    ],
+    def: 'level',
+  },
+  {
+    key: 'model_defaults',
+    kind: 'map',
+    label: '按模型覆盖默认档',
+    desc: '每行 key=value；键支持裸名或 cn:/global: 前缀，值 max/high/... 或 inherit（不覆盖）',
+    placeholder: 'global:deepseek-v4.1-flash=high',
+    def: {},
+  },
+];
 
 const GROUPS: GroupDef[] = [
   {
@@ -937,6 +1021,22 @@ const GROUPS: GroupDef[] = [
     desc: '网关向腾讯发起请求时的客户端标识，以及图片数量/能力预检。'
       + '这些字段只作用于**默认上游**；其它分组请到该实例自己的面板或配置文件里改',
     fields: UPSTREAM_FIELDS,
+  },
+  {
+    id: 'modelpolicy',
+    section: 'models',
+    title: '模型可见性',
+    desc: '白名单 / 黑名单同时作用于 /v1/models 列表与点名调用；保存后立即生效。'
+      + '两者都支持裸名（两域）与 cn:/global: 前缀（只该域）',
+    fields: MODEL_POLICY_FIELDS,
+  },
+  {
+    id: 'thinking',
+    section: 'thinking',
+    title: '思考档位',
+    desc: '网关对 reasoning_effort 的取舍策略。默认关闭（不碰档位）；'
+      + '开启后按「客户端优先 / 网关优先 + 覆盖范围」决定实际出站档位',
+    fields: THINKING_FIELDS,
   },
   {
     id: 'global',
@@ -1172,6 +1272,8 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
   const TAB_META: Record<SettingsTab, {icon: React.ReactNode}> = {
     upstream: {icon: <Server className="h-3.5 w-3.5" />},
     proxy: {icon: <Route className="h-3.5 w-3.5" />},
+    modelpolicy: {icon: <Eye className="h-3.5 w-3.5" />},
+    thinking: {icon: <Brain className="h-3.5 w-3.5" />},
     models: {icon: <Shuffle className="h-3.5 w-3.5" />},
     users: {icon: <Users className="h-3.5 w-3.5" />},
     tokens: {icon: <KeyRound className="h-3.5 w-3.5" />},
@@ -1252,6 +1354,8 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
     upstream: defaultValues(UPSTREAM_FIELDS),
     global: defaultValues(GLOBAL_FIELDS),
     admin: defaultValues(ADMIN_FIELDS),
+    modelpolicy: defaultValues(MODEL_POLICY_FIELDS),
+    thinking: defaultValues(THINKING_FIELDS),
   });
   /** 加载时的原始值，用于只提交改动过的项 */
   const original = useRef<Record<Group, Record<string, FieldValue>>>({
@@ -1265,6 +1369,8 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
     upstream: defaultValues(UPSTREAM_FIELDS),
     global: defaultValues(GLOBAL_FIELDS),
     admin: defaultValues(ADMIN_FIELDS),
+    modelpolicy: defaultValues(MODEL_POLICY_FIELDS),
+    thinking: defaultValues(THINKING_FIELDS),
   });
   /** 高级模式（直接编辑 JSON） */
   const [advanced, setAdvanced] = useState(false);
@@ -1314,6 +1420,8 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
       upstream: pickValues(UPSTREAM_FIELDS, cfg.upstream),
       global: pickValues(GLOBAL_FIELDS, cfg.global),
       admin: pickValues(ADMIN_FIELDS, cfg.admin),
+      modelpolicy: pickValues(MODEL_POLICY_FIELDS, cfg.models),
+      thinking: pickValues(THINKING_FIELDS, cfg.thinking),
     };
     setForm(picked);
     original.current = {
@@ -1327,6 +1435,8 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
       upstream: {...picked.upstream},
       global: {...picked.global},
       admin: {...picked.admin},
+      modelpolicy: {...picked.modelpolicy},
+      thinking: {...picked.thinking},
     };
     setSchedText(JSON.stringify(cfg.schedule ?? {}, null, 2));
     setCoolText(JSON.stringify(cfg.cooldown ?? {}, null, 2));

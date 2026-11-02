@@ -1891,7 +1891,9 @@
     "toolsNonDefaultHint": "存在非默认上游分组（{groups}）：core 的开关需到该实例自己的面板或配置文件设置，这里只能改默认分组。",
     "toolsCostHint": "搜索/MCP 不产生模型用量，但每次调用都会真实请求上游并占用账号额度。",
     "toolsSaved": "工具端点设置已保存",
-    "toolsLoadError": "读取工具端点设置失败，请刷新重试"
+    "toolsLoadError": "读取工具端点设置失败，请刷新重试",
+    "tabModelpolicy": "模型可见性",
+    "tabThinking": "思考档位"
   },
   "redPacket": {
     "title": "红包",
