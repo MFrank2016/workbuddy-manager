@@ -291,7 +291,10 @@ class GatewayErrorContractHTTPTest(unittest.TestCase):
         self.assertEqual(r.status_code, 429)
         self.assertIn('retry-after', {k.lower() for k in r.headers},
                       '上游已经给了重置墙钟，网关必须把它变成标准的 Retry-After')
-        self.assertGreater(int(r.headers['retry-after']), 7000)
+        # 上游重置时间在类定义时固定为「现在 + 2h」；完整 suite 跑得久时
+        # 到这里已经过去几十秒，7000 的阈值会误报。留 5 分钟余量仍能证明
+        # 不是 60s 的短退避，也不会掩盖「按本地时区算错 8 小时」的真 bug。
+        self.assertGreater(int(r.headers['retry-after']), 6900)
 
     # ── 流式（本次唯一的行为变更）──────────────────────────
     def test_unknown_model_stream_is_json_404(self) -> None:
@@ -303,7 +306,10 @@ class GatewayErrorContractHTTPTest(unittest.TestCase):
     def test_upstream_429_stream_carries_retry_after(self) -> None:
         r = self._post(self._body(stream=True), 429, self._BODY_6004)
         self.assertEqual(r.status_code, 429)
-        self.assertGreater(int(r.headers['retry-after']), 7000)
+        # 上游重置时间在类定义时固定为「现在 + 2h」；完整 suite 跑得久时
+        # 到这里已经过去几十秒，7000 的阈值会误报。留 5 分钟余量仍能证明
+        # 不是 60s 的短退避，也不会掩盖「按本地时区算错 8 小时」的真 bug。
+        self.assertGreater(int(r.headers['retry-after']), 6900)
 
     def test_upstream_500_stream_stays_json(self) -> None:
         """普通 5xx 不该被 11102 的改判规则误伤。"""

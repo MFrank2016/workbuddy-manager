@@ -17,14 +17,15 @@ from . import config, db, redpacket, security
 from .iputil import client_ip
 from .stdio_utf8 import force_utf8_stdio
 from .routers import (
-    accounts, anthropic, auth, gateway, keys, logs, models, panel, playground,
+    accounts, accountrisk as accountrisk_router, anthropic, auth, gateway, keys, logs,
+    models, panel, playground,
     pgsync as pgsync_router, redpackets, responses, security as security_router,
     proxies, settings, stats, system, tokens, tools, upstreams,
     watchdog as watchdog_router,
 )
 from .services import (
-    accountlog, autoupdate, cooling, dailyplan, modelrecovery, modelroutes, pgsync,
-    renew, tasklog, taskrun, watchdog as watchdog_service,
+    accountlog, accountrisk, autoupdate, cooling, dailyplan, modelrecovery, modelroutes,
+    pgsync, renew, tasklog, taskrun, watchdog as watchdog_service,
 )
 
 # 最早时刻把标准输出/错误钉成 UTF-8：Windows 中文区域默认按 cp936 编码，日志里
@@ -61,6 +62,8 @@ async def lifespan(app: FastAPI):
     # 后台采集上游自动任务日志（旅行/活跃/签到/保活），容器日志会被重建清掉，
     # 这里解析后落库长期保留，界面才能看到「这趟旅行领了多少积分」
     tasklog.start_collector()
+    accountrisk.initialize()
+    accountrisk.start()
     # 定时领奖（成长任务里幂等的那一半）：只把已完成任务的奖励领回来，不伪造
     # 任何活跃上报，因此可以安全地到点自动跑。点亮那半只允许手动（见 taskrun）
     taskrun.start_scheduler()
@@ -90,6 +93,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         tasklog.stop_collector()
+        accountrisk.stop()
         taskrun.stop_scheduler()
         renew.stop_scheduler()
         cooling.stop_scheduler()
@@ -150,7 +154,7 @@ def _warn_if_exposed() -> None:
 
 app = FastAPI(
     title='WorkBuddy Manager',
-    version='2.11.7-manager.1',
+    version='2.11.8-manager.1',
     lifespan=lifespan,
     # 生产环境默认关闭交互式文档与 OpenAPI 描述：
     # 它们会把管理接口全貌（路径、参数、结构）暴露给任何未认证访问者，
@@ -290,6 +294,7 @@ app.add_middleware(ApiBodyLimitMiddleware)
 # ── 路由注册顺序很重要：先 API / 网关，最后挂静态文件 ──
 app.include_router(auth.router)
 app.include_router(accounts.router)
+app.include_router(accountrisk_router.router)
 app.include_router(keys.router)
 # 红包：批量发放带额度的密钥（与密钥同属「分发」这件事，所以挨着放）
 app.include_router(redpackets.router)

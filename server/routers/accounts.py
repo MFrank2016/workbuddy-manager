@@ -21,6 +21,7 @@ from ..services import (
     tencent, tokenimport, wb2api,
 )
 from ..services.realm import realm_of, supports_checkin
+from ..services import taskpacing
 
 logger = logging.getLogger('workbuddy.accounts')
 
@@ -1079,7 +1080,7 @@ def _save_and_finish(result: dict, realm_of_result: str, region_msg: str,
     }
 
 
-def _auth_dict(raw: dict) -> dict:
+def _auth_dict(raw: dict, directory: Path | None = None) -> dict:
     """把授权文件内容整理成探测 / 查询积分所需的字段（含版本，供端点分派）。
 
     device_token 是**每号**的设备风控 token（auth 文件顶层 device_token 键，
@@ -1093,6 +1094,7 @@ def _auth_dict(raw: dict) -> dict:
     acct = raw.get('account') or {}
     auth = raw.get('auth') or {}
     return {
+        '_risk_auth_dir': str(directory or config.AUTH_DIR),
         'access_token': auth.get('accessToken', ''),
         'uid': acct.get('uid', ''),
         'nickname': str(acct.get('nickname') or ''),
@@ -1117,7 +1119,8 @@ def _load(filename: str, auth_dir: Path | None = None) -> dict:
 @router.post('/accounts/{filename}/checkin')
 async def account_checkin(filename: str, upstream_id: int | None = Query(None),
                           user: dict = Depends(security.require_admin)) -> dict:
-    raw = _load(filename, _require_dir(_group(upstream_id)))
+    base_dir = _require_dir(_group(upstream_id))
+    raw = _load(filename, base_dir)
     acct = raw.get('account') or {}
     auth = raw.get('auth') or {}
     token = auth.get('accessToken', '')
@@ -1145,6 +1148,7 @@ async def account_checkin(filename: str, upstream_id: int | None = Query(None),
 
     # 传完整 auth dict：billing 域要带 X-User-Id 等身份头（对齐上游 BillingHeaders）
     code, message = await tencent.checkin({
+        '_risk_auth_dir': str(base_dir),
         'access_token': token,
         'uid': uid,
         'enterprise_id': str(acct.get('enterpriseId') or ''),
@@ -1166,7 +1170,7 @@ async def account_checkin(filename: str, upstream_id: int | None = Query(None),
         # 签到会改变余额，先失效缓存再查实时值
         creditsvc.invalidate(uid)
         _, credits, _, _, _, expiries = await creditsvc.get_credits(
-            _auth_dict(raw), nickname=str(acct.get('nickname') or ''),
+            _auth_dict(raw, base_dir), nickname=str(acct.get('nickname') or ''),
         )
 
     return {
@@ -1192,10 +1196,11 @@ async def account_credits(
     force=true 可绕过缓存强制查询。
     expiries: [{'at': epoch 秒, 'amount': 额度}]，按到期时间升序，只含仍有余额的套餐。
     """
-    raw = _load(filename, _require_dir(_group(upstream_id)))
+    base_dir = _require_dir(_group(upstream_id))
+    raw = _load(filename, base_dir)
     acct = raw.get('account') or {}
     ok, value, message, cached, age, expiries = await creditsvc.get_credits(
-        _auth_dict(raw), force=force, nickname=str(acct.get('nickname') or ''),
+        _auth_dict(raw, base_dir), force=force, nickname=str(acct.get('nickname') or ''),
     )
     return {
         'ok': ok,
@@ -1320,7 +1325,7 @@ async def refresh_all_credits(
         # 冷启动时这才是真正要限流的窗口。
         async with sem:
             ok, value, message, cached, age, expiries = await creditsvc.get_credits(
-                _auth_dict(raw), force=force, nickname=str(acc.get('nickname') or ''),
+                _auth_dict(raw, base_dir), force=force, nickname=str(acc.get('nickname') or ''),
             )
         return acc['uid'], value if ok else None, message, cached, age, expiries
 
@@ -1424,6 +1429,7 @@ async def checkin_all(upstream_id: int | None = Query(None),
             # 瞬时 10001（上游短时限流）在 sem 内退避重试：放掉信号量再睡会让
             # 其他账号涌入，重新制造并发峰值（issue #256）。
             code, message = await _checkin_with_retry({
+                '_risk_auth_dir': str(base_dir),
                 'access_token': token,
                 'uid': str((raw.get('account') or {}).get('uid') or uid),
                 'enterprise_id': str((raw.get('account') or {}).get('enterpriseId') or ''),
@@ -1436,7 +1442,12 @@ async def checkin_all(upstream_id: int | None = Query(None),
         db.add_checkin_log(uid, nickname, 'manual-batch', ok, code, message)
         return {'nickname': nickname, 'ok': ok, 'code': code, 'message': message}
 
-    results = await asyncio.gather(*(one(a) for a in accounts)) if accounts else []
+    results = await taskpacing.run_accounts(
+        'checkin', accounts, one,
+        needs_request=lambda a: (a.get('uid') not in done_today
+                                 and a.get('checkin_supported') is not False
+                                 and not a.get('invalid_reason')),
+    )
     # 两类账号都不进 `total` 分母，各自单独报数：
     #   · skipped：国际版没有签到体系，既不会成功也不是失败。算进 total 会显示成
     #     「5/6 成功」，用户以为漏签了一个号、反复去点——而它永远是「已跳过」。
@@ -1862,12 +1873,14 @@ def upstream_logs(limit: int = 200, user: dict = Depends(security.current_user))
 @router.post('/accounts/{filename}/test')
 async def account_test(filename: str, upstream_id: int | None = Query(None),
                        user: dict = Depends(security.require_admin)) -> dict:
-    raw = _load(filename, _require_dir(_group(upstream_id)))
+    base_dir = _require_dir(_group(upstream_id))
+    raw = _load(filename, base_dir)
     acct = raw.get('account') or {}
     auth = raw.get('auth') or {}
     # 探测需要 uid / enterpriseId / domain 以复刻上游请求头，
     # device_token 用于 X-Device-Token（上游 chat 域同样注入）
     ok, message = await tencent.probe_account({
+        '_risk_auth_dir': str(base_dir),
         'access_token': auth.get('accessToken', ''),
         'uid': acct.get('uid', ''),
         'enterprise_id': acct.get('enterpriseId', ''),
@@ -1962,6 +1975,7 @@ async def probe_models(body: dict = Body(...),
             'nickname': str(acct.get('nickname') or ''),
             'realm': realm_of(auth),
             'auth': {
+                '_risk_auth_dir': str(base_dir),
                 'access_token': auth.get('accessToken', ''),
                 'uid': str(acct.get('uid') or ''),
                 'enterprise_id': str(acct.get('enterpriseId') or ''),
@@ -2047,6 +2061,7 @@ async def _refresh_one_token(filename: str, base_dir: Path) -> dict:
                 'nickname': nickname, 'uid': uid, 'expires_at': None}
 
     ok, message, fields = await tencent.refresh_token({
+        '_risk_auth_dir': str(base_dir),
         'access_token': auth.get('accessToken', ''),
         'refresh_token': auth.get('refreshToken', ''),
         'uid': uid,
@@ -2260,6 +2275,7 @@ async def claim_compensation_all(upstream_id: int | None = Query(None),
                     'message': '无有效 accessToken'}
         # 传完整 auth dict：billing 域要带 X-User-Id 等身份头（与签到同口径）
         self_auth = {
+            '_risk_auth_dir': str(base_dir),
             'access_token': token,
             'uid': str((raw.get('account') or {}).get('uid') or uid),
             'enterprise_id': str((raw.get('account') or {}).get('enterpriseId') or ''),
@@ -2277,7 +2293,10 @@ async def claim_compensation_all(upstream_id: int | None = Query(None),
             status, credit, message = await tencent.claim_compensation(self_auth, realm)
         return {'nickname': nickname, 'status': status, 'credit': credit, 'message': message}
 
-    results = await asyncio.gather(*(one(a) for a in accounts)) if accounts else []
+    results = await taskpacing.run_accounts(
+        'compensation', accounts, one,
+        needs_request=lambda a: supports_checkin(realm_of(a)) and not a.get('invalid_reason'),
+    )
     # 分母只算**真的发了请求**的账号：already / skipped 既不是成功也不是失败，
     # 算进 total 会让界面显示成「5/6 成功」，用户以为有个号没领到（与签到同口径）。
     tried = [r for r in results if r['status'] in ('claimed', 'nothing', 'failed')]

@@ -1246,6 +1246,10 @@ def _prune_side_tables() -> None:
     各阈值优先读 `log_retention_overrides`（迁移 C2），缺键回落到模块常量。
     """
     now = int(time.time())
+    # 时钟早于保留期（测试桩把 time.time 打到 0、或系统钟异常）时没有可清理的旧
+    # 数据；而 Windows 的 localtime 不接受负时间戳（OSError: Invalid argument）。
+    if now <= _HOURLY_RETAIN_DAYS * 86400:
+        return
     hourly_days = _retention_limit('hourly_days', _HOURLY_RETAIN_DAYS)
     task_days = _retention_limit('task_days', _TASK_LOG_RETAIN_DAYS)
     audit_max = _retention_limit('audit_max_rows', _AUDIT_LOG_MAX_ROWS)

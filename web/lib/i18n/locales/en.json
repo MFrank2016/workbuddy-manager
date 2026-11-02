@@ -2157,7 +2157,9 @@
     "分钟": "min",
     "请求上限（旧版上游）": "Request limit (legacy upstream)",
     "压缩大请求体（gzip）": "Compress large request bodies (gzip)",
-    "超过 64 KB 的对话请求先 gzip 压缩再发给上游。服务器出口带宽窄时长上下文的首字节能快 20 秒以上；短对话不压缩、无额外开销。上游不接受压缩时会自动改用未压缩重发": "Chat requests larger than 64 KB are gzip-compressed before being sent upstream. With a narrow server uplink this cuts more than 20 seconds off the first byte for long contexts; short chats are sent uncompressed with no overhead. If upstream rejects the compressed body, the request is automatically resent uncompressed."
+    "超过 64 KB 的对话请求先 gzip 压缩再发给上游。服务器出口带宽窄时长上下文的首字节能快 20 秒以上；短对话不压缩、无额外开销。上游不接受压缩时会自动改用未压缩重发": "Chat requests larger than 64 KB are gzip-compressed before being sent upstream. With a narrow server uplink this cuts more than 20 seconds off the first byte for long contexts; short chats are sent uncompressed with no overhead. If upstream rejects the compressed body, the request is automatically resent uncompressed.",
+    "适用于上游自动任务、管理端每日计划和令牌续期；两项填 0 保持原行为，手动执行不受影响": "Applies to upstream automatic tasks, manager daily plans and token renewal. Set both limits to 0 to keep existing behavior; manual runs are unchanged.",
+    "上游每天各类任务在原定整点后随机延迟 0～N 分钟；0 表示整点执行。同一天重启沿用原时刻，不改变管理端每日计划": "Each upstream task runs 0–N minutes after its scheduled hour. 0 keeps exact hours. Restarting on the same day keeps the planned time. Manager daily plans are unchanged."
   },
   "redPacket": {
     "title": "Red packets",
@@ -2398,5 +2400,31 @@
     "titlePlain": "What's new",
     "itemCount": "{n} changes",
     "boundaryShort": "Only for accounts you or your family have authorized; bulk registration, trading, SMS farming, theft, evasion and resale are prohibited."
+  },
+  "risk": {
+    "pausedCount": "Currently safety-paused: {n}",
+    "noNewPauses": "These are historical or recovered events. No accounts are currently safety-paused by these warnings.",
+    "acknowledged": "Warnings acknowledged. No account pause state was changed.",
+    "title": "Account safety warnings",
+    "count": "{n} affected accounts",
+    "acknowledge": "Acknowledge warnings",
+    "explanation": "A token-refresh HTTP 429 pauses only that account. Model quotas and 11140 retain their own cooldown rules. A 429 alone does not prove a ban.",
+    "loadFailed": "Warnings or pause state could not be confirmed. Please retry.",
+    "details": "View accounts, operations and times",
+    "paused": "Refresh backoff",
+    "unknown": "Pause state unknown",
+    "historical": "Historical record (no automatic pause)",
+    "warning": "Warning",
+    "refresh": "Token refresh",
+    "background": "Background task",
+    "pauseFailed": "Automatic pause failed or is unconfirmed. Check account status.",
+    "recovery": "Retry-After is bounded to 5 minutes–6 hours (default 5 minutes). Expiry permits the next normal request. Three repeated 429s within 5 minutes of each expiry require review. Acknowledging is not resuming; clearing protection preserves manual stops, system disablement and other cooldowns.",
+    "accounts": "Open accounts",
+    "review": "Paused · review required",
+    "history": "Show acknowledged history",
+    "retryAt": "Next retry allowed:",
+    "resume": "Reviewed — clear protection",
+    "resumed": "Protection cleared; other restrictions preserved",
+    "repeatCount": "Rapid repeat throttles after expiry: {n}"
   }
 }
