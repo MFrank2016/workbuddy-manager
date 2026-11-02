@@ -31,6 +31,9 @@ import {
   FolderInput,
   TriangleAlert,
   ScanSearch,
+  Activity,
+  Plane,
+  Wallet,
 } from 'lucide-react';
 import {useHeartbeat} from '@/lib/use-heartbeat';
 import {useAsyncAll} from '@/lib/use-async-data';
@@ -174,6 +177,8 @@ export default function AccountsPage() {
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [moveTarget, setMoveTarget] = useState<Account | null>(null);
   const [checkinAllBusy, setCheckinAllBusy] = useState(false);
+  /** 全池脚本动作（活跃 / 保活 / 旅行 / 余额）正在跑哪一个；null = 空闲 */
+  const [poolTaskBusy, setPoolTaskBusy] = useState<string | null>(null);
   /** 每个账号积分是实时查询还是命中缓存（含缓存已存在秒数） */
   const [creditsMeta, setCreditsMeta] = useState<Record<string, CreditsMeta>>({});
   /**
@@ -371,6 +376,24 @@ export default function AccountsPage() {
       setRefreshTokensBusy(false);
     }
   }, [reloadAll, groupId]);
+
+  /** 全池脚本动作：活跃上报 / token 保活 / 猫猫旅行 / 余额刷新。
+   *  与内嵌面板的 *_all 端点同源；写操作仅管理员可见。 */
+  const runPoolTask = useCallback(async (kind: 'activity' | 'keepalive' | 'travel' | 'balance') => {
+    setPoolTaskBusy(kind);
+    try {
+      if (kind === 'activity') await panelApi.activityAll(groupId);
+      else if (kind === 'keepalive') await panelApi.keepaliveAll(groupId);
+      else if (kind === 'travel') await panelApi.travelAll(groupId);
+      else await panelApi.balanceAll(groupId);
+      notify.ok(t('accounts.poolTaskDone', {task: t(`accounts.poolTask_${kind}`)}));
+      await reloadAll();
+    } catch (e) {
+      notify.err(errText(e));
+    } finally {
+      setPoolTaskBusy(null);
+    }
+  }, [groupId, reloadAll]);
 
   /** 批量签到：逐账号记录结果 */
   const checkinAll = useCallback(async () => {
@@ -1354,6 +1377,31 @@ export default function AccountsPage() {
                 <span className="hidden sm:inline">{t('accounts.refreshCredits')}</span>
                 <span className="sm:hidden">{t('accounts.creditsShort')}</span>
               </Button>
+            )}
+            {/* 全池脚本动作（与内嵌面板 *_all 端点同源）。活跃/旅行只对国内版账号
+                有实际效果，国际版会被上游跳过；保活/余额两域都适用。 */}
+            {isAdmin && (
+              <>
+                {([
+                  ['activity', Activity],
+                  ['keepalive', RefreshCw],
+                  ['travel', Plane],
+                  ['balance', Wallet],
+                ] as const).map(([kind, Icon]) => (
+                  <Button
+                    key={kind}
+                    size="sm"
+                    variant="outline"
+                    className="rounded-full"
+                    onClick={() => runPoolTask(kind)}
+                    disabled={poolTaskBusy !== null || !visible.length}
+                    title={t(`accounts.poolTask_${kind}`)}
+                  >
+                    <Icon className={poolTaskBusy === kind ? 'animate-pulse' : ''} />
+                    <span className="hidden lg:inline">{t(`accounts.poolTask_${kind}`)}</span>
+                  </Button>
+                ))}
+              </>
             )}
             {/* 「一键刷新令牌」= 对所有账号真实续期 accessToken（逐个用 refreshToken
                 换新令牌），末尾只重载一次上游。与逐行那个 KeyRound 按钮同一套实现，

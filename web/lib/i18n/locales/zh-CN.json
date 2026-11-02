@@ -705,7 +705,12 @@
     "probeStopping": "正在完成当前批次…",
     "badgeBanned": "● 账号被封禁",
     "bannedHint": "上游因账号异常行为限制使用；重新登录无法解除，请向腾讯提交反馈申诉。",
-    "modelLimitDetails": "受限模型（{n} 个）"
+    "modelLimitDetails": "受限模型（{n} 个）",
+    "poolTask_activity": "活跃上报",
+    "poolTask_keepalive": "保活刷新",
+    "poolTask_travel": "猫猫旅行",
+    "poolTask_balance": "余额刷新",
+    "poolTaskDone": "已完成：{task}"
   },
   "keys": {
     "title": "API 密钥",
