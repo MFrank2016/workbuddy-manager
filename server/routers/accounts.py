@@ -1147,16 +1147,7 @@ async def account_checkin(filename: str, upstream_id: int | None = Query(None),
         }
 
     # 传完整 auth dict：billing 域要带 X-User-Id 等身份头（对齐上游 BillingHeaders）
-    code, message = await tencent.checkin({
-        '_risk_auth_dir': str(base_dir),
-        'access_token': token,
-        'uid': uid,
-        'enterprise_id': str(acct.get('enterpriseId') or ''),
-        'domain': str(auth.get('domain') or ''),
-        'realm': auth.get('realm'),
-        'device_token': str(raw.get('device_token') or ''),
-        'proxy': str(raw.get('proxy') or ''),
-    }, realm_of(auth))
+    code, message = await tencent.checkin(_auth_dict(raw, base_dir), realm_of(auth))
     # 0 = 签到成功；10001 = 今日已签到，同样视为成功；
     # -2 = 该版本无签到体系（国际版），不是失败，也不该记成失败
     ok = code in (0, 10001)
@@ -1428,16 +1419,8 @@ async def checkin_all(upstream_id: int | None = Query(None),
             # 传完整 auth dict：billing 域要带 X-User-Id 等身份头
             # 瞬时 10001（上游短时限流）在 sem 内退避重试：放掉信号量再睡会让
             # 其他账号涌入，重新制造并发峰值（issue #256）。
-            code, message = await _checkin_with_retry({
-                '_risk_auth_dir': str(base_dir),
-                'access_token': token,
-                'uid': str((raw.get('account') or {}).get('uid') or uid),
-                'enterprise_id': str((raw.get('account') or {}).get('enterpriseId') or ''),
-                'domain': str(auth.get('domain') or ''),
-                'realm': auth.get('realm'),
-                'device_token': str(raw.get('device_token') or ''),
-                'proxy': str(raw.get('proxy') or ''),
-            }, realm_of(auth))
+            code, message = await _checkin_with_retry(
+                _auth_dict(raw, base_dir), realm_of(auth))
         ok = code in (0, 10001)
         db.add_checkin_log(uid, nickname, 'manual-batch', ok, code, message)
         return {'nickname': nickname, 'ok': ok, 'code': code, 'message': message}
@@ -1875,20 +1858,11 @@ async def account_test(filename: str, upstream_id: int | None = Query(None),
                        user: dict = Depends(security.require_admin)) -> dict:
     base_dir = _require_dir(_group(upstream_id))
     raw = _load(filename, base_dir)
-    acct = raw.get('account') or {}
-    auth = raw.get('auth') or {}
     # 探测需要 uid / enterpriseId / domain 以复刻上游请求头，
-    # device_token 用于 X-Device-Token（上游 chat 域同样注入）
-    ok, message = await tencent.probe_account({
-        '_risk_auth_dir': str(base_dir),
-        'access_token': auth.get('accessToken', ''),
-        'uid': acct.get('uid', ''),
-        'enterprise_id': acct.get('enterpriseId', ''),
-        'domain': auth.get('domain', ''),
-        'realm': auth.get('realm'),
-        'device_token': str(raw.get('device_token') or ''),
-        'proxy': str(raw.get('proxy') or ''),
-    })
+    # device_token 用于 X-Device-Token（上游 chat 域同样注入）。
+    # 统一走 _auth_dict：nickname / proxy_session 必须带上，否则 {account}
+    # 会回退到 UID，探测与聊天从两个出口 IP 出去。
+    ok, message = await tencent.probe_account(_auth_dict(raw, base_dir))
     return {'ok': ok, 'message': message}
 
 
@@ -1974,16 +1948,7 @@ async def probe_models(body: dict = Body(...),
             'uid': str(acct.get('uid') or ''),
             'nickname': str(acct.get('nickname') or ''),
             'realm': realm_of(auth),
-            'auth': {
-                '_risk_auth_dir': str(base_dir),
-                'access_token': auth.get('accessToken', ''),
-                'uid': str(acct.get('uid') or ''),
-                'enterprise_id': str(acct.get('enterpriseId') or ''),
-                'domain': str(auth.get('domain') or ''),
-                'realm': auth.get('realm'),
-                'device_token': str(raw.get('device_token') or ''),
-                'proxy': str(raw.get('proxy') or ''),
-            },
+            'auth': _auth_dict(raw, base_dir),
         })
 
     sem = asyncio.Semaphore(min(_PROBE_CONCURRENCY, len(targets)))
@@ -2060,19 +2025,9 @@ async def _refresh_one_token(filename: str, base_dir: Path) -> dict:
         return {'ok': False, 'message': '该账号没有 refreshToken —— 只能重新扫码或登录',
                 'nickname': nickname, 'uid': uid, 'expires_at': None}
 
-    ok, message, fields = await tencent.refresh_token({
-        '_risk_auth_dir': str(base_dir),
-        'access_token': auth.get('accessToken', ''),
-        'refresh_token': auth.get('refreshToken', ''),
-        'uid': uid,
-        'enterprise_id': acct.get('enterpriseId', ''),
-        'domain': auth.get('domain', ''),
-        'realm': auth.get('realm'),
-        'device_token': str(raw.get('device_token') or ''),
-        # v1.0.78 起：刷新要带上该账号的线路（proxy），否则走默认出口，
-        # 与账号绑定的线路不一致可能被风控当成异常来源。
-        'proxy': str(raw.get('proxy') or ''),
-    })
+    refresh_auth = _auth_dict(raw, base_dir)
+    refresh_auth['refresh_token'] = auth.get('refreshToken', '')
+    ok, message, fields = await tencent.refresh_token(refresh_auth)
     if not ok:
         return {'ok': False, 'message': message, 'nickname': nickname,
                 'uid': uid, 'expires_at': None}
@@ -2274,16 +2229,7 @@ async def claim_compensation_all(upstream_id: int | None = Query(None),
             return {'nickname': nickname, 'status': 'failed', 'credit': 0,
                     'message': '无有效 accessToken'}
         # 传完整 auth dict：billing 域要带 X-User-Id 等身份头（与签到同口径）
-        self_auth = {
-            '_risk_auth_dir': str(base_dir),
-            'access_token': token,
-            'uid': str((raw.get('account') or {}).get('uid') or uid),
-            'enterprise_id': str((raw.get('account') or {}).get('enterpriseId') or ''),
-            'domain': str(auth.get('domain') or ''),
-            'realm': auth.get('realm'),
-            'device_token': str(raw.get('device_token') or ''),
-            'proxy': str(raw.get('proxy') or ''),
-        }
+        self_auth = _auth_dict(raw, base_dir)
         realm = realm_of(auth)
         async with sem:
             ok, data, _msg = await tencent.compensation_status(self_auth, realm)

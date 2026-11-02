@@ -216,6 +216,44 @@ class AccountProxyTest(unittest.TestCase):
         if os.name == 'posix':
             self.assertEqual(self.file.stat().st_mode & 0o777, 0o600)
 
+    def test_token_renewal_keeps_resin_session_name(self):
+        """续期必须沿用昵称/ proxy_session 的会话名，不能回退到 UID。
+
+        账号文件顶层没有 proxy_session 时，聊天走昵称 slug；如果续期 payload
+        不带 nickname，route_session_name 会回退到 UID 前 8 位，导致同一账号
+        在 Resin 上出现两个出口 IP（本次封号排查中的真实问题）。
+        """
+        self.raw['account']['nickname'] = 'bakemeierpfifer642@gmail.com'
+        self.raw['proxy'] = 'route-a'
+        payload = renew._account_payload(self.raw)
+        self.assertEqual(payload['nickname'], 'bakemeierpfifer642@gmail.com')
+        self.assertEqual(payload['proxy_session'], '')
+        self.assertEqual(config.route_session_name(payload), 'bakemeierpfifer642-gmail')
+
+        self.raw['proxy_session'] = 'sess-a'
+        payload = renew._account_payload(self.raw)
+        self.assertEqual(payload['proxy_session'], 'sess-a')
+        self.assertEqual(config.route_session_name(payload), 'sess-a')
+
+    def test_connectivity_test_uses_same_resin_session_name(self):
+        """连通性测试也必须用聊天同一条 Resin 会话，不能回退到 UID。"""
+        self.raw['account']['nickname'] = 'bakemeierpfifer642@gmail.com'
+        self.raw['proxy'] = 'route-a'
+        self.raw['proxy_session'] = 'sess-a'
+        self.file.write_text(json.dumps(self.raw))
+        seen = {}
+
+        async def fake_probe(auth, model='glm-5.2'):
+            seen.update(auth)
+            return True, 'ok'
+
+        with mock.patch.object(tencent, 'probe_account', new=mock.AsyncMock(side_effect=fake_probe)):
+            response = self.client.post('/api/accounts/workbuddy-example.json/test')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(seen.get('nickname'), 'bakemeierpfifer642@gmail.com')
+        self.assertEqual(seen.get('proxy_session'), 'sess-a')
+        self.assertEqual(config.route_session_name(seen), 'sess-a')
+
 
 if __name__ == '__main__':
     unittest.main()

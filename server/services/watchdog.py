@@ -827,11 +827,13 @@ async def scan_compensation() -> dict:
         self_auth = {
             'access_token': token,
             'uid': str((raw.get('account') or {}).get('uid') or account.get('uid') or ''),
+            'nickname': str((raw.get('account') or {}).get('nickname') or ''),
             'enterprise_id': str((raw.get('account') or {}).get('enterpriseId') or ''),
             'domain': str(auth.get('domain') or ''),
             'realm': auth.get('realm'),
             'device_token': str(raw.get('device_token') or ''),
             'proxy': str(raw.get('proxy') or ''),
+            'proxy_session': str(raw.get('proxy_session') or ''),
         }
         realm = realm_of(auth)
         async with sem:

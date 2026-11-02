@@ -90,11 +90,16 @@ def _account_payload(raw: dict) -> dict:
         'access_token': auth.get('accessToken', ''),
         'refresh_token': auth.get('refreshToken', ''),
         'uid': acct.get('uid', ''),
+        'nickname': str(acct.get('nickname') or ''),
         'enterprise_id': acct.get('enterpriseId', ''),
         'domain': auth.get('domain', ''),
         'realm': auth.get('realm'),
         'device_token': str(raw.get('device_token') or ''),
         'proxy': str(raw.get('proxy') or ''),
+        # 续期与聊天必须使用同一个 Resin 会话名：route_session_name 优先
+        # proxy_session，其次昵称 slug；缺了这两个字段会回退到 UID 前 8 位，
+        # 同一账号就会从两个出口 IP 出去，触发上游风控。
+        'proxy_session': str(raw.get('proxy_session') or ''),
     }
 
 

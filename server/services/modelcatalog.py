@@ -262,9 +262,14 @@ async def _build(realm: str, force: bool = False) -> dict:
         token = _load_token(str(acct.get('file') or ''))
         if not token:
             continue
-        ok, data = await tencent.fetch_models({'access_token': token, 'realm': realm,
-                                               'domain': acct.get('domain', ''),
-                                               'proxy': acct.get('proxy', '')})
+        ok, data = await tencent.fetch_models({
+            'access_token': token, 'realm': realm,
+            'domain': acct.get('domain', ''),
+            'proxy': acct.get('proxy', ''),
+            # 与聊天/续期同一条 Resin 会话，避免模型列表从另一个出口 IP 出去。
+            'nickname': acct.get('nickname', ''),
+            'proxy_session': acct.get('proxy_session', ''),
+        })
         if ok and isinstance(data, list) and data:
             return {
                 'models': _decorate(data, realm),
