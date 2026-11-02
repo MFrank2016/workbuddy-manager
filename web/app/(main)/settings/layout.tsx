@@ -173,13 +173,35 @@ interface TextField {
   def: string;
 }
 
+interface ListField {
+  key: string;
+  /** 字符串数组（上游 []string）：表单里用逗号分隔文本承载，保存时解析回数组 */
+  kind: 'list';
+  label: string;
+  desc: string;
+  placeholder?: string;
+  def: string[];
+}
+
+interface MapField {
+  key: string;
+  /** 字符串映射（上游 map[string]string）：表单里用每行 key=value 承载 */
+  kind: 'map';
+  label: string;
+  desc: string;
+  placeholder?: string;
+  def: Record<string, string>;
+}
+
 type Field =
   | BoolField
   | NumField
   | HoursField
   | DurationField
   | SelectField
-  | TextField;
+  | TextField
+  | ListField
+  | MapField;
 
 /** 时长格式校验：数字 + 单位（s/m/h，不含 d —— Go time.ParseDuration 不认 d） */
 const DURATION_RE = /^\d+\s*(s|m|h)$/i;
@@ -547,9 +569,35 @@ const POOL_FIELDS: Field[] = [
     offWhenZero: true,
     def: '30m',
   },
+  {
+    key: 'balance_window',
+    kind: 'duration',
+    label: '窗口用量调度',
+    desc: '按 (账号, 模型) 本窗口 token 用量反比降权，把流量从热点号摊开。'
+      + '留空 = 上游默认 1h，填 0 = 关闭（行为与旧版一致）',
+    offWhenZero: true,
+    def: '1h',
+  },
+  {
+    key: 'model_fallback',
+    kind: 'map',
+    label: '模型降级路由',
+    desc: '6004 模型级限流时同账号改用等价模型，例如 deepseek-v4.1-flash=deepseek-v4-flash。'
+      + '每行一条 key=value；键支持裸名或 cn:/global: 前缀。留空 = 不降级',
+    placeholder: 'deepseek-v4.1-flash=deepseek-v4-flash',
+    def: {},
+  },
 ];
 
 const FEATURES_FIELDS: Field[] = [
+  {
+    key: 'embeddings_enabled',
+    kind: 'bool',
+    label: '嵌入端点（/v1/embeddings）',
+    desc: '开启后网关提供 OpenAI 兼容的 /v1/embeddings（实验特性）。上游唯一实测可用的'
+      + '嵌入模型是 bge-m3；关闭时端点仍存在但返回 403 embeddings_disabled',
+    def: false,
+  },
   {
     key: 'sanitize_blacklist_fingerprints',
     kind: 'bool',
@@ -645,6 +693,26 @@ const SERVER_FIELDS: Field[] = [
 ];
 
 const UPSTREAM_FIELDS: Field[] = [
+  {
+    key: 'tls_fingerprint',
+    kind: 'select',
+    label: '出站 TLS 指纹',
+    desc: 'node = 复刻官方 Node/OpenSSL 的 ClientHello（JA3+JA4 双对齐）；'
+      + 'go = crypto/tls 原生形态。指纹级变更，建议先验证再开启',
+    options: [
+      {value: 'go', label: 'go（原生，默认）'},
+      {value: 'node', label: 'node（复刻官方）'},
+    ],
+    def: 'go',
+  },
+  {
+    key: 'head_order',
+    kind: 'bool',
+    label: '出站头按官方顺序发送',
+    desc: '在连接层把请求头重排成官方真机顺序。默认关闭：顺序对齐属于指纹级变更，'
+      + '开启后仅对新建连接生效',
+    def: false,
+  },
   {
     key: 'user_agent',
     kind: 'text',
@@ -799,7 +867,9 @@ type WireSection =
   | 'server'
   | 'upstream'
   | 'global'
-  | 'admin';
+  | 'admin'
+  | 'models'
+  | 'thinking';
 
 interface GroupDef {
   id: Group;
@@ -891,7 +961,15 @@ type FieldValue = boolean | number | string;
 
 function defaultValues(fields: Field[]): Record<string, FieldValue> {
   const out: Record<string, FieldValue> = {};
-  for (const f of fields) out[f.key] = f.kind === 'hours' ? hoursToText(f.def) : f.def;
+  for (const f of fields) {
+    if (f.kind === 'hours') out[f.key] = hoursToText(f.def);
+    else if (f.kind === 'list') out[f.key] = (f.def as string[]).join(', ');
+    else if (f.kind === 'map') {
+      out[f.key] = Object.entries(f.def as Record<string, string>)
+        .map(([k, v]) => `${k}=${v}`)
+        .join('\n');
+    } else out[f.key] = f.def as FieldValue;
+  }
   return out;
 }
 
@@ -923,6 +1001,17 @@ function pickValues(fields: Field[], source: Record<string, unknown> | undefined
       case 'text':
         out[f.key] = typeof raw === 'string' ? raw : f.def;
         break;
+      case 'list':
+        out[f.key] = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string').join(', ') : (f.def as string[]).join(', ');
+        break;
+      case 'map':
+        out[f.key] = raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? Object.entries(raw as Record<string, unknown>)
+              .filter(([, v]) => typeof v === 'string')
+              .map(([k, v]) => `${k}=${v as string}`)
+              .join('\n')
+          : Object.entries(f.def as Record<string, string>).map(([k, v]) => `${k}=${v}`).join('\n');
+        break;
     }
   }
   return out;
@@ -953,6 +1042,15 @@ function fieldError(f: Field, raw: FieldValue): string | undefined {
   if (f.kind === 'text' && /[\r\n\u0000-\u001f]/.test(String(raw))) {
     return tGlobal('settings.errNoNewline');
   }
+  if (f.kind === 'list' && /[\r\n\u0000-\u001f]/.test(String(raw))) {
+    return tGlobal('settings.errNoNewline');
+  }
+  if (f.kind === 'map') {
+    for (const line of String(raw).split('\n')) {
+      if (!line.trim()) continue;
+      if (!line.includes('=')) return tGlobal('settings.errNoNewline');
+    }
+  }
   return undefined;
 }
 
@@ -960,7 +1058,7 @@ function fieldError(f: Field, raw: FieldValue): string | undefined {
 function toWire(
   f: Field,
   raw: FieldValue,
-): {ok: true; value: boolean | number | number[] | string} | {ok: false; error: string} {
+): {ok: true; value: boolean | number | number[] | string | string[] | Record<string, string>} | {ok: false; error: string} {
   if (f.kind === 'hours') {
     const r = parseHours(String(raw));
     return r.ok ? {ok: true, value: r.hours} : {ok: false, error: r.error ?? tGlobal('settings.errHourFormat')};
@@ -996,6 +1094,22 @@ function toWire(
     const t = String(raw).trim();
     if (/[\r\n\u0000-\u001f]/.test(t)) return {ok: false, error: tGlobal('settings.errNoNewline')};
     return {ok: true, value: t};
+  }
+  if (f.kind === 'list') {
+    const t = String(raw).trim();
+    if (/[\r\n\u0000-\u001f]/.test(t)) return {ok: false, error: tGlobal('settings.errNoNewline')};
+    return {ok: true, value: t.split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean)};
+  }
+  if (f.kind === 'map') {
+    const out: Record<string, string> = {};
+    for (const line of String(raw).split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      const i = t.indexOf('=');
+      if (i <= 0) return {ok: false, error: tGlobal('settings.errNoNewline')};
+      out[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+    }
+    return {ok: true, value: out};
   }
   return {ok: true, value: raw};
 }
@@ -1330,9 +1444,9 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
       }
     }
     const org = original.current[group];
-    const patch: Record<string, boolean | number | number[] | string> = {};
+    const patch: Record<string, unknown> = {};
     // 顶层键单独收：它们不属于任何段，必须放在请求体根上
-    const topPatch: Record<string, boolean | number | number[] | string> = {};
+    const topPatch: Record<string, unknown> = {};
     for (const k of Object.keys(cur)) {
       if (cur[k] === org[k]) continue;
       const f = FIELD_BY_KEY[k];

@@ -1777,7 +1777,8 @@ def _journal_lines(limit: int, timestamps: bool) -> list[str]:
 # 后加则会出现「界面能填但存不下去」的窗口期。
 _EDITABLE_SECTIONS = ('schedule', 'pool', 'cooldown', 'features',
                       'session_sticky', 'prompt', 'server', 'upstream', 'global',
-                      'admin', 'search', 'mcp', 'profiles', 'identity')
+                      'admin', 'search', 'mcp', 'profiles', 'identity',
+                      'models', 'thinking')
 
 
 def _mask(v: str) -> str:
@@ -1988,6 +1989,60 @@ def _sanitize_section(section: str, incoming: dict) -> dict:
             if k.strip():
                 clean_reps[k] = v
         return {'enabled': enabled, 'target': target, 'replacements': clean_reps}
+    if section == 'models':
+        # allowed / hidden 都是 []string：条目语法与上游一致（裸名两域、cn:/global:
+        # 只该域）。空数组 = 清空该名单（白名单清空 = 关闭过滤），必须允许。
+        clean: dict[str, list[str]] = {}
+        for key in ('allowed', 'hidden'):
+            if key not in incoming:
+                continue
+            raw = incoming.get(key)
+            if not isinstance(raw, list):
+                raise ValueError(f'models.{key} 必须是字符串数组')
+            items: list[str] = []
+            for it in raw:
+                if not isinstance(it, str):
+                    raise ValueError(f'models.{key} 的条目必须是字符串')
+                it = it.strip()
+                if it:
+                    items.append(it)
+            clean[key] = items
+        return clean
+    if section == 'thinking':
+        # 网关思考档位策略：字段少且取值固定，逐项校验，避免把上游起不来的配置写盘。
+        out2: dict = {}
+        if 'enabled' in incoming:
+            if not isinstance(incoming['enabled'], bool):
+                raise ValueError('thinking.enabled 必须是 true 或 false')
+            out2['enabled'] = incoming['enabled']
+        if 'client_priority' in incoming:
+            if not isinstance(incoming['client_priority'], bool):
+                raise ValueError('thinking.client_priority 必须是 true 或 false')
+            out2['client_priority'] = incoming['client_priority']
+        if 'default_effort' in incoming:
+            val = str(incoming.get('default_effort') or '').strip().lower()
+            if val not in ('max', 'xhigh', 'high', 'medium', 'low', 'minimal', 'off', ''):
+                raise ValueError('thinking.default_effort 取值非法')
+            out2['default_effort'] = val
+        if 'override_scope' in incoming:
+            val = str(incoming.get('override_scope') or '').strip().lower()
+            if val not in ('level', 'all', ''):
+                raise ValueError('thinking.override_scope 只能是 level / all')
+            out2['override_scope'] = val
+        if 'model_defaults' in incoming:
+            raw = incoming.get('model_defaults')
+            if not isinstance(raw, dict):
+                raise ValueError('thinking.model_defaults 必须是对象')
+            clean_map: dict[str, str] = {}
+            for k, v in raw.items():
+                if not isinstance(k, str) or not isinstance(v, str):
+                    raise ValueError('thinking.model_defaults 的键和值都必须是字符串')
+                k = k.strip()
+                v = v.strip().lower()
+                if k and v:
+                    clean_map[k] = v
+            out2['model_defaults'] = clean_map
+        return out2
     for key, raw in incoming.items():
         if key in _HOURS_KEYS:
             if not isinstance(raw, list) or not all(
