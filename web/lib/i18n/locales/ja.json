@@ -790,7 +790,7 @@
     "createdTitle": "キーを作成しました",
     "createdButRefreshFailed": "キーは作成されましたが、一覧の更新に失敗しました",
     "createdButRefreshFailedHint": "ページを再読み込みすると表示されます",
-    "createdDesc": "今すぐコピーして保存してください。閉じるとキーの全文は再表示できません",
+    "createdDesc": "大切に保管してください。あとから一覧の「キーを表示」で再確認できます",
     "copyKey": "キーをコピー",
     "copyBaseUrl": "Base URL をコピー",
     "savedIt": "保存しました",
@@ -855,7 +855,10 @@
     "profileRealmConflict": "profile とエディションが矛盾しています：cn-* は中国版、intl-* は国際版です。",
     "profileAllowedMissing": "この profile は紐付け先の上流キーの profiles に含まれていません。上流は profile_not_allowed で拒否します。",
     "profileRealmAuto": "エディションは profile から導出されます（cn-* → 中国版、intl-* → 国際版）。",
-    "profileFollowing": "新しいキーは選択した profile で作成されます。CLI / デスクトップを分ける必要がなければ制限なしのままにしてください。"
+    "profileFollowing": "新しいキーは選択した profile で作成されます。CLI / デスクトップを分ける必要がなければ制限なしのままにしてください。",
+    "keyCopied": "キーをコピーしました",
+    "revealTitle": "キーを表示",
+    "revealDesc": "ブラウザが自動コピーをブロックしました。手動で選択してコピーしてください。表示のたびに監査ログに記録されます。"
   },
   "upstreams": {
     "title": "複数アップストリーム（アカウントプールのグループ）",
@@ -2419,6 +2422,8 @@
     "retryAt": "再試行の許可時刻：",
     "resume": "確認済み・保護停止を解除",
     "resumed": "保護停止を解除しました。他の制限は維持されます",
+    "collapse": "折りたたむ",
+    "expand": "展開",
     "repeatCount": "期限後の短時間での再制限：{n} 回"
   },
   "events": {

@@ -790,7 +790,7 @@
     "createdTitle": "金鑰建立成功",
     "createdButRefreshFailed": "金鑰已建立，但清單重新整理失敗",
     "createdButRefreshFailedHint": "手動重新整理頁面即可看到",
-    "createdDesc": "請立即複製保存，關閉後將無法再次檢視完整金鑰",
+    "createdDesc": "請妥善保存。之後可以在清單裡點「檢視金鑰」再看一次",
     "copyKey": "複製金鑰",
     "copyBaseUrl": "複製 Base URL",
     "savedIt": "我已保存",
@@ -855,7 +855,10 @@
     "profileRealmConflict": "profile 與版本歸屬衝突：cn-* 屬於國內版，intl-* 屬於國際版。",
     "profileAllowedMissing": "該 profile 不在綁定上游金鑰的 profiles 允許集內 —— 上游會以 profile_not_allowed 拒絕呼叫。",
     "profileRealmAuto": "版本歸屬由 profile 推導（cn-* → 國內版，intl-* → 國際版）。",
-    "profileFollowing": "新建金鑰按所選 profile 寫入；除非需要區分 CLI/工作台，否則保持不限。"
+    "profileFollowing": "新建金鑰按所選 profile 寫入；除非需要區分 CLI/工作台，否則保持不限。",
+    "keyCopied": "已複製金鑰",
+    "revealTitle": "檢視金鑰",
+    "revealDesc": "瀏覽器攔截了自動複製，請手動選取複製。每次檢視都會寫入稽核日誌。"
   },
   "upstreams": {
     "title": "多上游（帳號池分組）",
@@ -2419,6 +2422,8 @@
     "retryAt": "允許重試時間：",
     "resume": "已複核，解除保護暫停",
     "resumed": "保護暫停已解除；其他限制保留",
+    "collapse": "收合",
+    "expand": "展開",
     "repeatCount": "恢復後短時重複限流：{n} 次"
   },
   "events": {
