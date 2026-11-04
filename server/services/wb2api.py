@@ -1929,6 +1929,9 @@ _INT_RANGES: dict[str, tuple[int, int, str]] = {
     'max_in_flight_global': (0, 64, '个'),
     'max_total_concurrency': (0, 4096, '个'),
     'max_queue_depth': (0, 4096, '个'),
+    # 保底积分（issue #364）：低于该值的账号只作最后候选。0 = 关闭。
+    # 上限 100 万：官方单号积分远低于此，留足空间又不至于误填超大值。
+    'credit_floor': (0, 1000000, '积分'),
     'breaker_threshold': (1, 100, '次'),
     # 连败降权阈值（上游 cf1e7e5 新增 pool.degrade_threshold，默认 5）：ErrClient 与
     # 传输层失败连续达此次数即临时出池。登记以享受同样的区间校验。

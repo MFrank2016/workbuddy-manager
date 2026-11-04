@@ -60,6 +60,7 @@ import {ProxyPanel} from '@/components/common/settings/ProxyPanel';
 import {TokensPanel} from '@/components/common/settings/TokensPanel';
 import {ChangelogPanel} from '@/components/common/settings/ChangelogPanel';
 import {WatchdogPanel} from '@/components/common/settings/WatchdogPanel';
+import {PricingPanel} from '@/components/common/settings/PricingPanel';
 import {UpstreamReloadNotice} from '@/components/common/settings/UpstreamReloadNotice';
 import {ModelRoutesPanel} from '@/components/common/settings/ModelRoutesPanel';
 import {ResponsesPanel} from '@/components/common/settings/ResponsesPanel';
@@ -509,6 +510,17 @@ const POOL_FIELDS: Field[] = [
     def: 64,
   },
   {
+    key: 'credit_floor',
+    kind: 'num',
+    label: '保底积分',
+    desc: '账号可用积分低于该值时不再选它，换用其他账号；只有全部账号都低于保底时才会继续用。余额未同步的账号不参与判断，0 = 关闭',
+    unit: '积分',
+    min: 0,
+    max: 1000000,
+    def: 0,
+  },
+  {
+
     key: 'breaker_threshold',
     kind: 'num',
     label: '连续失败熔断阈值',
@@ -2324,6 +2336,10 @@ export default function SettingsLayout({children}: {children: React.ReactNode}) 
 
         {/* ═══ 模型映射 ═══ */}
         <TabsContent value="models" className="mt-4 space-y-4">
+          {/* 计费价目（issue #380）挂在「模型管理」下面：它回答的是同一件事的
+              下半句——「这些模型用起来值多少钱」。单开一个 Tab 会改动导航清单
+              （项目把它钉死为 10 项，改数量要同步路线图与 CHANGELOG），不值得。 */}
+          <PricingPanel />
           <div className="rounded-[20px] bg-muted p-4">
             <div className="mb-1 text-sm font-medium">{t('settings.mapNewAlias')}</div>
             <div className="mb-3 text-[11px] text-muted-foreground">

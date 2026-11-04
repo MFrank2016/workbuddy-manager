@@ -190,6 +190,10 @@
     "unknown": "不明"
   },
   "dashboard": {
+    "availableCredits": "利用可能クレジット",
+    "unavailableCredits": "利用不可クレジット",
+    "creditAvailabilityHint": "オンラインまたは一時的なクールダウン中のアカウントの残高を利用可能に含めます。禁止・停止・保護による一時停止・期限切れ・未読込・状態不明の残高は利用不可です。モデル単位の制限はアカウント全体の禁止とは異なります。",
+    "creditsUnknown": "残高不明の {n} アカウントは集計対象外",
     "title": "ダッシュボード",
     "description": "{realm}のアカウントプール健全性・ゲートウェイ・本日の使用量（30 秒ごとに自動更新）",
     "totalAccounts": "アカウント総数",
@@ -226,6 +230,8 @@
     "creditsFlowTitle": "クレジット収支",
     "creditsFlowEmpty": "収支データがありません",
     "creditsFlowFailed": "収支データを取得できませんでした",
+    "chartLine": "折れ線",
+    "chartBar": "棒グラフ",
     "income": "収入",
     "expense": "支出",
     "creditsNet": "純増",
@@ -240,13 +246,7 @@
     "failedRequests": "失敗リクエスト",
     "todayFailed": "本日 {n} 件失敗",
     "weekFailed": "直近 7 日 {n} 件失敗 · {realm}",
-    "creditsExpiryDaily": "直近の期限日（{time}）に {amount} ポイントが失効",
-    "chartBar": "棒グラフ",
-    "chartLine": "折れ線",
-    "availableCredits": "利用可能クレジット",
-    "unavailableCredits": "利用不可クレジット",
-    "creditAvailabilityHint": "オンラインで選択可能なアカウントのみ利用可能です。禁止・停止・期限切れ・待機・未読込・状態不明の残高は利用不可です。モデル単位の制限はアカウント全体の禁止とは異なります。",
-    "creditsUnknown": "残高不明の {n} アカウントは集計対象外"
+    "creditsExpiryDaily": "直近の期限日（{time}）に {amount} ポイントが失効"
   },
   "stats": {
     "title": "使用量",
@@ -302,7 +302,16 @@
     "throughputHint": "{n} 件の成功リクエストの生成時間から推定（ログ保持期間内のみ）",
     "balanceTrend": "残高推移",
     "balanceTrendDesc": "各アカウントのその日の最後の残高スナップショットを合算。積分変動の記録がある日のみ対象",
-    "balanceTrendEmpty": "残高変動の記録がまだ十分ではありません"
+    "balanceTrendEmpty": "残高変動の記録がまだ十分ではありません",
+    "costTitle": "DeepSeek 公式価格での推定",
+    "costPriceLink": "価格と説明 →",
+    "costToday": "今日",
+    "costWeek": "過去7日",
+    "costTotal": "累計",
+    "costUnpriced": "ほかに {n} 件は未計算",
+    "costNote": "各呼び出し時点の公式価格（ピーク/オフピーク、キャッシュ命中/未命中）で推定した参考値です。実際に差し引かれたクレジットは上の表示をご覧ください。",
+    "colCost": "費用",
+    "costUnavailableHint": "このモデルは価格未収録のため「—」と表示します（0 ではありません）"
   },
   "panel": {
     "expiryMoreBuckets": "続けて {count} バッチ",
@@ -486,8 +495,8 @@
     "groupStopped": "停止中",
     "sortDefault": "既定の順序",
     "sortLabel": "並び順",
-    "sortRemain": "有効期限が近い順",
-    "sortCredits": "クレジットが少ない順",
+    "sortRemain": "有効期限順",
+    "sortCredits": "クレジット順",
     "pageInfo": "全 {total} 件 · {page} / {pages} ページ",
     "noMatchTitle": "一致するアカウントがありません",
     "noMatchDesc": "別のキーワードを試すか、状態の絞り込みを「すべて」に戻してください。",
@@ -713,7 +722,12 @@
     "poolTask_keepalive": "トークン維持",
     "poolTask_travel": "猫の旅行",
     "poolTask_balance": "残高更新",
-    "poolTaskDone": "完了：{task}"
+    "poolTaskDone": "完了：{task}",
+    "sortAdded": "追加日時順",
+    "sortAscending": "昇順",
+    "sortDescending": "降順",
+    "sortDirectionToggle": "現在は{direction}。並び順を切り替え",
+    "sortAddedHint": "このパネルで記録した追加日時で並べ替えます。追加日時が不明な既存アカウントや直接コピーしたファイルは最後に表示します。"
   },
   "keys": {
     "title": "API キー",
@@ -959,7 +973,10 @@
     "copyField": "{field}をコピー",
     "colChannel": "クライアント",
     "accountBackfillHint": "アカウント補完（{mode} · {source}）: ",
-    "accountBackfillRecheck": "再確認"
+    "accountBackfillRecheck": "再確認",
+    "colCost": "費用",
+    "rowCost": "推定費用（公式価格）",
+    "costUnavailable": "価格未収録"
   },
   "security": {
     "title": "セキュリティと IP 制御",
@@ -1904,7 +1921,8 @@
     "toolsSaved": "ツールエンドポイント設定を保存しました",
     "toolsLoadError": "ツールエンドポイント設定の読み込みに失敗しました。再読み込みしてください。",
     "tabModelpolicy": "モデル表示",
-    "tabThinking": "思考レベル"
+    "tabThinking": "思考レベル",
+    "tabPricing": "課金価格"
   },
   "phrases": {
     "默认上游 · 出站标识与图片策略": "デフォルト上流 · 送信識別と画像ポリシー",
@@ -2156,7 +2174,9 @@
     "隐藏列表内模型；留空 = 不隐藏。与白名单同时配置时取交集：白名单圈定可见集合，黑名单再从里面剔除": "リスト内のモデルを非表示。空 = 非表示なし。許可リストと併用時は積集合：許可リストが可視集合を定め、拒否リストがそこから除外します",
     "开启：客户端发了档位就按客户端（含关闭），只在缺档时补默认；关闭：网关优先改写客户端档位": "有効：クライアントの指定（オフ含む）を尊重し、未指定時のみ既定を補います。無効：ゲートウェイがクライアントの指定を上書きします",
     "白名单 / 黑名单同时作用于 /v1/models 列表与点名调用；保存后立即生效。两者都支持裸名（两域）与 cn:/global: 前缀（只该域）": "許可リスト / 拒否リストは /v1/models の一覧と直接呼び出しの両方に適用され、保存後すぐ有効になります。どちらも裸名（両域）と cn:/global: 接頭辞（その域のみ）に対応",
-    "网关对 reasoning_effort 的取舍策略。默认关闭（不碰档位）；开启后按「客户端优先 / 网关优先 + 覆盖范围」决定实际出站档位": "reasoning_effort の扱い方。既定は無効（指定に触れません）。有効時は「クライアント優先 / ゲートウェイ優先 + 上書き範囲」で実際の送信レベルを決めます"
+    "网关对 reasoning_effort 的取舍策略。默认关闭（不碰档位）；开启后按「客户端优先 / 网关优先 + 覆盖范围」决定实际出站档位": "reasoning_effort の扱い方。既定は無効（指定に触れません）。有効時は「クライアント優先 / ゲートウェイ優先 + 上書き範囲」で実際の送信レベルを決めます",
+    "保底积分": "最低クレジット",
+    "账号可用积分低于该值时不再选它，换用其他账号；只有全部账号都低于保底时才会继续用。余额未同步的账号不参与判断，0 = 关闭": "利用可能クレジットがこの値を下回ったアカウントは選ばれず、他のアカウントに切り替わります。すべてのアカウントが下回っている場合のみそのまま使用します。残高未同期のアカウントは判定対象外です。0 = 無効"
   },
   "redPacket": {
     "title": "紅包（レッドパケット）",
@@ -2437,5 +2457,30 @@
     "tokens": "prompt / completion",
     "cache": "キャッシュ ヒット / ミス",
     "empty": "リクエストイベントはまだありません"
+  },
+  "pricing": {
+    "title": "課金価格（DeepSeek 公式価格）",
+    "desc": "費用は呼び出し時点で有効な価格と時間帯で計算するため、値上げ・値下げが過去の金額を書き換えることはありません。",
+    "peakNow": "現在ピーク時間",
+    "offPeakNow": "現在オフピーク",
+    "activeVersion": "有効なバージョン",
+    "verifiedAt": "最終確認",
+    "ageDays": "{n} 日前",
+    "source": "公式価格ページを開く",
+    "stale": "この価格表は {n} 日以上確認されていません。価格が変わっている可能性があります。上のリンクで確認し、必要なら下に新しいバージョンを追加してください。",
+    "missingHolidays": "{years} 年の祝日カレンダーがありません。その期間は曜日だけで判定するため、祝日がピーク価格で計算されます（高めに出ます）。",
+    "tableTitle": "現在の単価（元 / 100万 tokens、ピーク / オフピーク）",
+    "colModel": "モデル",
+    "colCacheHit": "入力・キャッシュ命中",
+    "colCacheMiss": "入力・未命中",
+    "colOutput": "出力",
+    "rateHint": "ピーク：北京時間の月〜金 9:00-12:00、14:00-18:00（法定休日を除く）。それ以外はオフピークで、単価はピークの半額です。",
+    "overrideTitle": "カスタム価格表（上書き）",
+    "overrideDesc": "値上げ時にリリースを待つ必要はありません。新しいバージョンを貼り、effective_from に適用日を書いてください（models だけで可、ピーク時間帯と祝日は継承されます）。その日以降の呼び出しにのみ適用され、過去の金額は再計算されません。空にして保存すると既定に戻ります。",
+    "clearOverride": "既定の価格に戻す",
+    "saved": "価格表を保存しました",
+    "cleared": "既定の価格に戻しました",
+    "invalidJson": "価格表が正しい JSON ではありません",
+    "overridden": "カスタム"
   }
 }

@@ -264,6 +264,24 @@ export async function copyText(text: string): Promise<boolean> {
  * 没返回，0 = 确实没扣费）。实现只有一份，在 `lib/log-detail` 的 `creditText`，
  * 这里只补上当前界面语言。
  */
+/**
+ * 金额（元）。用于「按官方价估算」的费用，issue #380。
+ *
+ * 为什么不用 fmtCredit：那是**积分**，整数为主、大额四舍五入到整数；费用是
+ * 元、常见 0.0x 量级，抹掉小数就等于显示成 0。这里按量级给位数：
+ * ≥100 两位、≥1 两位、<1 四位（0.0034 这种才是真实形态）。
+ * null / undefined 一律「—」——「算不出」不等于「0 元」，不能显示 ¥0。
+ */
+export function fmtMoney(v: number | null | undefined, currency = 'CNY'): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
+  const sign = currency === 'CNY' ? '¥' : '';
+  if (v === 0) return `${sign}0`;
+  const abs = Math.abs(v);
+  if (abs >= 1) return `${sign}${v.toFixed(2)}`;
+  if (abs >= 0.0001) return `${sign}${v.toFixed(4)}`;
+  return `${sign}${v.toExponential(1)}`;
+}
+
 export function fmtCredit(v: number | null | undefined): string {
   return creditText(v, intlLocale());
 }

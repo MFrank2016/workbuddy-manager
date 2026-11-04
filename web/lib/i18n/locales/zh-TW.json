@@ -190,6 +190,10 @@
     "unknown": "未知"
   },
   "dashboard": {
+    "availableCredits": "可用積分",
+    "unavailableCredits": "不可用積分",
+    "creditAvailabilityHint": "可用積分包含上線和暫時冷卻帳號的餘額；封禁、停用、保護性暫停、過期、未載入或狀態未知帳號的餘額計入不可用。模型限制不代表整個帳號不可用。",
+    "creditsUnknown": "{n} 個帳號餘額未知，未計入",
     "title": "儀表板",
     "description": "{realm}帳號池健康度、反向代理閘道與今日用量總覽（每 30 秒自動重新整理）",
     "totalAccounts": "帳號總數",
@@ -226,6 +230,8 @@
     "creditsFlowTitle": "積分收支",
     "creditsFlowEmpty": "尚無收支資料",
     "creditsFlowFailed": "收支資料未能取回",
+    "chartLine": "折線",
+    "chartBar": "柱狀",
     "income": "收入",
     "expense": "支出",
     "creditsNet": "淨增",
@@ -240,13 +246,7 @@
     "failedRequests": "失敗請求",
     "todayFailed": "今天 {n} 次失敗",
     "weekFailed": "近 7 天 {n} 次失敗 · {realm}",
-    "creditsExpiryDaily": "最近一天（{time}）共 {amount} 積分到期",
-    "chartBar": "柱狀",
-    "chartLine": "折線",
-    "availableCredits": "可用積分",
-    "unavailableCredits": "不可用積分",
-    "creditAvailabilityHint": "可用積分僅含目前上線且可調度帳號；封禁、停用、過期、冷卻、未載入或狀態未知帳號的餘額計入不可用。模型限制不代表整個帳號不可用。",
-    "creditsUnknown": "{n} 個帳號餘額未知，未計入"
+    "creditsExpiryDaily": "最近一天（{time}）共 {amount} 積分到期"
   },
   "stats": {
     "title": "用量統計",
@@ -302,7 +302,16 @@
     "throughputHint": "依 {n} 筆成功請求的生成耗時估算（僅涵蓋日誌保留期間）",
     "balanceTrend": "餘額趨勢",
     "balanceTrendDesc": "每個帳號每天取最後一次餘額快照後跨帳號求和；僅涵蓋有積分變動記錄的日期",
-    "balanceTrendEmpty": "暫無足夠的餘額變動記錄"
+    "balanceTrendEmpty": "暫無足夠的餘額變動記錄",
+    "costTitle": "按 DeepSeek 官方價估算",
+    "costPriceLink": "價目與說明 →",
+    "costToday": "今日",
+    "costWeek": "近 7 天",
+    "costTotal": "累計",
+    "costUnpriced": "另有 {n} 次未計價",
+    "costNote": "按每次呼叫時刻的官方價目估算（分高峰/空閒、快取命中/未命中），僅供參考。上游真實扣的積分見上面的「今日積分」。",
+    "colCost": "費用",
+    "costUnavailableHint": "該模型未收錄價目，顯示「—」而不是 0"
   },
   "panel": {
     "expiryMoreBuckets": "隨後 {count} 批",
@@ -486,8 +495,8 @@
     "groupStopped": "已停用",
     "sortDefault": "預設順序",
     "sortLabel": "排序方式",
-    "sortRemain": "有效期近的在前",
-    "sortCredits": "積分少的在前",
+    "sortRemain": "按有效期排序",
+    "sortCredits": "按積分排序",
     "pageInfo": "共 {total} 個帳號 · 第 {page} / {pages} 頁",
     "noMatchTitle": "沒有符合的帳號",
     "noMatchDesc": "換個關鍵字，或把狀態篩選切回「全部」。",
@@ -713,7 +722,12 @@
     "poolTask_keepalive": "保活刷新",
     "poolTask_travel": "貓貓旅行",
     "poolTask_balance": "餘額刷新",
-    "poolTaskDone": "已完成：{task}"
+    "poolTaskDone": "已完成：{task}",
+    "sortAdded": "按加入時間排序",
+    "sortAscending": "升冪",
+    "sortDescending": "降冪",
+    "sortDirectionToggle": "目前{direction}，點擊切換排序方向",
+    "sortAddedHint": "依本面板記錄的加入時間排序；舊帳號或直接複製的帳號沒有歷史加入時間，排在最後。"
   },
   "keys": {
     "title": "API 金鑰",
@@ -959,7 +973,10 @@
     "copyField": "複製{field}",
     "colChannel": "客戶端渠道",
     "accountBackfillHint": "帳號回填（{mode} · {source}）：",
-    "accountBackfillRecheck": "重新檢查"
+    "accountBackfillRecheck": "重新檢查",
+    "colCost": "費用",
+    "rowCost": "估算費用（官方價）",
+    "costUnavailable": "無價目（模型未收錄）"
   },
   "security": {
     "title": "安全與 IP 管控",
@@ -1904,7 +1921,8 @@
     "toolsSaved": "工具端點設定已儲存",
     "toolsLoadError": "讀取工具端點設定失敗，請重新整理後重試",
     "tabModelpolicy": "模型可見性",
-    "tabThinking": "思考檔位"
+    "tabThinking": "思考檔位",
+    "tabPricing": "計費價格"
   },
   "phrases": {
     "默认上游 · 出站标识与图片策略": "預設上游 · 出站識別與圖片策略",
@@ -2156,7 +2174,9 @@
     "隐藏列表内模型；留空 = 不隐藏。与白名单同时配置时取交集：白名单圈定可见集合，黑名单再从里面剔除": "隱藏列表內模型；留空 = 不隱藏。與白名單同時設定時取交集：白名單圈定可見集合，黑名單再從裡面剔除",
     "开启：客户端发了档位就按客户端（含关闭），只在缺档时补默认；关闭：网关优先改写客户端档位": "開啟：客戶端發了檔位就按客戶端（含關閉），只在缺檔時補預設；關閉：閘道優先改寫客戶端檔位",
     "白名单 / 黑名单同时作用于 /v1/models 列表与点名调用；保存后立即生效。两者都支持裸名（两域）与 cn:/global: 前缀（只该域）": "白名單 / 黑名單同時作用於 /v1/models 列表與點名呼叫；儲存後立即生效。兩者都支援裸名（兩域）與 cn:/global: 前綴（只該域）",
-    "网关对 reasoning_effort 的取舍策略。默认关闭（不碰档位）；开启后按「客户端优先 / 网关优先 + 覆盖范围」决定实际出站档位": "閘道對 reasoning_effort 的取捨策略。預設關閉（不碰檔位）；開啟後按「客戶端優先 / 閘道優先 + 覆蓋範圍」決定實際出站檔位"
+    "网关对 reasoning_effort 的取舍策略。默认关闭（不碰档位）；开启后按「客户端优先 / 网关优先 + 覆盖范围」决定实际出站档位": "閘道對 reasoning_effort 的取捨策略。預設關閉（不碰檔位）；開啟後按「客戶端優先 / 閘道優先 + 覆蓋範圍」決定實際出站檔位",
+    "保底积分": "保底積分",
+    "账号可用积分低于该值时不再选它，换用其他账号；只有全部账号都低于保底时才会继续用。余额未同步的账号不参与判断，0 = 关闭": "帳號可用積分低於此值時不再選它，改用其他帳號；只有全部帳號都低於保底時才會繼續使用。餘額尚未同步的帳號不參與判斷，0 = 關閉"
   },
   "redPacket": {
     "title": "紅包",
@@ -2437,5 +2457,30 @@
     "tokens": "prompt / completion",
     "cache": "快取 命中 / 未命中",
     "empty": "暫無請求事件"
+  },
+  "pricing": {
+    "title": "計費價格（DeepSeek 官方價）",
+    "desc": "費用按每次呼叫的時刻取當時生效的價目與時段，改價不會重算歷史帳。",
+    "peakNow": "目前高峰時段",
+    "offPeakNow": "目前空閒時段",
+    "activeVersion": "生效版本",
+    "verifiedAt": "上次核對官方價",
+    "ageDays": "{n} 天前",
+    "source": "查看官方價目",
+    "stale": "價目已超過 {n} 天沒核對，可能已經調價。請點上面的連結核對，必要時在下面追加一條新版本。",
+    "missingHolidays": "缺少 {years} 年的節假日安排：這些日期的高峰判定只看週幾，節假日會被按高峰價計（偏高）。",
+    "tableTitle": "目前單價（元 / 百萬 tokens，高峰 / 空閒）",
+    "colModel": "模型",
+    "colCacheHit": "輸入·快取命中",
+    "colCacheMiss": "輸入·未命中",
+    "colOutput": "輸出",
+    "rateHint": "高峰：北京時間週一至週五 9:00-12:00、14:00-18:00（不含法定節假日）；其餘時段為空閒，單價是高峰的一半。",
+    "overrideTitle": "自訂價目（覆寫）",
+    "overrideDesc": "官方調價後不必等新版本：把新版本貼進來，effective_from 寫生效日期即可（可以只寫 models，峰谷時段與節假日會自動繼承）。只影響該日期之後的呼叫，歷史帳不重算。清空後儲存 = 恢復預設。",
+    "clearOverride": "恢復預設價目",
+    "saved": "價目已儲存",
+    "cleared": "已恢復預設價目",
+    "invalidJson": "價目不是合法的 JSON",
+    "overridden": "已自訂"
   }
 }

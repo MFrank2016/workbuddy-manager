@@ -190,6 +190,10 @@
     "unknown": "未知"
   },
   "dashboard": {
+    "availableCredits": "可用积分",
+    "unavailableCredits": "不可用积分",
+    "creditAvailabilityHint": "可用积分包含在线和暂时冷却账号的余额；封禁、停用、保护性暂停、过期、未加载或状态未知账号的余额计入不可用。模型级限制不代表全账号不可用。",
+    "creditsUnknown": "{n} 个账号余额未知，未计入",
     "title": "仪表盘",
     "description": "{realm}账号池健康度、反代网关与今日用量总览（每 30 秒自动刷新）",
     "totalAccounts": "账号总数",
@@ -226,6 +230,8 @@
     "creditsFlowTitle": "积分收支",
     "creditsFlowEmpty": "暂无收支数据",
     "creditsFlowFailed": "收支数据未能取回",
+    "chartLine": "折线",
+    "chartBar": "柱状",
     "income": "收入",
     "expense": "支出",
     "creditsNet": "净增",
@@ -240,13 +246,7 @@
     "failedRequests": "失败请求",
     "todayFailed": "今天 {n} 次失败",
     "weekFailed": "近 7 天 {n} 次失败 · {realm}",
-    "creditsExpiryDaily": "最近一天（{time}）共 {amount} 积分到期",
-    "chartBar": "柱状",
-    "chartLine": "折线",
-    "availableCredits": "可用积分",
-    "unavailableCredits": "不可用积分",
-    "creditAvailabilityHint": "可用积分仅含当前在线且可调度账号；封禁、停用、过期、冷却、未加载或状态未知账号的余额计入不可用。模型级限制不代表全账号不可用。",
-    "creditsUnknown": "{n} 个账号余额未知，未计入"
+    "creditsExpiryDaily": "最近一天（{time}）共 {amount} 积分到期"
   },
   "stats": {
     "title": "用量统计",
@@ -302,7 +302,16 @@
     "throughputHint": "按 {n} 条成功请求的生成耗时估算（只覆盖日志保留期）",
     "balanceTrend": "余额趋势",
     "balanceTrendDesc": "每个账号每天取最后一次余额快照后跨账号求和；仅覆盖有积分变动记录的日期",
-    "balanceTrendEmpty": "暂无足够的余额变动记录"
+    "balanceTrendEmpty": "暂无足够的余额变动记录",
+    "costTitle": "按 DeepSeek 官方价估算",
+    "costPriceLink": "价目与说明 →",
+    "costToday": "今日",
+    "costWeek": "近 7 天",
+    "costTotal": "累计",
+    "costUnpriced": "另有 {n} 次未计价",
+    "costNote": "按每次调用时刻的官方价目估算（分高峰/空闲、缓存命中/未命中），仅供参考。上游真实扣的积分见上面的「今日积分」。",
+    "colCost": "费用",
+    "costUnavailableHint": "该模型未收录价目，显示「—」而不是 0"
   },
   "panel": {
     "expiryMoreBuckets": "随后 {count} 批",
@@ -486,8 +495,8 @@
     "groupStopped": "已停用",
     "sortDefault": "默认顺序",
     "sortLabel": "排序方式",
-    "sortRemain": "有效期近的在前",
-    "sortCredits": "积分少的在前",
+    "sortRemain": "按有效期排序",
+    "sortCredits": "按积分排序",
     "pageInfo": "共 {total} 个账号 · 第 {page} / {pages} 页",
     "noMatchTitle": "没有匹配的账号",
     "noMatchDesc": "换个关键词，或把状态筛选切回「全部」。",
@@ -713,7 +722,12 @@
     "poolTask_keepalive": "保活刷新",
     "poolTask_travel": "猫猫旅行",
     "poolTask_balance": "余额刷新",
-    "poolTaskDone": "已完成：{task}"
+    "poolTaskDone": "已完成：{task}",
+    "sortAdded": "按添加时间排序",
+    "sortAscending": "升序",
+    "sortDescending": "降序",
+    "sortDirectionToggle": "当前{direction}，点击切换排序方向",
+    "sortAddedHint": "按本面板记录的添加时间排序；旧账号或直接拷贝的账号没有历史添加时间，排在最后。"
   },
   "keys": {
     "title": "API 密钥",
@@ -959,7 +973,10 @@
     "copyField": "复制{field}",
     "colChannel": "客户端渠道",
     "accountBackfillHint": "账号回填（{mode} · {source}）：",
-    "accountBackfillRecheck": "重新检查"
+    "accountBackfillRecheck": "重新检查",
+    "colCost": "费用",
+    "rowCost": "估算费用（官方价）",
+    "costUnavailable": "无价目（模型未收录）"
   },
   "security": {
     "title": "安全与 IP 管控",
@@ -1904,7 +1921,8 @@
     "toolsSaved": "工具端点设置已保存",
     "toolsLoadError": "读取工具端点设置失败，请刷新重试",
     "tabModelpolicy": "模型可见性",
-    "tabThinking": "思考档位"
+    "tabThinking": "思考档位",
+    "tabPricing": "计费价格"
   },
   "redPacket": {
     "title": "红包",
@@ -2185,5 +2203,30 @@
     "tokens": "prompt / completion",
     "cache": "缓存 命中 / 未命中",
     "empty": "暂无请求事件"
+  },
+  "pricing": {
+    "title": "计费价格（DeepSeek 官方价）",
+    "desc": "费用按每次调用的时刻取当时生效的价目与时段，改价不会重算历史账。",
+    "peakNow": "当前高峰时段",
+    "offPeakNow": "当前空闲时段",
+    "activeVersion": "生效版本",
+    "verifiedAt": "上次核对官方价",
+    "ageDays": "{n} 天前",
+    "source": "查看官方价目",
+    "stale": "价目已超过 {n} 天没核对，可能已经调价。请点上面的链接核对，必要时在下面追加一条新版本。",
+    "missingHolidays": "缺少 {years} 年的节假日安排：这些日期的高峰判定只看周几，节假日会被按高峰价计（偏高）。",
+    "tableTitle": "当前单价（元 / 百万 tokens，高峰 / 空闲）",
+    "colModel": "模型",
+    "colCacheHit": "输入·缓存命中",
+    "colCacheMiss": "输入·未命中",
+    "colOutput": "输出",
+    "rateHint": "高峰：北京时间周一至周五 9:00-12:00、14:00-18:00（不含法定节假日）；其余时段为空闲，单价是高峰的一半。",
+    "overrideTitle": "自定义价目（覆盖）",
+    "overrideDesc": "官方调价后不必等新版本：把新版本贴进来，effective_from 写生效日期即可（可以只写 models，峰谷时段与节假日会自动继承）。只影响该日期之后的调用，历史账不重算。清空后保存 = 恢复默认。",
+    "clearOverride": "恢复默认价目",
+    "saved": "价目已保存",
+    "cleared": "已恢复默认价目",
+    "invalidJson": "价目不是合法的 JSON",
+    "overridden": "已自定义"
   }
 }

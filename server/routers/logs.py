@@ -125,6 +125,10 @@ def list_logs(
             # 工具参数修复结果（契约 §5）：none / fixed / failed / recalled。
             # 旧记录与未开修复的请求都是 none。
             'tool_repair': r['tool_repair'],
+            # 按 DeepSeek 官方价估算的费用（元，issue #380）。
+            # NULL = 这个模型没收录价目（glm / kimi / minimax …）或该行在功能上线前
+            # 写入 —— 界面显示「—」。绝不能兜成 0：那会被读成「这次调用免费」。
+            'cost': r['cost'],
         }
         for r in rows
     ]

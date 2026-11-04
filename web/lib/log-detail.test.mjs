@@ -103,9 +103,10 @@ const fullRows = logDetailRows(full, {t, n: (v) => String(v)});
 check('每行的 id 唯一', new Set(fullRows.map((r) => r.id)).size, fullRows.length);
 check('包含本任务要求的全部字段', fullRows.map((r) => r.id), [
   'ip', 'key', 'account', 'realm', 'model', 'mapped', 'status',
-  'firstToken', 'latency', 'promptTokens', 'completionTokens',
+  'firstToken', 'latency', 'cost', 'promptTokens', 'completionTokens',
   'cacheHit', 'cacheMiss', 'cacheWrite', 'credit', 'stream', 'toolRepair', 'ua', 'error',
 ]);
+check('缺 cost → 无价目文案（不是 0）', valueOf(fullRows, 'cost'), '[logs.costUnavailable]');
 check('realm=global 用国际版文案', valueOf(fullRows, 'realm'), '[realm.global]');
 check('tool_repair=fixed 用 fixed 文案', valueOf(fullRows, 'toolRepair'), '[logs.toolRepairFixed]');
 check('tool_repair 行带「好」的色调', rowOf(fullRows, 'toolRepair').tone, 'ok');

@@ -190,6 +190,10 @@
     "unknown": "알 수 없음"
   },
   "dashboard": {
+    "availableCredits": "사용 가능 크레딧",
+    "unavailableCredits": "사용 불가 크레딧",
+    "creditAvailabilityHint": "온라인 계정과 일시적인 대기 상태 계정의 잔액을 사용 가능에 포함합니다. 차단, 비활성화, 보호 중지, 만료, 미로드, 상태 불명 계정은 사용 불가입니다. 모델별 제한은 전체 계정 차단과 다릅니다.",
+    "creditsUnknown": "잔액을 알 수 없는 계정 {n}개 제외",
     "title": "대시보드",
     "description": "{realm} 계정 풀 상태, 게이트웨이, 오늘 사용량 요약 (30초마다 자동 새로고침)",
     "totalAccounts": "전체 계정",
@@ -226,6 +230,8 @@
     "creditsFlowTitle": "크레딧 수입/지출",
     "creditsFlowEmpty": "수입/지출 데이터가 없습니다",
     "creditsFlowFailed": "수입/지출 데이터를 불러오지 못했습니다",
+    "chartLine": "꺾은선",
+    "chartBar": "막대",
     "income": "수입",
     "expense": "지출",
     "creditsNet": "순증",
@@ -240,13 +246,7 @@
     "failedRequests": "실패 요청",
     "todayFailed": "오늘 {n}건 실패",
     "weekFailed": "최근 7일 {n}건 실패 · {realm}",
-    "creditsExpiryDaily": "가장 가까운 만료일({time})에 {amount} 포인트 만료",
-    "chartBar": "막대",
-    "chartLine": "꺾은선",
-    "availableCredits": "사용 가능 크레딧",
-    "unavailableCredits": "사용 불가 크레딧",
-    "creditAvailabilityHint": "온라인이며 요청을 처리할 수 있는 계정만 사용 가능에 포함합니다. 차단, 일시 중지, 만료, 대기, 미로드, 상태 불명 계정은 사용 불가입니다. 모델별 제한은 전체 계정 차단과 다릅니다.",
-    "creditsUnknown": "잔액을 알 수 없는 계정 {n}개 제외"
+    "creditsExpiryDaily": "가장 가까운 만료일({time})에 {amount} 포인트 만료"
   },
   "stats": {
     "title": "사용량",
@@ -302,7 +302,16 @@
     "throughputHint": "성공한 요청 {n}건의 생성 시간으로 추정(로그 보존 기간만)",
     "balanceTrend": "잔액 추이",
     "balanceTrendDesc": "각 계정의 하루 마지막 잔액 스냅샷을 합산합니다. 적립 변동 기록이 있는 날짜만 포함",
-    "balanceTrendEmpty": "잔액 변동 기록이 아직 충분하지 않습니다"
+    "balanceTrendEmpty": "잔액 변동 기록이 아직 충분하지 않습니다",
+    "costTitle": "DeepSeek 공식가 기준 추정",
+    "costPriceLink": "가격 및 설명 →",
+    "costToday": "오늘",
+    "costWeek": "최근 7일",
+    "costTotal": "누적",
+    "costUnpriced": "추가로 {n}건 미계산",
+    "costNote": "각 호출 시점의 공식 가격(피크/비피크, 캐시 적중/미적중)으로 추정한 참고값입니다. 실제 차감된 크레딧은 위의 표시를 보세요.",
+    "colCost": "비용",
+    "costUnavailableHint": "이 모델은 가격이 없어 0 대신 — 로 표시합니다"
   },
   "panel": {
     "expiryMoreBuckets": "이어서 {count} 배치",
@@ -486,8 +495,8 @@
     "groupStopped": "중지됨",
     "sortDefault": "기본 순서",
     "sortLabel": "정렬 기준",
-    "sortRemain": "만료가 임박한 순",
-    "sortCredits": "크레딧이 적은 순",
+    "sortRemain": "만료일순",
+    "sortCredits": "크레딧순",
     "pageInfo": "총 {total}개 · {page} / {pages} 페이지",
     "noMatchTitle": "일치하는 계정이 없습니다",
     "noMatchDesc": "다른 키워드를 입력하거나 상태 필터를 “전체”로 되돌리세요.",
@@ -713,7 +722,12 @@
     "poolTask_keepalive": "토큰 유지",
     "poolTask_travel": "고양이 여행",
     "poolTask_balance": "잔액 새로고침",
-    "poolTaskDone": "완료: {task}"
+    "poolTaskDone": "완료: {task}",
+    "sortAdded": "추가한 시간순",
+    "sortAscending": "오름차순",
+    "sortDescending": "내림차순",
+    "sortDirectionToggle": "현재 {direction}; 정렬 방향 전환",
+    "sortAddedHint": "이 패널에 기록된 추가 시간으로 정렬합니다. 기록이 없는 기존 계정이나 직접 복사한 파일은 마지막에 표시합니다."
   },
   "keys": {
     "title": "API 키",
@@ -959,7 +973,10 @@
     "copyField": "{field} 복사",
     "colChannel": "클라이언트",
     "accountBackfillHint": "계정 채우기({mode} · {source}): ",
-    "accountBackfillRecheck": "다시 확인"
+    "accountBackfillRecheck": "다시 확인",
+    "colCost": "비용",
+    "rowCost": "추정 비용(공식 가격)",
+    "costUnavailable": "가격 미등록"
   },
   "security": {
     "title": "보안 및 IP 제어",
@@ -1904,7 +1921,8 @@
     "toolsSaved": "도구 엔드포인트 설정을 저장했습니다",
     "toolsLoadError": "도구 엔드포인트 설정을 불러오지 못했습니다. 새로고침 후 다시 시도하세요.",
     "tabModelpolicy": "모델 표시",
-    "tabThinking": "사고 수준"
+    "tabThinking": "사고 수준",
+    "tabPricing": "과금 가격"
   },
   "phrases": {
     "默认上游 · 出站标识与图片策略": "기본 업스트림 · 송신 식별 및 이미지 정책",
@@ -2156,7 +2174,9 @@
     "隐藏列表内模型；留空 = 不隐藏。与白名单同时配置时取交集：白名单圈定可见集合，黑名单再从里面剔除": "목록의 모델을 숨깁니다; 비우면 숨기지 않음. 허용 목록과 함께 쓰면 교집합: 허용 목록이 가시 집합을 정하고 거부 목록이 그 안에서 제거합니다",
     "开启：客户端发了档位就按客户端（含关闭），只在缺档时补默认；关闭：网关优先改写客户端档位": "켜면 클라이언트 지정(끄기 포함)을 존중하고 없을 때만 기본값을 채웁니다; 끄면 게이트웨이가 클라이언트 지정을 덮어씁니다",
     "白名单 / 黑名单同时作用于 /v1/models 列表与点名调用；保存后立即生效。两者都支持裸名（两域）与 cn:/global: 前缀（只该域）": "허용 목록 / 거부 목록은 /v1/models 목록과 직접 호출 모두에 적용되며 저장 즉시 효력이 있습니다. 둘 다 맨 이름(두 영역)과 cn:/global: 접두사(해당 영역만)를 지원합니다",
-    "网关对 reasoning_effort 的取舍策略。默认关闭（不碰档位）；开启后按「客户端优先 / 网关优先 + 覆盖范围」决定实际出站档位": "reasoning_effort 처리 방식. 기본 비활성(지정을 건드리지 않음). 켜면 '클라이언트 우선 / 게이트웨이 우선 + 덮어쓰기 범위'로 실제 전송 수준을 결정합니다"
+    "网关对 reasoning_effort 的取舍策略。默认关闭（不碰档位）；开启后按「客户端优先 / 网关优先 + 覆盖范围」决定实际出站档位": "reasoning_effort 처리 방식. 기본 비활성(지정을 건드리지 않음). 켜면 '클라이언트 우선 / 게이트웨이 우선 + 덮어쓰기 범위'로 실제 전송 수준을 결정합니다",
+    "保底积分": "최소 잔여 크레딧",
+    "账号可用积分低于该值时不再选它，换用其他账号；只有全部账号都低于保底时才会继续用。余额未同步的账号不参与判断，0 = 关闭": "사용 가능 크레딧이 이 값보다 낮은 계정은 선택되지 않고 다른 계정으로 전환됩니다. 모든 계정이 이 값보다 낮을 때만 그대로 사용합니다. 잔액이 아직 동기화되지 않은 계정은 판단에서 제외됩니다. 0 = 끄기"
   },
   "redPacket": {
     "title": "빨간 봉투",
@@ -2437,5 +2457,30 @@
     "tokens": "prompt / completion",
     "cache": "캐시 적중 / 미스",
     "empty": "아직 요청 이벤트가 없습니다"
+  },
+  "pricing": {
+    "title": "과금 가격(DeepSeek 공식가)",
+    "desc": "비용은 호출 시점에 유효한 가격과 시간대로 계산하므로, 가격이 바뀌어도 과거 금액은 다시 계산되지 않습니다.",
+    "peakNow": "현재 피크 시간",
+    "offPeakNow": "현재 비피크",
+    "activeVersion": "적용 버전",
+    "verifiedAt": "최근 확인",
+    "ageDays": "{n}일 전",
+    "source": "공식 가격 페이지 열기",
+    "stale": "이 가격표는 {n}일 넘게 확인되지 않았습니다. 가격이 바뀌었을 수 있으니 위 링크로 확인하고 필요하면 아래에 새 버전을 추가하세요.",
+    "missingHolidays": "{years}년 공휴일 일정이 없습니다. 해당 기간은 요일만으로 판정하므로 공휴일이 피크 가격으로 계산됩니다(높게 나옴).",
+    "tableTitle": "현재 단가(위안 / 100만 tokens, 피크 / 비피크)",
+    "colModel": "모델",
+    "colCacheHit": "입력·캐시 적중",
+    "colCacheMiss": "입력·미적중",
+    "colOutput": "출력",
+    "rateHint": "피크: 베이징 시간 월~금 9:00-12:00, 14:00-18:00(법정 공휴일 제외). 그 외 시간은 비피크이며 단가는 피크의 절반입니다.",
+    "overrideTitle": "사용자 가격표(덮어쓰기)",
+    "overrideDesc": "가격이 바뀌어도 새 버전을 기다릴 필요가 없습니다. 새 버전을 붙여넣고 effective_from 에 적용일을 적으세요(models 만 적어도 되고 피크 시간대와 공휴일은 상속됩니다). 해당 날짜 이후 호출에만 적용되며 과거 금액은 다시 계산되지 않습니다. 비우고 저장하면 기본값으로 돌아갑니다.",
+    "clearOverride": "기본 가격으로 복원",
+    "saved": "가격표를 저장했습니다",
+    "cleared": "기본 가격으로 복원했습니다",
+    "invalidJson": "가격표가 올바른 JSON 이 아닙니다",
+    "overridden": "사용자 지정"
   }
 }

@@ -214,6 +214,10 @@
     "unknown": "Unknown"
   },
   "dashboard": {
+    "availableCredits": "Available credits",
+    "unavailableCredits": "Unavailable credits",
+    "creditAvailabilityHint": "Available credits include online and temporarily cooling accounts. Banned, disabled, safety-paused, expired, unloaded or unknown accounts are unavailable. Model-specific limits do not disable the entire account.",
+    "creditsUnknown": "{n} unknown balances excluded",
     "title": "Dashboard",
     "description": "{realm} pool health, gateway status and today's usage (auto-refresh every 30s)",
     "totalAccounts": "Total accounts",
@@ -253,6 +257,8 @@
     "creditsFlowTitle": "Credit income & expense",
     "creditsFlowEmpty": "No income/expense data yet",
     "creditsFlowFailed": "Couldn't load income/expense data",
+    "chartLine": "Line",
+    "chartBar": "Bars",
     "income": "Income",
     "expense": "Expense",
     "creditsNet": "Net",
@@ -267,13 +273,7 @@
     "failedRequests": "Failed requests",
     "todayFailed": "{n} failed today",
     "weekFailed": "{n} failed in 7 days · {realm}",
-    "creditsExpiryDaily": "{amount} credits expire on the nearest day ({time})",
-    "chartBar": "Bars",
-    "chartLine": "Line",
-    "availableCredits": "Available credits",
-    "unavailableCredits": "Unavailable credits",
-    "creditAvailabilityHint": "Available credits include online, schedulable accounts only. Banned, paused, expired, cooling, unloaded or unknown accounts are unavailable. Model-specific limits do not disable the entire account.",
-    "creditsUnknown": "{n} unknown balances excluded"
+    "creditsExpiryDaily": "{amount} credits expire on the nearest day ({time})"
   },
   "stats": {
     "title": "Usage",
@@ -329,7 +329,16 @@
     "throughputHint": "Estimated from {n} successful requests (request-log retention window only)",
     "balanceTrend": "Balance trend",
     "balanceTrendDesc": "Each account contributes its last balance snapshot per day, summed across accounts; only days with credit changes are covered",
-    "balanceTrendEmpty": "Not enough balance change records yet"
+    "balanceTrendEmpty": "Not enough balance change records yet",
+    "costTitle": "Estimated at DeepSeek list price",
+    "costPriceLink": "Prices & details →",
+    "costToday": "Today",
+    "costWeek": "Last 7 days",
+    "costTotal": "All time",
+    "costUnpriced": "{n} calls not priced",
+    "costNote": "Estimated with the list price in effect at each call (peak/off-peak, cache hit/miss). For reference only; the credits actually deducted are shown above.",
+    "colCost": "Cost",
+    "costUnavailableHint": "Model has no price entry, so it shows — rather than 0"
   },
   "panel": {
     "expiryMoreBuckets": "{count} more batches",
@@ -513,8 +522,8 @@
     "groupStopped": "Stopped",
     "sortDefault": "Default order",
     "sortLabel": "Sort order",
-    "sortRemain": "Expiring soonest first",
-    "sortCredits": "Fewest credits first",
+    "sortRemain": "By token expiry",
+    "sortCredits": "By credits",
     "pageInfo": "{total} accounts · page {page} / {pages}",
     "noMatchTitle": "No matching accounts",
     "noMatchDesc": "Try another keyword, or set the status filter back to “All”.",
@@ -740,7 +749,12 @@
     "poolTask_keepalive": "Token keepalive",
     "poolTask_travel": "Cat travel",
     "poolTask_balance": "Balance refresh",
-    "poolTaskDone": "Done: {task}"
+    "poolTaskDone": "Done: {task}",
+    "sortAdded": "By date added",
+    "sortAscending": "Ascending",
+    "sortDescending": "Descending",
+    "sortDirectionToggle": "Currently {direction}; switch sort direction",
+    "sortAddedHint": "Uses the date added recorded by this panel. Older accounts and directly copied files without a recorded date appear last."
   },
   "keys": {
     "title": "API keys",
@@ -986,7 +1000,10 @@
     "copyField": "Copy {field}",
     "colChannel": "Channel",
     "accountBackfillHint": "Account backfill ({mode} · {source}): ",
-    "accountBackfillRecheck": "Check again"
+    "accountBackfillRecheck": "Check again",
+    "colCost": "Cost",
+    "rowCost": "Estimated cost (list price)",
+    "costUnavailable": "No price (model not listed)"
   },
   "security": {
     "title": "Security & IP control",
@@ -1931,7 +1948,8 @@
     "toolsSaved": "Tool endpoint settings saved",
     "toolsLoadError": "Failed to load tool endpoint settings. Refresh and try again.",
     "tabModelpolicy": "Model visibility",
-    "tabThinking": "Thinking effort"
+    "tabThinking": "Thinking effort",
+    "tabPricing": "Pricing"
   },
   "phrases": {
     "默认上游 · 出站标识与图片策略": "Default upstream · egress identity and image policy",
@@ -2183,7 +2201,9 @@
     "隐藏列表内模型；留空 = 不隐藏。与白名单同时配置时取交集：白名单圈定可见集合，黑名单再从里面剔除": "Hide models in the list; empty = hide nothing. With an allowlist the two intersect: the allowlist defines what may be visible, the denylist removes from it",
     "开启：客户端发了档位就按客户端（含关闭），只在缺档时补默认；关闭：网关优先改写客户端档位": "On: keep the client's effort (including off) and only fill a missing one; off: the gateway overrides the client's effort",
     "白名单 / 黑名单同时作用于 /v1/models 列表与点名调用；保存后立即生效。两者都支持裸名（两域）与 cn:/global: 前缀（只该域）": "The allowlist / denylist apply to both the /v1/models listing and direct calls, effective immediately. Both accept bare names (both realms) and cn:/global: prefixes (one realm)",
-    "网关对 reasoning_effort 的取舍策略。默认关闭（不碰档位）；开启后按「客户端优先 / 网关优先 + 覆盖范围」决定实际出站档位": "How the gateway handles reasoning_effort. Off by default (effort untouched); when on, the client-priority / gateway-priority + override-scope rules decide the outbound effort"
+    "网关对 reasoning_effort 的取舍策略。默认关闭（不碰档位）；开启后按「客户端优先 / 网关优先 + 覆盖范围」决定实际出站档位": "How the gateway handles reasoning_effort. Off by default (effort untouched); when on, the client-priority / gateway-priority + override-scope rules decide the outbound effort",
+    "保底积分": "Credit floor",
+    "账号可用积分低于该值时不再选它，换用其他账号；只有全部账号都低于保底时才会继续用。余额未同步的账号不参与判断，0 = 关闭": "Accounts whose available credits are below this value are skipped in favour of other accounts; they are used again only when every account is below it. Accounts with an unsynced balance are ignored. 0 disables it."
   },
   "redPacket": {
     "title": "Red packets",
@@ -2464,5 +2484,30 @@
     "tokens": "prompt / completion",
     "cache": "Cache hit / miss",
     "empty": "No request events yet"
+  },
+  "pricing": {
+    "title": "Pricing (DeepSeek list price)",
+    "desc": "Each call is costed with the price version and time band in effect at that moment, so changing a price never rewrites past costs.",
+    "peakNow": "Peak hours now",
+    "offPeakNow": "Off-peak now",
+    "activeVersion": "Active version",
+    "verifiedAt": "Last verified",
+    "ageDays": "{n} days ago",
+    "source": "Open the official price page",
+    "stale": "This price table has not been verified for {n} days and may be out of date. Check the link above and add a new version below if needed.",
+    "missingHolidays": "No holiday calendar for {years}: peak detection falls back to weekdays only, so holidays are billed at peak rates (overestimated).",
+    "tableTitle": "Current rates (CNY per 1M tokens, peak / off-peak)",
+    "colModel": "Model",
+    "colCacheHit": "Input · cache hit",
+    "colCacheMiss": "Input · cache miss",
+    "colOutput": "Output",
+    "rateHint": "Peak: Mon–Fri 09:00–12:00 and 14:00–18:00 Beijing time (excluding public holidays). All other hours are off-peak at half the peak rate.",
+    "overrideTitle": "Custom price table (override)",
+    "overrideDesc": "No need to wait for a release when prices change: paste a new version and set effective_from. Only models are required — peak windows and holidays are inherited. It affects calls after that date only; past costs are not recalculated. Save empty to restore the defaults.",
+    "clearOverride": "Restore default prices",
+    "saved": "Price table saved",
+    "cleared": "Default prices restored",
+    "invalidJson": "The price table is not valid JSON",
+    "overridden": "Custom"
   }
 }

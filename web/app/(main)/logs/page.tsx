@@ -9,7 +9,7 @@ import {keyApi, logApi} from '@/lib/api';
 import {useAsyncAll} from '@/lib/use-async-data';
 import {useDebounced} from '@/lib/use-debounce';
 import type {ApiKey, RequestLog} from '@/lib/types';
-import {fmtCredit, fmtDateTime, fmtDateTimeMarked, fmtLatency, fmtNumber} from '@/lib/format';
+import {fmtCredit, fmtDateTime, fmtDateTimeMarked, fmtLatency, fmtMoney, fmtNumber} from '@/lib/format';
 import {logDetailRows} from '@/lib/log-detail';
 import {cn} from '@/lib/utils';
 import {PageHeader} from '@/components/common/layout/PageHeader';
@@ -220,6 +220,7 @@ export default function LogsPage() {
   // 非管理员没有这个接口的权限：不给 fetcher 就不会打请求（返回 undefined 即跳过）。
   const {
     values: backfillValues,
+    errors: backfillErrors,
     reload: reloadBackfill,
   } = useAsyncAll(
     {backfill: isAdmin ? () => logApi.accountBackfill() : () => Promise.resolve(undefined)},
@@ -231,16 +232,22 @@ export default function LogsPage() {
   const total = values.logs?.total ?? 0;
   const keys: ApiKey[] = keyValues.keys ?? EMPTY_KEYS;
 
-  const failedCount = Object.keys(logErrors).length + Object.keys(keyErrors).length;
+  const failedCount = Object.keys(logErrors).length + Object.keys(keyErrors).length
+    + Object.keys(backfillErrors).length;
 
-  /** 重试：两组一起重来，避免「点了重试、密钥下拉还是空的」 */
+  /** 重试时也更新账号诊断，不能让过期告警一直留在页面上。 */
   const retry = useCallback(() => {
-    reloadLogs();
-    reloadKeys();
-  }, [reloadLogs, reloadKeys]);
+    void reloadLogs();
+    void reloadKeys();
+    if (isAdmin) void reloadBackfill();
+  }, [reloadLogs, reloadKeys, reloadBackfill, isAdmin]);
 
-  // 新请求会不断写入日志；心跳刷新只更新当前筛选下的列表，不会重置筛选条件
-  useHeartbeat(reloadLogs, 60000);
+  // 列表和账号诊断一起更新；后台回填恢复后横幅会自动消失。
+  // useHeartbeat 在标签页隐藏时暂停，重新可见时立即刷新，不重置筛选条件。
+  useHeartbeat(() => {
+    void reloadLogs();
+    if (isAdmin) void reloadBackfill();
+  }, 60000);
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -489,6 +496,11 @@ export default function LogsPage() {
               <TableHead className="text-[11px] text-muted-foreground">{t('logs.colFirstToken')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">{t('logs.colLatency')}</TableHead>
               <TableHead className="text-[11px] text-muted-foreground">Token</TableHead>
+              {/* 按 DeepSeek 官方价估算的费用（issue #380）。与右边「积分」是两回事：
+                  积分是上游真实扣的，费用是「这些 token 按官方价买要多少钱」。 */}
+              <TableHead className="whitespace-nowrap text-[11px] text-muted-foreground">
+                {t('logs.colCost')}
+              </TableHead>
               <TableHead className="pr-4 text-[11px] text-muted-foreground">{t('metric.paid')}</TableHead>
             </TableRow>
           </TableHeader>
@@ -593,6 +605,15 @@ export default function LogsPage() {
                     </span>
                   ) : null}
                 </TableCell>
+                {/* 费用：null = 这个模型没收录价目（glm / kimi …）或该行在功能上线前
+                    写入，显示「—」。绝不兜底成 ¥0——那会被读成「这次调用免费」。 */}
+                <TableCell className="whitespace-nowrap text-xs tabular-nums">
+                  {l.cost != null ? (
+                    fmtMoney(l.cost)
+                  ) : (
+                    <span className="text-muted-foreground/50">—</span>
+                  )}
+                </TableCell>
                 <TableCell className="pr-4 text-xs tabular-nums">
                   {typeof l.credit === 'number' ? (
                     <span className={l.credit > 0 ? 'text-amber-600 dark:text-amber-400' : ''}>
@@ -657,7 +678,7 @@ export default function LogsPage() {
           </DrawerHeader>
           {detail && (
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-8 text-xs">
-              {logDetailRows(detail, {t, n: fmtNumber, locale}).map((row) => (
+              {logDetailRows(detail, {t, n: fmtNumber, locale, money: fmtMoney}).map((row) => (
                 <div key={row.id} className="flex items-start gap-3">
                   {/* 标签列在窄屏上收窄：`w-32` 固定宽在 375px 视口里会吃掉一半
                       宽度，值那一侧只剩几十像素、每个字都换行。 */}
@@ -675,6 +696,7 @@ export default function LogsPage() {
                     )}
                   >
                     {row.value}
+
                   </div>
                   {row.copyable && (
                     <CopyButton

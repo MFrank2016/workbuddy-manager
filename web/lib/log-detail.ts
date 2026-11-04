@@ -46,6 +46,8 @@ export type LogTone = 'neutral' | 'ok' | 'warn' | 'bad';
 export interface LogDetailDeps {
   t: (key: string) => string;
   n?: (value: number) => string;
+  /** 按官方价估算的费用（元，issue #380）。null = 模型未收录价目。 */
+  money?: (value: number) => string;
   /** BCP-47 语言标签（金额的千分位分隔符随语言变化）。不传则跟随运行环境。 */
   locale?: string;
 }
@@ -130,7 +132,7 @@ function orDash(value: string | null | undefined): string {
  * 「未采集 / —」，否则「这一项是空的」和「这一项不存在」看起来一样。
  */
 export function logDetailRows(log: LogDetailSource, deps: LogDetailDeps): LogDetailRow[] {
-  const {t} = deps;
+  const {t, money} = deps;
   const n = deps.n ?? ((value: number) => String(value));
   const num = (value: number | null | undefined) =>
     value === null || value === undefined || !Number.isFinite(value) ? '—' : n(value);
@@ -165,6 +167,15 @@ export function logDetailRows(log: LogDetailSource, deps: LogDetailDeps): LogDet
           : latencyText(log.first_token_ms),
     },
     {id: 'latency', label: t('logs.rowLatency'), value: latencyText(log.latency_ms)},
+    // 按 DeepSeek 官方价估算的费用（元）；与真实扣费 credit 分开展示。
+    // null = 该模型未收录价目（或该行在功能上线前写入），显示「无价目」。
+    {
+      id: 'cost',
+      label: t('logs.rowCost'),
+      value: log.cost == null
+        ? t('logs.costUnavailable')
+        : (money ? money(log.cost) : String(log.cost)),
+    },
     {id: 'promptTokens', label: t('logs.rowPromptTokens'), value: num(log.prompt_tokens)},
     {id: 'completionTokens', label: t('logs.rowCompletionTokens'), value: num(log.completion_tokens)},
     // 提示词缓存三段。null 显示「未采集」而不是 0：老上游不返回这三个字段，
