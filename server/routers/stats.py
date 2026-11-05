@@ -7,7 +7,7 @@ import time
 from fastapi import APIRouter, Depends
 
 from .. import db, security
-from ..services import pricing, wb2api
+from ..services import credit_ledger, pricing, wb2api
 
 router = APIRouter(prefix='/api/stats', tags=['stats'])
 
@@ -458,20 +458,21 @@ def _hourly_failures(day: str, realm: str | None = None) -> dict[int, int]:
 # ── 积分收支（收入 / 支出）───────────────────────────────
 #
 # 两个数字来自**两套不同口径**：
-#   · 收入 = task_logs 里 kind='credit' 的余额增加流水；
-#   · 支出 = usage_daily.credit（每次调用的真实扣费合计）。
+#   · 收入 = 上游 core 逐笔账本 `credit_history` 里 delta>0 的行（精确发放记录）；
+#   · 支出 = 本地 usage_daily.credit（每次调用的真实扣费合计）。
 #
-# 为什么收入不把 task_logs 的全部 kind 加起来：那条流里混着「令牌保活成功」
-# 这类把 credits 当布尔标记写的行（renew.py 的 `_record(acct, 1, ...)`），
-# 直接求和会把续期次数当成积分收入。只用 kind='credit' 才是真正的余额增加。
+# 为什么不再用 task_logs 的余额快照差分：那条流水是「本次查询余额 − 上次查询
+# 余额」，会把多天的 +30 日活合并记到查询那一刻所在的日期，且「先增后耗」净额
+# 不为正时整笔漏记 —— 实测每日收入因此在 106~3319 之间剧烈跳动。逐笔账本把
+# +30（日活）/ +100（签到）/ +300~1000（活动）按真实发放时刻记录，是精确口径。
+# 代价是上游账本只保留最近若干天（默认 2000 条、接口 limit 上限 1000），所以
+# 覆盖期外的日期如实留空并标记，绝不回退旧口径制造「折线连续」的假象。
 
 
 def _realm_uids(realm: str | None) -> set[str] | None:
     """该版本（cn/global）的完整 uid 集合；realm 非法返回 None（= 不过滤）。
 
-    task_logs 没有 realm 列，收入要按版本筛只能把 uid 映射过去。`kind='credit'`
-    的 uid 由 credits.record_balance 写入，是**完整 uid**，所以可以精确匹配，
-    不需要像上游日志那样兼容 8 位前缀。
+    上游账本每条带完整 uid，可精确匹配，不需要兼容 8 位前缀。
     """
     if realm not in ('cn', 'global'):
         return None
@@ -483,36 +484,57 @@ def _realm_uids(realm: str | None) -> set[str] | None:
             if a.get('uid') and (a.get('realm') or 'cn') == realm}
 
 
-def _credit_income_by_hour(day: str, realm: str | None) -> dict[int, float]:
-    """收入：`kind='credit'` 流水按本地小时聚合（今天这一列的 issue #285 口径）。
+async def _ledger_filter(realm: str | None):
+    """返回 (是否可用, 过滤后的正 delta 条目, 账本最早日期)。
 
-    与 `_credit_income_by_day` 完全同一来源，只是分桶粒度换成小时；过滤仍用
-    `ts` 范围（走索引），只有 GROUP BY 用表达式（见 `db.hour_sql` 的说明）。
+    端点已是 async，直接 await 账本拉取；不能在协程里再 `asyncio.run()`
+    （嵌套事件循环会抛 RuntimeError，被兜底吞掉后整页收入变 0）。
     """
+    try:
+        usable, entries = await credit_ledger.fetch_entries()
+    except Exception:  # noqa: BLE001 - 兜底：任何意外都按不可用降级
+        return False, [], None
+    if not usable:
+        return False, [], None
+
     uids = _realm_uids(realm)
     if uids is not None and not uids:
-        return {}
-    start = db.day_start_ts(day)
-    sql = (f"SELECT {db.hour_sql('ts')} AS bucket, COALESCE(SUM(credits),0) AS income "
-           'FROM task_logs WHERE kind = \'credit\' AND ts >= ? AND ts < ?')
-    args: list = [start, start + 86400]
-    if uids is not None:
-        sql += f' AND uid IN ({",".join("?" * len(uids))})'
-        args.extend(sorted(uids))
-    sql += ' GROUP BY bucket'
-    out: dict[int, float] = {}
-    for r in db.query(sql, tuple(args)):
-        bucket = str(r['bucket'] or '')
-        if len(bucket) >= 13:
-            out[int(bucket[11:13])] = float(r['income'] or 0)
+        return True, [], None  # 该版本无账号 → 收入为空，但账本是可用的
+
+    covered = [str(e['day']) for e in entries if e.get('day')]
+    covered_from = min(covered) if covered else None
+    positive = [e for e in entries
+                if e.get('delta', 0) > 0
+                and (uids is None or e.get('uid') in uids)]
+    return True, positive, covered_from
+
+
+def _credit_income_by_day(entries: list[dict]) -> dict[str, float]:
+    """逐笔正 delta 按本地日聚合。"""
+    out: dict[str, float] = {}
+    for e in entries:
+        day = str(e['day'])
+        out[day] = out.get(day, 0.0) + float(e['delta'])
     return out
 
 
-def _credits_hourly(day: str, realm: str | None) -> list[dict]:
+def _credit_income_by_hour(day: str, entries: list[dict]) -> dict[int, float]:
+    """逐笔正 delta 按本地小时聚合（只取指定日）。"""
+    out: dict[int, float] = {}
+    for e in entries:
+        if str(e['day']) != day:
+            continue
+        h = int(e['hour'])
+        out[h] = out.get(h, 0.0) + float(e['delta'])
+    return out
+
+
+def _credits_hourly(day: str, realm: str | None,
+                    entries: list[dict]) -> list[dict]:
     """积分收支按小时（固定 24 桶补零，issue #285）。
 
-    支出取 `usage_hourly.credit`：它与 `usage_daily` 由同一处写入累计，
-    所以按小时求和与按天求和天然一致；收入按余额查询发生的小时归档。
+    支出取 usage_hourly.credit（与 usage_daily 同一写入路径）；收入按上游账本
+    逐笔发放时刻归档。
     """
     rf = ' AND realm = ?' if realm in ('cn', 'global') else ''
     rargs: tuple = (realm,) if rf else ()
@@ -523,7 +545,7 @@ def _credits_hourly(day: str, realm: str | None) -> list[dict]:
         (day,) + rargs,
     ):
         expense[int(r['hour'])] = float(r['credit'] or 0)
-    income = _credit_income_by_hour(day, realm)
+    income = _credit_income_by_hour(day, entries)
     out: list[dict] = []
     for h in range(24):
         inc = income.get(h, 0.0)
@@ -532,42 +554,26 @@ def _credits_hourly(day: str, realm: str | None) -> list[dict]:
     return out
 
 
-def _credit_income_by_day(since: str, realm: str | None) -> dict[str, float]:
-    """收入：`kind='credit'` 流水按本地日聚合（见本段顶部说明）。"""
-    uids = _realm_uids(realm)
-    if uids is not None and not uids:
-        return {}
-    sql = (f"SELECT {db.day_sql('ts')} AS day, COALESCE(SUM(credits),0) AS income "
-           "FROM task_logs WHERE kind = 'credit' AND ts >= ?")
-    args: list = [db.day_start_ts(since)]
-    if uids is not None:
-        sql += f' AND uid IN ({",".join("?" * len(uids))})'
-        args.extend(sorted(uids))
-    sql += ' GROUP BY day'
-    rows = db.query(sql, tuple(args))
-    return {str(r['day']): float(r['income'] or 0) for r in rows if r['day']}
-
-
 @router.get('/credits')
-def credits_flow(days: int = 30, realm: str | None = None,
-                 user: dict = Depends(security.current_user)) -> dict:
+async def credits_flow(days: int = 30, realm: str | None = None,
+                       user: dict = Depends(security.current_user)) -> dict:
     """积分收支：按天给出收入与支出，并给出今日 / 近 7 天 / 区间合计。
 
-    ## 收入口径（近似值，界面须如实说明，不要假装是精确账本）
+    ## 收入口径（上游逐笔账本，精确发放记录）
 
-    收入是 `credits.record_balance` 在**真的向腾讯查了一次余额、且比上次查询
-    增加**时写下的流水。它覆盖签到 / 活跃 / 旅行等所有渠道（这些渠道大多不在
-    上游日志里打数额），但有两个已知近似：
+    收入取 core `/panel/api/credit_history` 中 delta>0 的逐笔行，按带时区的时间
+    换算成本地 day/hour 归档。上游账本只保留最近若干天（实测 6 天左右、且接口
+    limit 钳到 1000 条），因此：
 
-      · 两次查询之间「先增后耗」、净额不为正时，那笔增加不会被记下；
-      · 长时间无人打开面板 / 无人刷新积分时，期间的多次增加会**合并**记到
-        下一次查询那一刻所在的日期。
+      · 覆盖期外的日期 `income=0`，**不回退**旧口径（余额快照差分）；
+      · 响应带 `income_covered_from`（账本最早日期）与 `income_partial`，界面须
+        如实标注「该区间部分日期无逐笔数据」；
+      · 上游不可达 → `income_source='unavailable'`、收入全 0、支出照常，不抛 5xx。
 
     ## 支出口径
 
     `usage_daily.credit` 是每次调用上游返回的真实扣费（`usage.credit`）当日合计，
-    精确到每次请求。两个口径精度不同，所以不把「净额」当作唯一结论，而是收入 /
-    支出 / 净额三项都列。
+    精确到每次请求。收入 / 支出 / 净额三项都列，不把净额当作唯一结论。
     """
     d = _clamp_days(days, 30)
     since = _since(d)
@@ -584,7 +590,9 @@ def credits_flow(days: int = 30, realm: str | None = None,
             (since,) + rargs,
         )
     }
-    income = _credit_income_by_day(since, realm)
+
+    usable, positive, covered_from = await _ledger_filter(realm)
+    income = _credit_income_by_day(positive) if usable else {}
 
     # 补齐每一天（含无数据的日子），折线才不会断成两截
     start = datetime.date(*time.localtime(db.day_start_ts(since))[:3])
@@ -606,7 +614,10 @@ def credits_flow(days: int = 30, realm: str | None = None,
     # 剩一个孤点，看不出「今天什么时候进、什么时候花」。沿用用量趋势图已确立的
     # 粒度规则（days=1 → hour，固定 24 桶补零，见 /stats/hourly）。
     # 多日范围不返回 hourly —— 响应形态与升级前逐字段一致。
-    hourly = _credits_hourly(today, realm) if d == 1 else None
+    hourly = _credits_hourly(today, realm, positive) if d == 1 else None
+
+    income_source = 'ledger' if usable else 'unavailable'
+    partial = (not usable) or covered_from is None or covered_from > since
     return {
         'days': d,
         'from': daily[0]['day'] if daily else since,
@@ -616,6 +627,9 @@ def credits_flow(days: int = 30, realm: str | None = None,
         'total': _sum(daily),
         'daily': daily,
         'granularity': 'hour' if hourly is not None else 'day',
+        'income_source': income_source,
+        'income_covered_from': covered_from,
+        'income_partial': partial,
         **({'hourly': hourly} if hourly is not None else {}),
     }
 

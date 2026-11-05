@@ -853,7 +853,7 @@ export interface UsageHourPoint {
 /** 一天的积分收入 / 支出（`/api/stats/credits` 的 daily 项） */
 export interface CreditsFlowPoint {
   day: string;
-  /** 收入：余额增加流水（kind='credit'）当日合计 */
+  /** 收入：上游逐笔账本 delta>0 当日合计（精确发放记录） */
   income: number;
   /** 支出：调用实际扣费（usage.credit）当日合计 */
   expense: number;
@@ -878,9 +878,11 @@ export interface CreditsFlowHourPoint {
 /**
  * 积分收支统计。
  *
- * 收入与支出是**两套口径**（见后端 `credits_flow` 的说明）：收入是「余额比
- * 上次查询增加的部分」，按查询时刻归日，属于近似值；支出是每次调用的真实扣费，
- * 精确到请求。所以界面上必须分开标注，不能只拿「净额」下结论。
+ * 收入与支出是**两套口径**（见后端 `credits_flow` 的说明）：收入来自上游 core
+ * 的逐笔积分账本，只累加 delta>0 的发放记录，精确到每次发放；支出是每次调用
+ * 的真实扣费，精确到请求。上游账本只保留最近若干天，覆盖期外的日期 income=0，
+ * 响应里 `income_partial` / `income_covered_from` 会如实标注，界面不能把「0」
+ * 显示成「那天没发积分」。
  */
 export interface CreditsFlow {
   days: number;
@@ -894,6 +896,12 @@ export interface CreditsFlow {
   granularity?: 'day' | 'hour';
   /** 24 个小时桶；仅 granularity === 'hour' 时存在。 */
   hourly?: CreditsFlowHourPoint[];
+  /** 'ledger' = 逐笔账本可用；'unavailable' = 上游不可达，收入已降级为空。 */
+  income_source?: 'ledger' | 'unavailable';
+  /** 账本最早一笔的日期；null 表示账本为空。 */
+  income_covered_from?: string | null;
+  /** 请求区间是否超出账本覆盖期（true 时部分日期的 0 是「无数据」而非「没发放」）。 */
+  income_partial?: boolean;
 }
 
 export interface UsageBreakdown {
