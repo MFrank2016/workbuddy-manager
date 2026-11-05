@@ -1,36 +1,31 @@
-"use client";
+'use client';
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { QRCodeSVG } from "qrcode.react";
-import { notify } from "@/lib/toast";
-import { createPollGuard, classifyTerminal } from "@/lib/poll-guard";
-import { useT } from "@/lib/i18n/provider";
-import {
-  Loader2,
-  CheckCircle2,
-  AlertTriangle,
-  ExternalLink,
-} from "lucide-react";
+import {useCallback, useEffect, useRef, useState} from 'react';
+import {QRCodeSVG} from 'qrcode.react';
+import {notify} from '@/lib/toast';
+import {createPollGuard, classifyTerminal} from '@/lib/poll-guard';
+import {useT} from '@/lib/i18n/provider';
+import {Loader2, CheckCircle2, AlertTriangle, ExternalLink} from 'lucide-react';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { accountApi, errText } from "@/lib/api";
-import { useRealm } from "@/lib/realm-context";
-import { Button } from "@/components/ui/button";
-import { CopyButton, ShareButton } from "@/components/ui/copy-button";
+} from '@/components/ui/select';
+import {accountApi, errText} from '@/lib/api';
+import {useRealm} from '@/lib/realm-context';
+import {Button} from '@/components/ui/button';
+import {CopyButton, ShareButton} from '@/components/ui/copy-button';
 import {
   Dialog,
   DialogContent,
   DialogTitle,
   DialogDescription,
   DialogHeader,
-} from "@/components/animate-ui/radix/dialog";
+} from '@/components/animate-ui/radix/dialog';
 
-type Phase = "loading" | "waiting" | "success" | "error";
+type Phase = 'loading' | 'waiting' | 'success' | 'error';
 
 /**
  * 连续失败几次才打断轮询。
@@ -47,13 +42,13 @@ const POLL_FAIL_LIMIT = 3;
  * label 为 i18n 键：地区名要跟着界面语言走（代码本身是固定的 ISO 码）。
  */
 const INTERNATIONAL_REGIONS = [
-  { code: "HK", key: "region.HK" },
-  { code: "MO", key: "region.MO" },
-  { code: "SG", key: "region.SG" },
-  { code: "TH", key: "region.TH" },
-  { code: "PH", key: "region.PH" },
-  { code: "MY", key: "region.MY" },
-  { code: "ID", key: "region.ID" },
+  {code: 'HK', key: 'region.HK'},
+  {code: 'MO', key: 'region.MO'},
+  {code: 'SG', key: 'region.SG'},
+  {code: 'TH', key: 'region.TH'},
+  {code: 'PH', key: 'region.PH'},
+  {code: 'MY', key: 'region.MY'},
+  {code: 'ID', key: 'region.ID'},
 ] as const;
 
 /**
@@ -70,12 +65,12 @@ const INTERNATIONAL_REGIONS = [
  * 预渲染时直接报错（本项目是 output: 'export'）。
  */
 function wakeEvents(): Array<[EventTarget, string]> {
-  if (typeof window === "undefined") return [];
+  if (typeof window === 'undefined') return [];
   return [
-    [document, "visibilitychange"],
-    [window, "focus"],
-    [document, "pointerdown"],
-    [document, "keydown"],
+    [document, 'visibilitychange'],
+    [window, 'focus'],
+    [document, 'pointerdown'],
+    [document, 'keydown'],
   ];
 }
 
@@ -88,9 +83,9 @@ function wakeEvents(): Array<[EventTarget, string]> {
  * 第二个窗口就永远停在「等待授权完成」。
  */
 function clientId(): string {
-  if (typeof window === "undefined") return "";
-  const KEY = "wb.add-account.client";
-  let id = window.sessionStorage.getItem(KEY) || "";
+  if (typeof window === 'undefined') return '';
+  const KEY = 'wb.add-account.client';
+  let id = window.sessionStorage.getItem(KEY) || '';
   if (!id) {
     id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
     window.sessionStorage.setItem(KEY, id);
@@ -111,18 +106,18 @@ export function AddAccountDialog({
   upstreamId?: number | null;
 }) {
   const t = useT();
-  const [phase, setPhase] = useState<Phase>("loading");
+  const [phase, setPhase] = useState<Phase>('loading');
   /** 版本跟随全站切换：切到国际版时扫码走国际版端点，并需要选地区 */
-  const { realm, label: realmName } = useRealm();
+  const {realm, label: realmName} = useRealm();
   /** 国际版地区代码（如 HK）。不预选：地区属于账号归属信息，交由用户决定 */
-  const [region, setRegion] = useState("");
+  const [region, setRegion] = useState('');
   const [proxy, setProxy] = useState<string | undefined>(undefined);
   const [proxyRoutes, setProxyRoutes] = useState<string[]>([]);
   const [routesReady, setRoutesReady] = useState(false);
-  const [routeError, setRouteError] = useState("");
-  const [authUrl, setAuthUrl] = useState("");
-  const [message, setMessage] = useState("");
-  const stateRef = useRef("");
+  const [routeError, setRouteError] = useState('');
+  const [authUrl, setAuthUrl] = useState('');
+  const [message, setMessage] = useState('');
+  const stateRef = useRef('');
   const timerRef = useRef<number | null>(null);
   /** 轮询代次：start() 重入或弹窗关闭时递增，令在途的旧 tick 一律失效。
    *  effect 依赖（realm/region/proxy/routesReady）连续变化会并发重入 start()，
@@ -165,32 +160,24 @@ export function AddAccountDialog({
   }, []);
 
   useEffect(() => {
-    if (!open) {
-      setRoutesReady(false);
-      return;
-    }
+    if (!open) { setRoutesReady(false); return; }
     let active = true;
     setRoutesReady(false);
-    setRouteError("");
-    accountApi
-      .proxies()
-      .then((data) => {
-        if (!active) return;
-        setProxyRoutes(data.routes);
-        setProxy(data.default || "");
-        setRoutesReady(true);
-      })
-      .catch((error) => {
-        if (!active) return;
-        setRouteError(errText(error));
-        // 线路表只是一个可选出口：拉取失败不该把「加账号」卡死，否则二维码
-        // 永远不出现、弹窗看起来像在无限加载。退回直连继续扫码，错误仍留在上方。
-        setProxy("");
-        setRoutesReady(true);
-      });
-    return () => {
-      active = false;
-    };
+    setRouteError('');
+    accountApi.proxies().then((data) => {
+      if (!active) return;
+      setProxyRoutes(data.routes);
+      setProxy(data.default || '');
+      setRoutesReady(true);
+    }).catch((error) => {
+      if (!active) return;
+      setRouteError(errText(error));
+      // 线路表只是一个可选出口：拉取失败不该把「加账号」卡死，否则二维码
+      // 永远不出现、弹窗看起来像在无限加载。退回直连继续扫码，错误仍留在上方。
+      setProxy('');
+      setRoutesReady(true);
+    });
+    return () => { active = false; };
   }, [open]);
 
   const start = useCallback(async () => {
@@ -199,97 +186,83 @@ export function AddAccountDialog({
     // 代次必须在 await 之前登记：stopPoll() 已让上一代失效，这里开启本代。
     const generation = guardRef.current.begin();
     failsRef.current = 0;
-    setPhase("loading");
-    setMessage(t("addAccount.requesting"));
-    setAuthUrl("");
+    setPhase('loading');
+    setMessage(t('addAccount.requesting'));
+    setAuthUrl('');
     try {
       // region 一起发：服务端要替这张码盯着（前端被节流也不影响），而地区
       // 登记必须在落盘前完成，它那条路径读不到弹窗里的 state，只能在这里给。
-      const data = await accountApi.start(
-        realm,
-        upstreamId,
-        region || undefined,
-        proxy,
-      );
+      const data = await accountApi.start(realm, upstreamId, region || undefined, proxy);
       // 网络在飞期间用户改了地区 / 切了版本 / 关了弹窗 → 这一代已作废，
       // 绝不能再 setAuthUrl / 装 interval（否则就是泄漏的那一代）。
       if (guardRef.current.isStale(generation)) return;
       stateRef.current = data.state;
       setAuthUrl(data.authUrl);
-      setPhase("waiting");
-      setMessage(t("addAccount.waiting"));
+      setPhase('waiting');
+      setMessage(t('addAccount.waiting'));
 
       const tick = async () => {
         // 旧代 / 已收尾：一律不再发请求、不再 setState。
-        if (guardRef.current.isStale(generation) || deliveredRef.current)
-          return;
+        if (guardRef.current.isStale(generation) || deliveredRef.current) return;
         // 标签页在后台就不查：浏览器本来也会把定时器节流到约 1 次/分钟，
         // 与其让它零星触发，不如等用户切回来时补一次（与 useHeartbeat 同口径）。
         // 判断放在 tick 内部而不是调用处 —— 因为 visibilitychange 在**隐藏与
         // 显示时都会触发**，放外面的话「切走」那一下也会白发一次请求。
         if (document.hidden) return;
-        if (pollingRef.current) return; // 上一次还没回来，跳过本轮
+        if (pollingRef.current) return;  // 上一次还没回来，跳过本轮
         pollingRef.current = true;
         try {
-          const res = await accountApi.poll(
-            stateRef.current,
-            realm,
-            region || undefined,
-            upstreamId,
-            clientId(),
-          );
+          const res = await accountApi.poll(stateRef.current, realm, region || undefined,
+                                            upstreamId, clientId());
           // await 期间又发生重入 / 收尾：这一轮的响应作废。
-          if (guardRef.current.isStale(generation) || deliveredRef.current)
-            return;
+          if (guardRef.current.isStale(generation) || deliveredRef.current) return;
           // 拿到任何一次正常响应就清零：计数要表达的是「**连续**失败」，
           // 而不是「累计失败了几次」。不清零的话，几分钟内零散抖三次
           // （每次之间都恢复正常）也会触发中断，把一次正常的扫码打断。
           failsRef.current = 0;
-          if (res.status === "success" || res.status === "already_handled") {
+          if (res.status === 'success' || res.status === 'already_handled') {
             // classifyTerminal：正常成功 → 弹 toast；已被本客户端消费过 → 静默
             // 收尾（不弹 toast，但照样关弹窗、刷列表）；本轮已完成 → 直接忽略。
             const action = classifyTerminal(res.status, deliveredRef.current);
-            if (action === "ignore") return;
+            if (action === 'ignore') return;
             deliveredRef.current = true;
             stopPoll();
-            setPhase("success");
-            const accountName = res.nickname || res.uid || "";
+            setPhase('success');
+            const accountName = res.nickname || res.uid || '';
             setMessage(
               res.updated
-                ? t("addAccount.successUpdated", { name: accountName })
-                : t("addAccount.success", { name: accountName }),
+                ? t('addAccount.successUpdated', {name: accountName})
+                : t('addAccount.success', {name: accountName}),
             );
-            if (action === "announce") {
+            if (action === 'announce') {
               notify.ok(
-                t("addAccount.success", { name: accountName }),
-                res.realm === "global"
-                  ? t("addAccount.successGlobal")
+                t('addAccount.success', {name: accountName}),
+                res.realm === 'global'
+                  ? t('addAccount.successGlobal')
                   : res.updated
-                    ? t("addAccount.successToken")
-                    : t("addAccount.successCheckin"),
+                    ? t('addAccount.successToken')
+                    : t('addAccount.successCheckin'),
               );
             }
-            window.dispatchEvent(
-              new Event("workbuddy-manager:accounts-changed"),
-            );
+            window.dispatchEvent(new Event('workbuddy-manager:accounts-changed'));
             onSuccess?.();
             window.setTimeout(() => onOpenChange(false), 1600);
-          } else if (res.status === "expired") {
+          } else if (res.status === 'expired') {
             // 真过了有效期（5 分钟）：重新取一张码才是对的
             stopPoll();
-            setPhase("error");
-            setMessage(t("addAccount.qrExpired"));
-          } else if (res.status === "invalid") {
+            setPhase('error');
+            setMessage(t('addAccount.qrExpired'));
+          } else if (res.status === 'invalid') {
             // 与「过期」分开报：state 不在缓存里意味着**服务端重启过**
             // （或部署成多进程），二维码本身没问题。以前两者共用一句
             // 「二维码已失效」，用户会一直重扫却怎么都不成功（issue #26）。
             stopPoll();
-            setPhase("error");
-            setMessage(t("addAccount.stateLost"));
-          } else if (res.status === "realm_mismatch") {
+            setPhase('error');
+            setMessage(t('addAccount.stateLost'));
+          } else if (res.status === 'realm_mismatch') {
             stopPoll();
-            setPhase("error");
-            setMessage(t("addAccount.realmMismatch"));
+            setPhase('error');
+            setMessage(t('addAccount.realmMismatch'));
           }
         } catch (e) {
           // 不再静默吞掉：轮询出错（落盘失败 / 网络抖动 / 上游超时）以前会被
@@ -298,7 +271,7 @@ export function AddAccountDialog({
           failsRef.current += 1;
           if (failsRef.current >= POLL_FAIL_LIMIT) {
             stopPoll();
-            setPhase("error");
+            setPhase('error');
             setMessage(errText(e));
           }
         } finally {
@@ -317,11 +290,9 @@ export function AddAccountDialog({
       // 敲一下或让窗口获得焦点，那一刻立即补一次。这些事件不受遮挡节流影响。
       // 检测本身已经在服务端跑了（见 server/routers/accounts.py 的说明），
       // 这里只是去读结果，所以补得越勤也只是读一次内存。
-      wakeEvents().forEach(([target, event]) =>
-        target.addEventListener(event, tick),
-      );
+      wakeEvents().forEach(([target, event]) => target.addEventListener(event, tick));
     } catch (e) {
-      setPhase("error");
+      setPhase('error');
       setMessage(errText(e));
     }
   }, [onOpenChange, onSuccess, stopPoll, realm, region, proxy, t, upstreamId]);
@@ -341,90 +312,55 @@ export function AddAccountDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[420px]" showCloseButton>
         <DialogHeader>
-          <DialogTitle>
-            {t("addAccount.title", { realm: realmName })}
-          </DialogTitle>
+          <DialogTitle>{t('addAccount.title', {realm: realmName})}</DialogTitle>
           <DialogDescription>
-            {realm === "global"
-              ? t("addAccount.descGlobal")
-              : t("addAccount.descCn")}
+            {realm === 'global'
+              ? t('addAccount.descGlobal')
+              : t('addAccount.descCn')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex w-full min-w-0 flex-col items-center gap-4 px-6 pb-6">
-          {routeError && (
-            <p role="alert" className="text-xs text-destructive">
-              {routeError}
-            </p>
-          )}
+          {routeError && <p role="alert" className="text-xs text-destructive">{routeError}</p>}
           {/* 没有配置任何线路时整个选择器都不出现：那时下拉里只有「直连」一项，
               摆出来只会让人以为能选却选不动（线路表读自上游配置的 proxies）。 */}
           {proxyRoutes.length > 0 && (
             <div className="w-full space-y-1.5">
-              <div className="text-[11px] font-medium">
-                {t("accounts.proxyLine")}
-              </div>
-              <Select
-                value={proxy ? `route:${proxy}` : "default"}
-                disabled={!routesReady}
-                onValueChange={(value) =>
-                  setProxy(value === "default" ? "" : value.slice(6))
-                }
-              >
-                <SelectTrigger
-                  className="h-9 w-full rounded-full text-xs"
-                  aria-label={t("accounts.proxyLine")}
-                >
-                  <SelectValue />
-                </SelectTrigger>
+              <div className="text-[11px] font-medium">{t('accounts.proxyLine')}</div>
+              <Select value={proxy ? `route:${proxy}` : 'default'} disabled={!routesReady}
+                      onValueChange={(value) => setProxy(value === 'default' ? '' : value.slice(6))}>
+                <SelectTrigger className="h-9 w-full rounded-full text-xs" aria-label={t('accounts.proxyLine')}>
+                <SelectValue />
+              </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="default">
-                    {t("accounts.proxyDirect")}
-                  </SelectItem>
-                  {proxy && !proxyRoutes.includes(proxy) && (
-                    <SelectItem value={`route:${proxy}`}>
-                      {proxy} ({t("accounts.proxyMissing")})
-                    </SelectItem>
-                  )}
-                  {proxyRoutes.map((route) => (
-                    <SelectItem key={route} value={`route:${route}`}>
-                      {route}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="default">{t('accounts.proxyDirect')}</SelectItem>
+                  {proxy && !proxyRoutes.includes(proxy) &&
+                    <SelectItem value={`route:${proxy}`}>{proxy} ({t('accounts.proxyMissing')})</SelectItem>}
+                  {proxyRoutes.map((route) => <SelectItem key={route} value={`route:${route}`}>{route}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
           )}
           {/* 国际版必须先完成地区注册，否则聊天报 14017。
               放在二维码之前：地区一变就要重新申请授权码，先选好再扫省得白扫。 */}
-          {realm === "global" && (
+          {realm === 'global' && (
             <div className="w-full space-y-1.5">
-              <div className="text-[11px] font-medium">
-                {t("addAccount.regionLabel")}
-              </div>
+              <div className="text-[11px] font-medium">{t('addAccount.regionLabel')}</div>
               <Select value={region} onValueChange={setRegion}>
-                <SelectTrigger
-                  className="h-9 w-full rounded-full text-xs"
-                  aria-label={t("addAccount.regionLabel")}
-                >
-                  <SelectValue
-                    placeholder={t("addAccount.regionPlaceholder")}
-                  />
+                <SelectTrigger className="h-9 w-full rounded-full text-xs" aria-label={t('addAccount.regionLabel')}>
+                  <SelectValue placeholder={t('addAccount.regionPlaceholder')} />
                 </SelectTrigger>
                 <SelectContent>
                   {INTERNATIONAL_REGIONS.map((r) => (
                     <SelectItem key={r.code} value={r.code} className="text-xs">
-                      {t("addAccount.regionOption", {
-                        label: t(r.key),
-                        code: r.code,
-                      })}
+                      {t('addAccount.regionOption', {label: t(r.key), code: r.code})}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               {!region && (
                 <p className="text-[11px] leading-4 text-muted-foreground">
-                  {t("addAccount.regionHint")}
+                  {t('addAccount.regionHint')}
                 </p>
               )}
             </div>
@@ -432,13 +368,9 @@ export function AddAccountDialog({
 
           {/* 固定尺寸，避免 loading/waiting/error 各阶段弹窗高度跳动 */}
           <div className="grid h-[212px] w-[212px] shrink-0 place-items-center overflow-hidden rounded-2xl bg-white p-3 ring-1 ring-black/5">
-            {phase === "loading" && (
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            )}
-            {phase === "error" && (
-              <AlertTriangle className="h-7 w-7 text-amber-500" />
-            )}
-            {(phase === "waiting" || phase === "success") && authUrl && (
+            {phase === 'loading' && <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />}
+            {phase === 'error' && <AlertTriangle className="h-7 w-7 text-amber-500" />}
+            {(phase === 'waiting' || phase === 'success') && authUrl && (
               <QRCodeSVG value={authUrl} size={188} level="M" />
             )}
           </div>
@@ -463,13 +395,13 @@ export function AddAccountDialog({
                   value={authUrl}
                   size="sm"
                   showLabel
-                  label={t("addAccount.copyLink")}
+                  label={t('addAccount.copyLink')}
                   variant="outline"
                   className="rounded-full"
                 />
                 <ShareButton
-                  title={t("addAccount.shareTitle")}
-                  text={t("addAccount.shareText")}
+                  title={t('addAccount.shareTitle')}
+                  text={t('addAccount.shareText')}
                   url={authUrl}
                 />
               </div>
@@ -478,34 +410,26 @@ export function AddAccountDialog({
 
           <div
             className={
-              "flex items-center gap-2 px-2 text-xs " +
-              (phase === "success"
-                ? "text-emerald-500"
-                : phase === "error"
-                  ? "text-red-500"
-                  : "text-muted-foreground")
+              'flex items-center gap-2 px-2 text-xs ' +
+              (phase === 'success' ?
+                'text-emerald-500' :
+                phase === 'error' ?
+                  'text-red-500' :
+                  'text-muted-foreground')
             }
           >
-            {phase === "waiting" && (
-              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-            )}
-            {phase === "success" && (
-              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-            )}
+            {phase === 'waiting' && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
+            {phase === 'success' && <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />}
             <span className="text-center">{message}</span>
           </div>
 
           <div className="flex w-full gap-2">
-            <Button
-              variant="outline"
-              className="flex-1 rounded-full"
-              onClick={() => onOpenChange(false)}
-            >
-              {t("common.cancel")}
+            <Button variant="outline" className="flex-1 rounded-full" onClick={() => onOpenChange(false)}>
+              {t('common.cancel')}
             </Button>
-            {phase === "error" && (
+            {phase === 'error' && (
               <Button className="flex-1 rounded-full" onClick={start}>
-                {t("addAccount.retry")}
+                {t('addAccount.retry')}
               </Button>
             )}
           </div>
