@@ -1,4 +1,5 @@
 """账号管理：列表、扫码添加、签到、测试、刷新、删除、重启上游。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,21 +12,38 @@ import time
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 
 from .. import config, db, security, upstreamsvc
 from ..iputil import client_ip
 from ..services import (
-    credits as creditsvc, dailyplan, modelcatalog, reload, renew, tasklog, taskrun,
-    tencent, tokenimport, wb2api,
+    credits as creditsvc,
+    dailyplan,
+    modelcatalog,
+    reload,
+    renew,
+    tasklog,
+    taskrun,
+    tencent,
+    tokenimport,
+    wb2api,
 )
 from ..services.realm import realm_of, supports_checkin
 from ..services import taskpacing
 
-logger = logging.getLogger('workbuddy.accounts')
+logger = logging.getLogger("workbuddy.accounts")
 
-router = APIRouter(prefix='/api', tags=['accounts'])
+router = APIRouter(prefix="/api", tags=["accounts"])
 
 _ACCOUNT_UPLOAD_MAX_BYTES = 2 * 1024 * 1024
 
@@ -36,7 +54,9 @@ _BULK_EXPORT_ALERT = 5
 
 def _export_account_name(path: Path) -> str:
     """Return a JSON filename that can be uploaded again."""
-    return path.name[:-len('.disabled')] if path.name.endswith('.disabled') else path.name
+    return (
+        path.name[: -len(".disabled")] if path.name.endswith(".disabled") else path.name
+    )
 
 
 class _InvalidUploadProxy(ValueError):
@@ -46,31 +66,31 @@ class _InvalidUploadProxy(ValueError):
 def _uploaded_account(raw: object, filename: str) -> dict:
     """Normalize supported exported account JSON into ``write_auth_file`` input."""
     if not isinstance(raw, dict):
-        raise ValueError('账号条目必须是对象')
+        raise ValueError("账号条目必须是对象")
 
-    account = raw.get('account') if isinstance(raw.get('account'), dict) else raw
-    auth = raw.get('auth') if isinstance(raw.get('auth'), dict) else raw
+    account = raw.get("account") if isinstance(raw.get("account"), dict) else raw
+    auth = raw.get("auth") if isinstance(raw.get("auth"), dict) else raw
 
     def value(*keys: str) -> object:
         for source in (auth, account, raw):
             for key in keys:
-                if source.get(key) not in (None, ''):
+                if source.get(key) not in (None, ""):
                     return source[key]
-        return ''
+        return ""
 
-    uid = str(value('uid', 'user_id')).strip()
-    access_token = str(value('accessToken', 'access_token')).strip()
+    uid = str(value("uid", "user_id")).strip()
+    access_token = str(value("accessToken", "access_token")).strip()
     if not uid:
-        raise ValueError('缺少 uid')
+        raise ValueError("缺少 uid")
     if not access_token:
-        raise ValueError('缺少 accessToken')
+        raise ValueError("缺少 accessToken")
 
-    absolute_expiry = value('expiresAt', 'expires_at')
-    duration_expiry = value('expiresIn', 'expires_in')
+    absolute_expiry = value("expiresAt", "expires_at")
+    duration_expiry = value("expiresIn", "expires_in")
     try:
-        if absolute_expiry not in (None, ''):
+        if absolute_expiry not in (None, ""):
             expires_at = int(absolute_expiry)
-        elif duration_expiry in (None, ''):
+        elif duration_expiry in (None, ""):
             # Some exports only preserve opaque tokens. Zero means unknown; fabricating
             # an expiry would make scheduling and the account page report false data.
             expires_at = 0
@@ -78,39 +98,39 @@ def _uploaded_account(raw: object, filename: str) -> dict:
             # Tencent's expiresIn is a duration, unlike expiresAt which is an epoch.
             expires_at = int(time.time()) + int(duration_expiry)
     except (TypeError, ValueError) as exc:
-        raise ValueError('expiresAt 必须是数字') from exc
+        raise ValueError("expiresAt 必须是数字") from exc
     if expires_at < 0:
-        raise ValueError('expiresAt 必须是非负数字')
+        raise ValueError("expiresAt 必须是非负数字")
 
     return {
-        'uid': uid,
-        'access_token': access_token,
-        'refresh_token': str(value('refreshToken', 'refresh_token') or ''),
-        'expires_at': expires_at,
-        'domain': str(value('domain') or ''),
-        'realm': str(value('realm') or ''),
-        'enterprise_id': str(value('enterpriseId', 'enterprise_id') or ''),
-        'nickname': str(value('nickname', 'name') or ''),
-        'device_token': str(raw.get('device_token') or ''),
-        'proxy': str(value('proxy') or ''),
-        '_filename': filename,
+        "uid": uid,
+        "access_token": access_token,
+        "refresh_token": str(value("refreshToken", "refresh_token") or ""),
+        "expires_at": expires_at,
+        "domain": str(value("domain") or ""),
+        "realm": str(value("realm") or ""),
+        "enterprise_id": str(value("enterpriseId", "enterprise_id") or ""),
+        "nickname": str(value("nickname", "name") or ""),
+        "device_token": str(raw.get("device_token") or ""),
+        "proxy": str(value("proxy") or ""),
+        "_filename": filename,
     }
 
 
 def _uploaded_entries(raw: object) -> list[object]:
     """Expand common single-account and multi-account export shapes."""
-    if isinstance(raw, dict) and isinstance(raw.get('accounts'), list):
-        entries = raw['accounts']
+    if isinstance(raw, dict) and isinstance(raw.get("accounts"), list):
+        entries = raw["accounts"]
     elif isinstance(raw, list):
         entries = raw
     else:
         entries = [raw]
     if not entries:
-        raise ValueError('JSON 中没有账号条目')
+        raise ValueError("JSON 中没有账号条目")
     return entries
 
 
-@router.get('/accounts/export')
+@router.get("/accounts/export")
 def export_accounts(
     request: Request,
     upstream_id: int | None = Query(None),
@@ -120,21 +140,23 @@ def export_accounts(
     group = _group(upstream_id)
     auth_dir = _require_dir(group)
     base = auth_dir.resolve()
-    files = sorted(auth_dir.glob('workbuddy*.json'))
-    files += sorted(auth_dir.glob('workbuddy*.json.disabled'))
+    files = sorted(auth_dir.glob("workbuddy*.json"))
+    files += sorted(auth_dir.glob("workbuddy*.json.disabled"))
 
     payload = io.BytesIO()
     written = 0
     seen: set[str] = set()
-    with zipfile.ZipFile(payload, mode='w', compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(
+        payload, mode="w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
         for path in files:
             try:
                 if not path.is_file() or path.resolve().parent != base:
                     continue
                 raw = path.read_bytes()
-                json.loads(raw.decode('utf-8'))
+                json.loads(raw.decode("utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                logger.warning('跳过无法导出的账号文件 file=%s', path.name)
+                logger.warning("跳过无法导出的账号文件 file=%s", path.name)
                 continue
             out_name = _export_account_name(path)
             if out_name in seen:
@@ -143,7 +165,7 @@ def export_accounts(
                 # zip 里出现**重复条目**，解压方行为依工具而异（Python 打包时
                 # 自己都会告警）。保留先扫到的 enabled 那一份（上游实际加载的
                 # 就是它），后续同名跳过。
-                logger.warning('同名账号文件重复，跳过 file=%s', path.name)
+                logger.warning("同名账号文件重复，跳过 file=%s", path.name)
                 continue
             seen.add(out_name)
             archive.writestr(out_name, raw)
@@ -151,25 +173,35 @@ def export_accounts(
 
     payload.seek(0)
     ip = client_ip(request)
-    security.audit(user, 'accounts.export', group['name'],
-                   f'导出 {written} 个账号文件（含凭据）；来源 {ip}', ip=ip)
+    security.audit(
+        user,
+        "accounts.export",
+        group["name"],
+        f"导出 {written} 个账号文件（含凭据）；来源 {ip}",
+        ip=ip,
+    )
     if written >= _BULK_EXPORT_ALERT:
         # 只写 journal，不改返回体：导出本身是合法功能，告警属于旁路。
-        logger.warning('批量导出账号凭据 user=%s count=%d ip=%s upstream=%s',
-                       (user or {}).get('username', ''), written, ip, group['name'])
+        logger.warning(
+            "批量导出账号凭据 user=%s count=%d ip=%s upstream=%s",
+            (user or {}).get("username", ""),
+            written,
+            ip,
+            group["name"],
+        )
     return StreamingResponse(
         payload,
-        media_type='application/zip',
+        media_type="application/zip",
         headers={
-            'Content-Disposition': 'attachment; filename="accounts.zip"',
+            "Content-Disposition": 'attachment; filename="accounts.zip"',
             # 包里是账号凭据：明确不许任何中间层或浏览器缓存它（审计留痕是另一半）。
-            'Cache-Control': 'no-store, no-cache, must-revalidate, private',
-            'Pragma': 'no-cache',
+            "Cache-Control": "no-store, no-cache, must-revalidate, private",
+            "Pragma": "no-cache",
         },
     )
 
 
-@router.post('/accounts/upload')
+@router.post("/accounts/upload")
 async def upload_accounts(
     request: Request,
     files: list[UploadFile] = File(...),
@@ -187,7 +219,7 @@ async def upload_accounts(
     failed: list[dict] = []
 
     for upload in files:
-        name = upload.filename or '未命名文件'
+        name = upload.filename or "未命名文件"
         # 名字不是 .json 的，**在进 try 之前**直接给出可操作的原因。
         #
         # 以前这条检查抛的 ValueError 会落进下面 `except ValueError` 的兜底分支，
@@ -195,78 +227,92 @@ async def upload_accounts(
         # ZIP 包**，看到那句话完全不知道下一步干什么（现场：连传两个非 JSON
         # 文件都被这句打回；导出侧文案还写着「可直接用于另一台面板导入」，进一步
         # 坐实了「ZIP 可以直接传」的误判）。这里把「支持什么、ZIP 该怎么办」一次说清。
-        if not name.lower().endswith('.json'):
-            failed.append({
-                'file': name,
-                'message': '只支持 .json 文件：请上传面板导出的账号 JSON（ZIP 导出包请先解压）',
-            })
+        if not name.lower().endswith(".json"):
+            failed.append(
+                {
+                    "file": name,
+                    "message": "只支持 .json 文件：请上传面板导出的账号 JSON（ZIP 导出包请先解压）",
+                }
+            )
             continue
         try:
             content = await upload.read(_ACCOUNT_UPLOAD_MAX_BYTES + 1)
             if len(content) > _ACCOUNT_UPLOAD_MAX_BYTES:
-                raise ValueError('文件不能超过 2 MB')
-            raw = json.loads(content.decode('utf-8-sig'))
+                raise ValueError("文件不能超过 2 MB")
+            raw = json.loads(content.decode("utf-8-sig"))
             for entry in _uploaded_entries(raw):
                 try:
                     account = _uploaded_account(entry, name)
-                    if account['proxy']:
+                    if account["proxy"]:
                         try:
-                            config.account_proxy({'proxy': account['proxy']})
+                            config.account_proxy({"proxy": account["proxy"]})
                         except ValueError as exc:
                             raise _InvalidUploadProxy(str(exc)) from exc
                     filename, existed = tencent.write_auth_file(
-                        account, auth_dir, allow_overwrite=overwrite)
+                        account, auth_dir, allow_overwrite=overwrite
+                    )
                     # Preserve per-account metadata that write_auth_file intentionally does not
                     # accept from the login flow.
                     path = auth_dir / filename
-                    saved = json.loads(path.read_text(encoding='utf-8'))
-                    if account['device_token']:
-                        saved['device_token'] = account['device_token']
-                    if account['proxy']:
-                        saved['proxy'] = account['proxy']
+                    saved = json.loads(path.read_text(encoding="utf-8"))
+                    if account["device_token"]:
+                        saved["device_token"] = account["device_token"]
+                    if account["proxy"]:
+                        saved["proxy"] = account["proxy"]
                     tencent._atomic_write_json(path, saved)
                     if not existed:
-                        db.record_account_added(account['uid'], auth_dir)
-                    reload.request_reload_or_restart(account['uid'], upstream=_reload_target(group))
-                    item = {'file': filename, 'uid': account['uid'], 'updated': existed}
+                        db.record_account_added(account["uid"], auth_dir)
+                    reload.request_reload_or_restart(
+                        account["uid"], upstream=_reload_target(group)
+                    )
+                    item = {"file": filename, "uid": account["uid"], "updated": existed}
                     uploaded.append(item)
                     (overwritten if existed else added).append(item)
                 except tencent.AccountExistsError as exc:
-                    rejected.append({'file': name, 'uid': exc.uid, 'message': '账号已存在，未覆盖'})
+                    rejected.append(
+                        {"file": name, "uid": exc.uid, "message": "账号已存在，未覆盖"}
+                    )
                 except _InvalidUploadProxy as exc:
-                    logger.info('账号线路校验失败 file=%s reason=%s', name, str(exc))
-                    rejected.append({'file': name, 'message': '账号线路无效'})
+                    logger.info("账号线路校验失败 file=%s reason=%s", name, str(exc))
+                    rejected.append({"file": name, "message": "账号线路无效"})
                 except ValueError as exc:
-                    logger.info('账号条目校验失败 file=%s reason=%s', name, str(exc))
-                    rejected.append({'file': name, 'message': '账号条目无效'})
+                    logger.info("账号条目校验失败 file=%s reason=%s", name, str(exc))
+                    rejected.append({"file": name, "message": "账号条目无效"})
                 except Exception:
-                    logger.exception('账号条目导入失败 file=%s', name)
-                    failed.append({'file': name, 'message': '账号导入失败'})
+                    logger.exception("账号条目导入失败 file=%s", name)
+                    failed.append({"file": name, "message": "账号导入失败"})
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            logger.info('账号文件格式校验失败 file=%s reason=%s', name, type(exc).__name__)
-            failed.append({'file': name, 'message': '文件格式无效'})
+            logger.info(
+                "账号文件格式校验失败 file=%s reason=%s", name, type(exc).__name__
+            )
+            failed.append({"file": name, "message": "文件格式无效"})
         except ValueError as exc:
-            if str(exc) == '文件不能超过 2 MB':
-                failed.append({'file': name, 'message': '文件不能超过 2 MB'})
+            if str(exc) == "文件不能超过 2 MB":
+                failed.append({"file": name, "message": "文件不能超过 2 MB"})
             else:
-                logger.info('账号文件校验失败 file=%s reason=%s', name, str(exc))
-                failed.append({'file': name, 'message': '文件内容无效'})
+                logger.info("账号文件校验失败 file=%s reason=%s", name, str(exc))
+                failed.append({"file": name, "message": "文件内容无效"})
         except Exception:
-            logger.exception('账号文件导入失败 file=%s', name)
-            failed.append({'file': name, 'message': '文件导入失败'})
+            logger.exception("账号文件导入失败 file=%s", name)
+            failed.append({"file": name, "message": "文件导入失败"})
 
     if uploaded or rejected:
         ip = client_ip(request)
-        security.audit(user, 'accounts.import', group['name'],
-                       f'新增 {len(added)} / 覆盖 {len(overwritten)} / '
-                       f'拒绝 {len(rejected)} / 失败 {len(failed)}；来源 {ip}', ip=ip)
+        security.audit(
+            user,
+            "accounts.import",
+            group["name"],
+            f"新增 {len(added)} / 覆盖 {len(overwritten)} / "
+            f"拒绝 {len(rejected)} / 失败 {len(failed)}；来源 {ip}",
+            ip=ip,
+        )
     return {
-        'ok': not failed and not rejected,
-        'uploaded': uploaded,
-        'added': added,
-        'overwritten': overwritten,
-        'rejected': rejected,
-        'failed': failed,
+        "ok": not failed and not rejected,
+        "uploaded": uploaded,
+        "added": added,
+        "overwritten": overwritten,
+        "rejected": rejected,
+        "failed": failed,
     }
 
 
@@ -280,19 +326,21 @@ def _import_upstream(upstream_id: object) -> dict:
     try:
         uid = int(upstream_id)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail='upstream_id 必须是数字') from exc
+        raise HTTPException(status_code=400, detail="upstream_id 必须是数字") from exc
     row = upstreamsvc.get_upstream(uid)
     if row is None:
-        raise HTTPException(status_code=404, detail='分组不存在（可能已被删除）')
-    if not row.get('enabled'):
-        raise HTTPException(status_code=400, detail='该分组已停用，无法导入账号')
+        raise HTTPException(status_code=404, detail="分组不存在（可能已被删除）")
+    if not row.get("enabled"):
+        raise HTTPException(status_code=400, detail="该分组已停用，无法导入账号")
     return row
 
 
-@router.post('/accounts/import-tokens')
-async def import_tokens(request: Request,
-                        body: dict = Body(...),
-                        user: dict = Depends(security.require_session_admin)) -> dict:
+@router.post("/accounts/import-tokens")
+async def import_tokens(
+    request: Request,
+    body: dict = Body(...),
+    user: dict = Depends(security.require_session_admin),
+) -> dict:
     """从 refresh token 批量导入账号（**会话 admin only**）。
 
     **不接受 API Token**（`require_session_admin`）：这个接口会把新签发的
@@ -311,24 +359,24 @@ async def import_tokens(request: Request,
     realm 非法 / 条目超限 / 分组停用 / 分组没有账号目录 → 400；分组不存在 → 404。
     """
     if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail='请求体必须是对象')
+        raise HTTPException(status_code=400, detail="请求体必须是对象")
     try:
-        realm = tokenimport.valid_realm(body.get('realm'))
+        realm = tokenimport.valid_realm(body.get("realm"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    raw_entries = body.get('entries')
+    raw_entries = body.get("entries")
     if not isinstance(raw_entries, list) or not raw_entries:
-        raise HTTPException(status_code=400, detail='entries 必须是非空数组')
+        raise HTTPException(status_code=400, detail="entries 必须是非空数组")
     if len(raw_entries) > tokenimport.MAX_ENTRIES:
         raise HTTPException(
             status_code=400,
-            detail=f'entries 最多 {tokenimport.MAX_ENTRIES} 条',
+            detail=f"entries 最多 {tokenimport.MAX_ENTRIES} 条",
         )
-    overwrite = bool(body.get('overwrite'))
+    overwrite = bool(body.get("overwrite"))
 
-    upstream_id = body.get('upstream_id')
-    if upstream_id in (None, ''):
+    upstream_id = body.get("upstream_id")
+    if upstream_id in (None, ""):
         # 只有省略 upstream_id 时才回落 config.AUTH_DIR（默认分组）。
         group = upstreamsvc.default_upstream()
         auth_dir = config.AUTH_DIR
@@ -337,43 +385,48 @@ async def import_tokens(request: Request,
         unset_code = False
     else:
         group = _import_upstream(upstream_id)
-        raw_dir = str(group.get('auth_dir') or '').strip()
+        raw_dir = str(group.get("auth_dir") or "").strip()
         # 指定了分组却不可用 → 400 `upstream_auth_dir_unset`（空/不可写同一码：
         # 对用户而言下一步都是「去设置里修这个分组的账号目录」）。
         # 明确拒绝而不是落到默认目录：那会把 B 组的账号加到 A 组去，
         # 而界面看起来「成功了」——隔离失效且无人察觉。
         unset_code = True
         if not raw_dir:
-            raise HTTPException(status_code=400, detail='upstream_auth_dir_unset')
+            raise HTTPException(status_code=400, detail="upstream_auth_dir_unset")
         auth_dir = Path(raw_dir)
 
     # 目录在这里就建/校验：写盘失败要尽早报 400，而不是让 200 条各自失败一次。
     try:
         tokenimport.ensure_writable(auth_dir)
     except OSError as exc:
-        logger.info('导入账号目录不可写 dir=%s reason=%s', auth_dir, exc)
-        raise HTTPException(status_code=400,
-            detail='upstream_auth_dir_unset' if unset_code else '账号目录不可写',
+        logger.info("导入账号目录不可写 dir=%s reason=%s", auth_dir, exc)
+        raise HTTPException(
+            status_code=400,
+            detail="upstream_auth_dir_unset" if unset_code else "账号目录不可写",
         ) from exc
 
     if not tokenimport.try_begin():
-        raise HTTPException(status_code=409, detail='已有导入任务在运行，请稍后再试')
+        raise HTTPException(status_code=409, detail="已有导入任务在运行，请稍后再试")
     try:
         results = await tokenimport.import_entries(
-            raw_entries, realm=realm, auth_dir=auth_dir, overwrite=overwrite)
+            raw_entries, realm=realm, auth_dir=auth_dir, overwrite=overwrite
+        )
     finally:
         # **必须**复位：否则一次异常会让面板永久 409。
         tokenimport.end()
 
     for item in results:
-        if item['status'] in ('added', 'updated'):
+        if item["status"] in ("added", "updated"):
             reload.request_reload_or_restart(
-                item['uid'], upstream=_reload_target(group))
+                item["uid"], upstream=_reload_target(group)
+            )
 
     counts = tokenimport.summarize(results)
-    ip = client_ip(request) if request is not None else ''
+    ip = client_ip(request) if request is not None else ""
     security.audit(
-        user, 'accounts.import_tokens', str(group.get('name') or ''),
+        user,
+        "accounts.import_tokens",
+        str(group.get("name") or ""),
         # 只记数量：token 绝不能进审计（它会长期留在库里、并随导出泄露）。
         f"added={counts['added']} updated={counts['updated']} "
         f"skipped={counts['skipped']} rejected={counts['rejected']} "
@@ -381,9 +434,9 @@ async def import_tokens(request: Request,
         ip=ip,
     )
     return {
-        'total': len(results),
-        'counts': counts,
-        'results': results,
+        "total": len(results),
+        "counts": counts,
+        "results": results,
     }
 
 
@@ -396,9 +449,9 @@ async def import_tokens(request: Request,
 # 所以把「问腾讯」这件事搬到服务端（后台任务每 2 秒一次），前端只来读结果：
 # 检测节奏与页面是否被遮挡无关，顺带避免多个窗口重复问腾讯。
 _LOGIN_POLL_SECONDS = 2.0
-_LOGIN_POLL_MAX = 300.0          # 后台最多盯 5 分钟，之后当过期处理
-_LOGIN_RESULT_TTL = 900.0        # 终态结果留 15 分钟，够前端被节流后回来取
-_login_polls: dict[str, dict] = {}       # state → 响应（终态含成功结果）
+_LOGIN_POLL_MAX = 300.0  # 后台最多盯 5 分钟，之后当过期处理
+_LOGIN_RESULT_TTL = 900.0  # 终态结果留 15 分钟，够前端被节流后回来取
+_login_polls: dict[str, dict] = {}  # state → 响应（终态含成功结果）
 _login_tasks: dict[str, asyncio.Task] = {}
 _login_regions: dict[str, str] = {}
 # `_login_ready`：授权已经拿到、但**落盘失败**时把那份结果记下来（issue #146）。
@@ -406,12 +459,32 @@ _login_regions: dict[str, str] = {}
 # 可能已经不再报 ready —— 于是前端只拿到「等待中」，永远等下去（用户看到的就是
 # 一直 waiting，日志里却在刷 200 OK）。记下结果后，重试完全走本端：重新落盘，
 # 成功了就完成，失败则把「去修目录权限」那条可执行提示原样报给前端。
-_login_ready: dict[str, tuple[dict, str, str, float]] = {}      # state → 国际版地区（可能晚于 auth/start 到达）
-_login_owner: dict[str, str] = {}        # state → 发起人，用于收掉同一用户的旧轮询
+_login_ready: dict[
+    str, tuple[dict, str, str, float]
+] = {}  # state → 国际版地区（可能晚于 auth/start 到达）
+_login_owner: dict[str, str] = {}  # state → 发起人，用于收掉同一用户的旧轮询
+# 同一个 state 的「ready 判定 → 供给 → 落盘」必须串行：后台任务与前端 HTTP
+# 轮询会并发进来，中间还夹着 submit_region / checkin 等 await，早先无锁时
+# 两次都会各自落盘一次（现场：同一个号被写了两条 checkin_logs）。
+_login_locks: dict[str, asyncio.Lock] = {}
+# state → 已经领取过该终态的浏览器实例 id 集合。按客户端去重，而不是按 state
+# 全局只发一次：多开窗口时每个窗口都要能各自收一次尾（CHANGELOG 1.0.71）。
+_login_delivered: dict[str, set[str]] = {}
+# state → 该 state 已成功落盘的终态响应。锁内第一件事就查它：两次并发轮询
+# 即使被锁串行放行，第二次也不能再跑一遍签到/trial/落盘（现场是两条 add 记录）。
+# 只在成功路径写，落盘失败绝不写（保留 issue #26「重试只补落盘」的语义）。
+_login_completed: dict[str, dict] = {}
+
+
+def _login_lock(state: str) -> asyncio.Lock:
+    """取（并按需创建）某个 state 的落盘锁。"""
+    return _login_locks.setdefault(state, asyncio.Lock())
 
 
 def _owner_key(user: dict, upstream_id: int | None) -> str:
-    return f"{user.get('username') or ''}|{upstream_id if upstream_id is not None else ''}"
+    return (
+        f"{user.get('username') or ''}|{upstream_id if upstream_id is not None else ''}"
+    )
 
 
 def _cancel_other_login_polls(state: str, owner: str) -> None:
@@ -434,22 +507,33 @@ def _cancel_other_login_polls(state: str, owner: str) -> None:
         _login_polls.pop(st, None)
         _login_regions.pop(st, None)
         _login_owner.pop(st, None)
-        logger.info('同一用户重新发码，旧轮询已收掉（state=%s）', st)
+        logger.info("同一用户重新发码，旧轮询已收掉（state=%s）", st)
 
 
 def _prune_login_polls() -> None:
     # 清掉过期结果（state 是短命的，但别让它无限增长）
     now = time.time()
-    for st in [k for k, v in _login_polls.items()
-               if now - float(v.get('_at') or 0) > _LOGIN_RESULT_TTL]:
+    for st in [
+        k
+        for k, v in _login_polls.items()
+        if now - float(v.get("_at") or 0) > _LOGIN_RESULT_TTL
+    ]:
         _login_polls.pop(st, None)
         _login_tasks.pop(st, None)
         _login_regions.pop(st, None)
         _login_owner.pop(st, None)
+        _login_delivered.pop(st, None)
+        _login_locks.pop(st, None)
+        _login_completed.pop(st, None)
     # 「等重试落盘」的备忘也要按同样的 TTL 清（它没有 _login_polls 条目，
     # 上面那轮扫不到它）
-    for st in [k for k, v in _login_ready.items() if now - float(v[3]) > _LOGIN_RESULT_TTL]:
+    for st in [
+        k for k, v in _login_ready.items() if now - float(v[3]) > _LOGIN_RESULT_TTL
+    ]:
         _login_ready.pop(st, None)
+        _login_delivered.pop(st, None)
+        _login_locks.pop(st, None)
+        _login_completed.pop(st, None)
 
 
 def _today_start() -> int:
@@ -482,13 +566,13 @@ def _group(upstream_id: int | None) -> dict:
         return upstreamsvc.default_upstream()
     row = upstreamsvc.get_upstream(upstream_id)
     if row is None:
-        raise HTTPException(status_code=404, detail='分组不存在（可能已被删除）')
+        raise HTTPException(status_code=404, detail="分组不存在（可能已被删除）")
     return row
 
 
 def _group_dir(group: dict) -> Path | None:
     """分组的本地账号目录；未配置时返回 None（该分组只做密钥转发）。"""
-    raw = str(group.get('auth_dir') or '').strip()
+    raw = str(group.get("auth_dir") or "").strip()
     return Path(raw) if raw else None
 
 
@@ -502,9 +586,11 @@ def _require_dir(group: dict) -> Path:
     if d is None:
         raise HTTPException(
             status_code=409,
-            detail=(f"分组「{group['name']}」没有配置本地账号目录，无法在面板里管理"
-                    "它的账号；请到「设置 → 上游」为它填写账号目录（与那套上游实例"
-                    "的 auths 目录一致）"),
+            detail=(
+                f"分组「{group['name']}」没有配置本地账号目录，无法在面板里管理"
+                "它的账号；请到「设置 → 上游」为它填写账号目录（与那套上游实例"
+                "的 auths 目录一致）"
+            ),
         )
     return d
 
@@ -515,40 +601,45 @@ def _reload_target(group: dict) -> dict | None:
     默认上游的启停走 WB2API_MODE / 启停脚本那套（native 部署依赖它），
     只有非默认分组才按「容器名」重启。
     """
-    return None if group.get('is_default') else group
+    return None if group.get("is_default") else group
 
 
-@router.get('/proxies')
+@router.get("/proxies")
 def available_proxies(user: dict = Depends(security.current_user)) -> dict:
-    return {'routes': sorted(config.proxy_routes()), 'default': config.DEFAULT_ACCOUNT_PROXY}
+    return {
+        "routes": sorted(config.proxy_routes()),
+        "default": config.DEFAULT_ACCOUNT_PROXY,
+    }
 
 
-@router.put('/accounts/{filename}/proxy')
+@router.put("/accounts/{filename}/proxy")
 async def account_set_proxy(
-    filename: str, body: dict = Body(...),
+    filename: str,
+    body: dict = Body(...),
     upstream_id: int | None = Query(None),
     user: dict = Depends(security.require_admin),
 ) -> dict:
-    name = body.get('proxy')
+    name = body.get("proxy")
     if not isinstance(name, str):
-        raise HTTPException(status_code=400, detail='proxy 必须是线路名或空字符串')
+        raise HTTPException(status_code=400, detail="proxy 必须是线路名或空字符串")
     name = name.strip()
     group = _group(upstream_id)
     try:
-        config.account_proxy({'proxy': name})
+        config.account_proxy({"proxy": name})
         result = wb2api.set_account_proxy(filename, name, _require_dir(group))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail='账号文件不存在') from exc
+        raise HTTPException(status_code=404, detail="账号文件不存在") from exc
     creditsvc.invalidate()
     scheduled = reload.request_restart(_reload_target(group))
-    return {'ok': True, **result, 'reload_triggered': scheduled}
+    return {"ok": True, **result, "reload_triggered": scheduled}
 
 
-@router.put('/accounts/{filename}/weight')
+@router.put("/accounts/{filename}/weight")
 async def account_set_weight(
-    filename: str, body: dict = Body(...),
+    filename: str,
+    body: dict = Body(...),
     upstream_id: int | None = Query(None),
     user: dict = Depends(security.require_admin),
 ) -> dict:
@@ -567,20 +658,24 @@ async def account_set_weight(
     """
     group = _group(upstream_id)
     try:
-        result = wb2api.set_account_weight(filename, body.get('weight', 0),
-                                           _require_dir(group))
+        result = wb2api.set_account_weight(
+            filename, body.get("weight", 0), _require_dir(group)
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail='账号文件不存在') from exc
-    security.audit(user, 'update_account_weight', filename, f"weight={result['weight']}")
+        raise HTTPException(status_code=404, detail="账号文件不存在") from exc
+    security.audit(
+        user, "update_account_weight", filename, f"weight={result['weight']}"
+    )
     scheduled = reload.request_restart(_reload_target(group))
-    return {'ok': True, **result, 'reload_triggered': scheduled}
+    return {"ok": True, **result, "reload_triggered": scheduled}
 
 
-@router.get('/accounts')
-async def list_accounts(upstream_id: int | None = Query(None),
-                        user: dict = Depends(security.current_user)) -> dict:
+@router.get("/accounts")
+async def list_accounts(
+    upstream_id: int | None = Query(None), user: dict = Depends(security.current_user)
+) -> dict:
     """账号列表：本地授权信息 + 上游运行时状态（含积分余额）。
 
     积分（credits）优先使用上游 /status 的值：它是上游调度时写入的快照，
@@ -596,8 +691,9 @@ async def list_accounts(upstream_id: int | None = Query(None),
     # 分组的账号——与「移动时落错目录」是同一类串组错误。列表给空，由
     # manageable 标记让界面说明「该分组未配置本地账号目录」。
     accounts = wb2api.list_auth_accounts(base_dir) if base_dir else []
-    status = await wb2api.get_status(base_url=group['base_url'],
-                                     api_key=upstreamsvc.forward_api_key(group))
+    status = await wb2api.get_status(
+        base_url=group["base_url"], api_key=upstreamsvc.forward_api_key(group)
+    )
     wb2api.merge_pool_status(accounts, status)
     # 备注随列表一次带回（issue #67）：按 uid 取，没有备注的账号给空串而不是缺字段
     # —— 前端两处视图（手机卡片 / 桌面表格）都直接读它，缺字段会多一处判空。
@@ -610,45 +706,47 @@ async def list_accounts(upstream_id: int | None = Query(None),
     # 手动点一次拿到 10001 后就归位了 —— 这一点在界面上如实说明。
     done_today = db.checkin_done_since(_today_start())
     for a in accounts:
-        uid = str(a.get('uid') or '')
-        a['note'] = notes.get(uid, '')
-        a['added_at'] = added_times.get(uid)
-        a['checkin_today'] = done_today.get(uid)
-    synced = sum(1 for a in accounts if a.get('credits') is not None)
+        uid = str(a.get("uid") or "")
+        a["note"] = notes.get(uid, "")
+        a["added_at"] = added_times.get(uid)
+        a["checkin_today"] = done_today.get(uid)
+    synced = sum(1 for a in accounts if a.get("credits") is not None)
     return {
-        'total': len(accounts),
-        'accounts': accounts,
-        'pool_synced': synced,
-        'pool_available': bool(status.get('connected')),
+        "total": len(accounts),
+        "accounts": accounts,
+        "pool_synced": synced,
+        "pool_available": bool(status.get("connected")),
         # 分组上下文：前端据此标注「本列表来自哪个分组」，并决定能否在这里
         # 管理账号（没有本地目录的分组只能看，不能加 / 移 / 删）。
-        'upstream': {
-            'id': group['id'],
-            'name': group['name'],
-            'is_default': bool(group['is_default']),
+        "upstream": {
+            "id": group["id"],
+            "name": group["name"],
+            "is_default": bool(group["is_default"]),
         },
-        'auth_dir': str(base_dir or ''),
-        'manageable': base_dir is not None,
+        "auth_dir": str(base_dir or ""),
+        "manageable": base_dir is not None,
     }
 
 
-@router.get('/status')
-async def upstream_status(upstream_id: int | None = Query(None),
-                          user: dict = Depends(security.current_user)) -> dict:
+@router.get("/status")
+async def upstream_status(
+    upstream_id: int | None = Query(None), user: dict = Depends(security.current_user)
+) -> dict:
     group = _group(upstream_id)
-    return await wb2api.get_status(base_url=group['base_url'],
-                                   api_key=upstreamsvc.forward_api_key(group))
+    return await wb2api.get_status(
+        base_url=group["base_url"], api_key=upstreamsvc.forward_api_key(group)
+    )
 
 
 def _strip_cn_prefix(m: dict) -> dict:
     """去掉模型 id 的 `cn:` 前缀，**保留 `global:`**（见调用处注释）。"""
-    mid = str(m.get('id') or '')
-    if mid.lower().startswith('cn:'):
-        return {**m, 'id': mid[3:]}
+    mid = str(m.get("id") or "")
+    if mid.lower().startswith("cn:"):
+        return {**m, "id": mid[3:]}
     return m
 
 
-@router.get('/models')
+@router.get("/models")
 async def models(
     realm: str | None = None,
     user: dict = Depends(security.current_user),
@@ -667,13 +765,13 @@ async def models(
         raise HTTPException(status_code=502, detail=str(data))
     if isinstance(data, list):
         items = data
-    elif isinstance(data, dict) and isinstance(data.get('data'), list):
-        items = data['data']
+    elif isinstance(data, dict) and isinstance(data.get("data"), list):
+        items = data["data"]
     else:
         items = []
     source_items = items
     if realm:
-        r = 'global' if str(realm).strip().lower() == 'global' else 'cn'
+        r = "global" if str(realm).strip().lower() == "global" else "cn"
         items = [m for m in items if modelcatalog._belongs(m, r)]
     # 去掉 `cn:` 前缀：那是**上游的路由约定**，不是模型本身的名字。
     # 界面要显示的是「腾讯自带的模型名」（glm-5.2 / deepseek-v4.1-flash），
@@ -687,13 +785,13 @@ async def models(
     # 界面上的国际版模型名变成「不可用」，实测发现后改为只去 cn:。
     items = [_strip_cn_prefix(m) for m in items]
     return {
-        'models': items,
-        'source': wb2api.models_source(source_items),
-        'count': len(items),
+        "models": items,
+        "source": wb2api.models_source(source_items),
+        "count": len(items),
     }
 
 
-@router.post('/auth/start')
+@router.post("/auth/start")
 async def auth_start(
     realm: str | None = Query(
         None,
@@ -724,26 +822,32 @@ async def auth_start(
     # 同一个分组）。先拒掉不存在的分组，用户不会扫完码才发现目标分组没了。
     _group(upstream_id)
     raw = realm
-    if isinstance(body, dict) and body.get('realm') is not None:
-        raw = str(body.get('realm'))
-    r = 'global' if str(raw or '').strip().lower() == 'global' else 'cn'
+    if isinstance(body, dict) and body.get("realm") is not None:
+        raw = str(body.get("realm"))
+    r = "global" if str(raw or "").strip().lower() == "global" else "cn"
     raw_region = region
-    if isinstance(body, dict) and body.get('region') is not None:
-        raw_region = str(body.get('region'))
-    reg = str(raw_region or '').strip() or None
+    if isinstance(body, dict) and body.get("region") is not None:
+        raw_region = str(body.get("region"))
+    reg = str(raw_region or "").strip() or None
     try:
         proxy_name = config.DEFAULT_ACCOUNT_PROXY
-        if isinstance(body, dict) and 'proxy' in body:
-            if not isinstance(body['proxy'], str):
-                raise HTTPException(status_code=400, detail='proxy 必须是线路名或空字符串')
-            proxy_name = body['proxy'].strip()
+        if isinstance(body, dict) and "proxy" in body:
+            if not isinstance(body["proxy"], str):
+                raise HTTPException(
+                    status_code=400, detail="proxy 必须是线路名或空字符串"
+                )
+            proxy_name = body["proxy"].strip()
         try:
-            config.account_proxy({'proxy': proxy_name})
+            config.account_proxy({"proxy": proxy_name})
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        out = await tencent.start_login(r, proxy_name) if proxy_name else await tencent.start_login(r)
+        out = (
+            await tencent.start_login(r, proxy_name)
+            if proxy_name
+            else await tencent.start_login(r)
+        )
         # 起后台轮询：前端是否被节流都不影响检测节奏（见文件上方说明）
-        st = str(out.get('state') or '')
+        st = str(out.get("state") or "")
         if st:
             if reg:
                 _login_regions[st] = reg
@@ -753,18 +857,20 @@ async def auth_start(
                 _cancel_other_login_polls(st, _owner_key(user, upstream_id))
                 _login_owner[st] = _owner_key(user, upstream_id)
                 _login_tasks[st] = asyncio.create_task(
-                    _poll_login_background(st, r, reg, upstream_id, user))
+                    _poll_login_background(st, r, reg, upstream_id, user)
+                )
         return out
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@router.get('/auth/poll')
+@router.get("/auth/poll")
 async def auth_poll(
     state: str,
     realm: str | None = None,
     region: str | None = None,
     upstream_id: int | None = Query(None),
+    client: str | None = Query(None),
     user: dict = Depends(security.require_admin),
 ) -> dict:
     """轮询扫码结果；成功则落盘并触发上游重载。
@@ -773,7 +879,8 @@ async def auth_poll(
     否则聊天会报 14017；地区由用户在弹窗里选，这里只负责提交，不替他决定。
     """
     if not state:
-        return {'status': 'invalid'}
+        return {"status": "invalid"}
+    _prune_login_polls()
     # 出站网络失败（线路连不上等）→ 502 + 中文原因：与 /auth/start 同一口径。
     # 不转的话前端拿到的是英文 500，用户看不出「是线路的问题、该换线路」。
 
@@ -781,104 +888,134 @@ async def auth_poll(
     # 只对终态短路：失败态（落盘失败等）要继续走下面的原路径，那里有
     # `provisioned` 重试语义（用户点「重试」时重新落盘，而不是重扫二维码）。
     cached = _login_polls.get(state)
-    if cached and cached.get('status') not in (None, 'waiting'):
-        # 去掉内部记账字段（`_at`）再返回，别把实现细节漏给前端
-        return {k: v for k, v in cached.items() if not k.startswith('_')}
+    if cached and cached.get("status") not in (None, "waiting"):
+        key = client or ""  # 旧调用方不带 client：保持原语义，不参与去重
+        seen = _login_delivered.setdefault(state, set())
+        clean = {k: v for k, v in cached.items() if not k.startswith("_")}
+        if key and key in seen:
+            # 仍带回账号字段：前端 quiet 收尾要拼文案，只回 status 会显示
+            # 「账号「」授权成功」（见 Task 2 的 ruling）。
+            return {**clean, "status": "already_handled"}
+        if key:
+            seen.add(key)
+        return clean
 
-    # 地区可能比 auth/start 更晚到（用户在弹窗里选、或另一扇窗口带上来）：
-    # 记下来给后台轮询用 —— 国际版漏了地区注册，聊天会报 14017。
-    if region:
-        _login_regions[state] = region
-    group = _group(upstream_id)
-
-    # 落盘成功后 state 会在下面被丢弃，但如果**落盘失败**（issue #26），
-    # 前端会继续轮询同一个 state 让用户重试 —— 那条路径不能把签到、领 trial
-    # 这些**有副作用**的动作重跑一遍（会重复写签到记录、重复调腾讯接口）。
-    # 所以记一笔「这个 state 已经做过供给」，重试时直接跳到落盘。
-    provisioned = _provisioned_states.get(state)
-
-    r = None
-    if realm is not None:
-        r = 'global' if str(realm).strip().lower() == 'global' else 'cn'
-    ready = _login_ready.get(state)
-    if ready is not None:
-        # 上次已经拿到授权、只是没落盘：直接重试落盘（不再问腾讯——那边可能已经
-        # 不再报 ready，继续问只会让用户一直「等待中」）。
-        memo_result, memo_realm, memo_msg = ready[0], ready[1], ready[2]
-        return _save_and_finish(memo_result, memo_realm, memo_msg, state, group=group)
-
-    try:
-        result = await tencent.poll_login(state, r)
-    except RuntimeError as exc:
-        # 线路/网络层失败：转 502 + 中文原因（与 /auth/start 同一口径）。
-        # 不转的话界面上只有一句英文 500，用户看不出「是线路的问题、该换线路」。
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    if result.get('status') != 'ready':
-        return result
-
-    realm_of_result = result.get('realm') or 'cn'
-    if provisioned:
-        # 已经供给过：只补落盘（上次就是败在这一步），其余一律不重做
-        return _save_and_finish(result, realm_of_result, region_msg='', state=state,
-                                group=group)
-
-    # 探测 dict：billing 域身份头（X-User-Id / X-Domain 等）需要这些字段，
-    # 与 _auth_dict 同构；device_token 此刻还没有（落盘时由外部写入）
-    auth_probe = {
-        'access_token': result['access_token'],
-        'uid': result['uid'],
-        'enterprise_id': result.get('enterprise_id', ''),
-        'realm': realm_of_result,
-        'domain': result.get('domain', ''),
-        'proxy': result.get('proxy', ''),
-    }
-
-    # 国际版：先做地区注册（未注册会导致后续聊天报 14017）
-    region_msg = ''
-    if realm_of_result == 'global':
-        activated = False
+    # 同一个 state 的「ready → 供给 → 落盘」串行化：后台任务与前端
+    # HTTP 轮询会并发进来，无锁时两次都会各自落盘（现场：两条 add 记录）。
+    async with _login_lock(state):
+        # 锁内第一件事：上一次（可能是后台任务、也可能是另一扇窗口）已经把
+        # 这个 state 落盘成功，就直接回同一份结果。锁只保证串行，不保证幂等；
+        # 少了这一句，两次并发仍会各跑一遍签到/trial/落盘。
+        completed = _login_completed.get(state)
+        if completed is not None:
+            return completed
+        # 地区可能比 auth/start 更晚到（用户在弹窗里选、或另一扇窗口带上来）：
+        # 记下来给后台轮询用 —— 国际版漏了地区注册，聊天会报 14017。
         if region:
-            ok_r, region_msg = await tencent.submit_region(auth_probe, region)
-            # 提交地区后必须**再调一次注册激活 GET** 并复核：该端点
-            # （GET /auth/realms/copilot/overseas/user/register）本身就是激活动作，
-            # 不是纯只读查询（上游 scripts/global_region.py 的 activate_region、
-            # Go 侧 GlobalCompleteRegistration 都是「提交地区 → 重新 register 验证」）。
-            # 只 submit_region 而跳过它，新号会卡在「试用未激活」，对任何 chat
-            # 返回 HTTP 429 + code=14017——表现正是「选了地区还是 429」。
-            if ok_r:
-                activated, act_msg = await tencent.registration_status(auth_probe)
+            _login_regions[state] = region
+        group = _group(upstream_id)
+
+        # 落盘成功后 state 会在下面被丢弃，但如果**落盘失败**（issue #26），
+        # 前端会继续轮询同一个 state 让用户重试 —— 那条路径不能把签到、领 trial
+        # 这些**有副作用**的动作重跑一遍（会重复写签到记录、重复调腾讯接口）。
+        # 所以记一笔「这个 state 已经做过供给」，重试时直接跳到落盘。
+        provisioned = _provisioned_states.get(state)
+
+        r = None
+        if realm is not None:
+            r = "global" if str(realm).strip().lower() == "global" else "cn"
+        ready = _login_ready.get(state)
+        if ready is not None:
+            # 上次已经拿到授权、只是没落盘：直接重试落盘（不再问腾讯——那边可能已经
+            # 不再报 ready，继续问只会让用户一直「等待中」）。
+            memo_result, memo_realm, memo_msg = ready[0], ready[1], ready[2]
+            return _save_and_finish(
+                memo_result, memo_realm, memo_msg, state, group=group
+            )
+
+        try:
+            result = await tencent.poll_login(state, r)
+        except RuntimeError as exc:
+            # 线路/网络层失败：转 502 + 中文原因（与 /auth/start 同一口径）。
+            # 不转的话界面上只有一句英文 500，用户看不出「是线路的问题、该换线路」。
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if result.get("status") != "ready":
+            return result
+
+        realm_of_result = result.get("realm") or "cn"
+        if provisioned:
+            # 已经供给过：只补落盘（上次就是败在这一步），其余一律不重做
+            return _save_and_finish(
+                result, realm_of_result, region_msg="", state=state, group=group
+            )
+
+        # 探测 dict：billing 域身份头（X-User-Id / X-Domain 等）需要这些字段，
+        # 与 _auth_dict 同构；device_token 此刻还没有（落盘时由外部写入）
+        auth_probe = {
+            "access_token": result["access_token"],
+            "uid": result["uid"],
+            "enterprise_id": result.get("enterprise_id", ""),
+            "realm": realm_of_result,
+            "domain": result.get("domain", ""),
+            "proxy": result.get("proxy", ""),
+        }
+
+        # 国际版：先做地区注册（未注册会导致后续聊天报 14017）
+        region_msg = ""
+        if realm_of_result == "global":
+            activated = False
+            if region:
+                ok_r, region_msg = await tencent.submit_region(auth_probe, region)
+                # 提交地区后必须**再调一次注册激活 GET** 并复核：该端点
+                # （GET /auth/realms/copilot/overseas/user/register）本身就是激活动作，
+                # 不是纯只读查询（上游 scripts/global_region.py 的 activate_region、
+                # Go 侧 GlobalCompleteRegistration 都是「提交地区 → 重新 register 验证」）。
+                # 只 submit_region 而跳过它，新号会卡在「试用未激活」，对任何 chat
+                # 返回 HTTP 429 + code=14017——表现正是「选了地区还是 429」。
+                if ok_r:
+                    activated, act_msg = await tencent.registration_status(auth_probe)
+                    if not activated:
+                        region_msg = f"{region_msg}；注册激活未完成：{act_msg}".strip(
+                            "；"
+                        )
+                    else:
+                        region_msg = f"{region_msg}；注册已激活".strip("；")
+            else:
+                activated, _why = await tencent.registration_status(auth_probe)
                 if not activated:
-                    region_msg = f'{region_msg}；注册激活未完成：{act_msg}'.strip('；')
-                else:
-                    region_msg = f'{region_msg}；注册已激活'.strip('；')
-        else:
-            activated, _why = await tencent.registration_status(auth_probe)
-            if not activated:
-                region_msg = '尚未完成地区注册，请在弹窗中选择地区后重试（否则聊天会报 14017）'
-        # 注册完成后再领一次性 trial（失败不阻断，已领过按幂等）。
-        # 激活没确认时不要领——对未激活的号领 trial 也是白跑，且会把「没修好」
-        # 伪装成「已领过」。
-        if activated:
-            ok_t, trial_msg = await tencent.claim_trial(auth_probe)
-            if ok_t:
-                region_msg = f'{region_msg}；{trial_msg}'.strip('；')
+                    region_msg = "尚未完成地区注册，请在弹窗中选择地区后重试（否则聊天会报 14017）"
+            # 注册完成后再领一次性 trial（失败不阻断，已领过按幂等）。
+            # 激活没确认时不要领——对未激活的号领 trial 也是白跑，且会把「没修好」
+            # 伪装成「已领过」。
+            if activated:
+                ok_t, trial_msg = await tencent.claim_trial(auth_probe)
+                if ok_t:
+                    region_msg = f"{region_msg}；{trial_msg}".strip("；")
 
-    # 自动签到（幂等，不阻断落盘）。国际版无签到体系，checkin 会直接跳过
-    code, message = await tencent.checkin(auth_probe, realm_of_result)
-    db.add_checkin_log(
-        str(result.get('uid', '')), str(result.get('nickname', '')),
-        'add', code in (0, 10001), code, message,
-    )
+        # 自动签到（幂等，不阻断落盘）。国际版无签到体系，checkin 会直接跳过
+        code, message = await tencent.checkin(auth_probe, realm_of_result)
+        db.add_checkin_log(
+            str(result.get("uid", "")),
+            str(result.get("nickname", "")),
+            "add",
+            code in (0, 10001),
+            code,
+            message,
+        )
 
-    # 供给（签到 / trial）做完了才允许重试时跳过它们 —— 标记要在**动副作用之前**
-    # 落位，否则「签到成功但标记没写」的窗口里重试仍会重跑一次。
-    _mark_provisioned(state)
-    creditsvc.invalidate(str(result.get('uid', '')))
-    # 落盘前记下这份结果：万一落盘失败，重试要能只重做落盘（见 _login_ready 注释）
-    _login_ready[state] = (result, realm_of_result, region_msg, time.time())
-    out = _save_and_finish(result, realm_of_result, region_msg, state, group=group)
-    _login_ready.pop(state, None)
-    return out
+        # 供给（签到 / trial）做完了才允许重试时跳过它们 —— 标记要在**动副作用之前**
+        # 落位，否则「签到成功但标记没写」的窗口里重试仍会重跑一次。
+        _mark_provisioned(state)
+        creditsvc.invalidate(str(result.get("uid", "")))
+        # 落盘前记下这份结果：万一落盘失败，重试要能只重做落盘（见 _login_ready 注释）
+        _login_ready[state] = (result, realm_of_result, region_msg, time.time())
+        out = _save_and_finish(result, realm_of_result, region_msg, state, group=group)
+        _login_ready.pop(state, None)
+        # 只在**确实落盘成功**之后记：并发的第二轮进来直接回这份结果。
+        # 落盘失败时 _save_and_finish 抛 HTTPException，这行不会执行，
+        # 用户点「重试」仍能重新走落盘（issue #26 的语义不变）。
+        _login_completed[state] = out
+        return out
 
 
 def _mark_provisioned(state: str) -> None:
@@ -894,9 +1031,9 @@ def _mark_provisioned(state: str) -> None:
         _provisioned_states.pop(k, None)
 
 
-async def _poll_login_background(state: str, realm: str, region: str | None,
-                                  upstream_id: int | None,
-                                  user: dict) -> None:
+async def _poll_login_background(
+    state: str, realm: str, region: str | None, upstream_id: int | None, user: dict
+) -> None:
     """替前端把授权轮询跑完，直到出现终态（见文件上方说明）。
 
     复用 `auth_poll` 本身：那条路径已经处理了地区注册 / trial / 签到 / 落盘与
@@ -909,21 +1046,26 @@ async def _poll_login_background(state: str, realm: str, region: str | None,
         # 聊天报 14017。
         region = _login_regions.get(state) or region
         try:
-            resp = await auth_poll(state=state, realm=realm, region=region,
-                                   upstream_id=upstream_id, user=user)
+            resp = await auth_poll(
+                state=state,
+                realm=realm,
+                region=region,
+                upstream_id=upstream_id,
+                user=user,
+            )
         except HTTPException as exc:
             # 落盘失败这类：不存终态，让前端走原路径（那里有「重试即重新落盘」的
             # 语义，且要保留 state 不丢）。
-            logger.warning('后台轮询遇到可重试的错误（等前端重试）: %s', exc.detail)
+            logger.warning("后台轮询遇到可重试的错误（等前端重试）: %s", exc.detail)
             return
         except Exception as exc:  # noqa: BLE001
-            logger.warning('后台轮询失败（不影响前端轮询）: %s', exc)
+            logger.warning("后台轮询失败（不影响前端轮询）: %s", exc)
             return
-        if resp.get('status') != 'waiting':
-            _login_polls[state] = {**resp, '_at': time.time()}
+        if resp.get("status") != "waiting":
+            _login_polls[state] = {**resp, "_at": time.time()}
             return
         await asyncio.sleep(_LOGIN_POLL_SECONDS)
-    logger.info('后台轮询到时（%ss）：按过期处理', int(_LOGIN_POLL_MAX))
+    logger.info("后台轮询到时（%ss）：按过期处理", int(_LOGIN_POLL_MAX))
 
 
 # ── 系统自动禁用（disabled）的解除 ────────────────────────────────
@@ -942,8 +1084,9 @@ async def _poll_login_background(state: str, realm: str, region: str | None,
 # 用户报的「国际版重新登录后连通性测试通过、账号池就是调不动」就是这条。
 
 
-async def _revive_if_disabled(uid: str, *, base_url: str | None = None,
-                              api_key: str | None = None) -> tuple[bool, str, bool | None]:
+async def _revive_if_disabled(
+    uid: str, *, base_url: str | None = None, api_key: str | None = None
+) -> tuple[bool, str, bool | None]:
     """账号若被上游**系统自动禁用**，解除它。
 
     返回 `(是否真的解除了, 说明文案, 之后是否仍被禁用)` —— 第三位是**三态**：
@@ -961,15 +1104,21 @@ async def _revive_if_disabled(uid: str, *, base_url: str | None = None,
     """
     still = await wb2api.account_disabled(uid, base_url=base_url, api_key=api_key)
     if still is None:
-        return False, '读不到该账号在上游的状态（上游不可达，或它还没进入账号池）', None
+        return False, "读不到该账号在上游的状态（上游不可达，或它还没进入账号池）", None
     if not still:
-        return False, '', False
+        return False, "", False
     ok, msg, code = await wb2api.revive_account(uid, base_url=base_url, api_key=api_key)
     if not ok:
-        if code == 'no_route':
-            return False, ('上游未启用管理接口，无法解除系统禁用 —— 请到'
-                           '「设置 → 账号管理接口」开启后重试'), True
-        return False, f'解除系统禁用失败：{msg}', True
+        if code == "no_route":
+            return (
+                False,
+                (
+                    "上游未启用管理接口，无法解除系统禁用 —— 请到"
+                    "「设置 → 账号管理接口」开启后重试"
+                ),
+                True,
+            )
+        return False, f"解除系统禁用失败：{msg}", True
     # 再确认一次：接口回 200 ≠ 真的回到池子（见 revive_account 的说明）。
     # 这次读不到就如实返回 None（不知道），不要 `bool(None)` 谎报「已清干净」。
     after = await wb2api.account_disabled(uid, base_url=base_url, api_key=api_key)
@@ -993,21 +1142,27 @@ async def _revive_after_login(uid: str, group: dict) -> None:
     新凭证可修复会话失效，但不能解除腾讯侧账号封禁。统一交给 revive_account
     再次核对当前状态：拒绝封禁账号，只恢复仍可通过登录修复的系统禁用。
     """
-    base_url = group.get('base_url')
+    base_url = group.get("base_url")
     api_key = upstreamsvc.forward_api_key(group)
     deadline = time.monotonic() + _REVIVE_WAIT_SECONDS
     while time.monotonic() < deadline:
         still = await wb2api.account_disabled(uid, base_url=base_url, api_key=api_key)
         if still is None:
-            await asyncio.sleep(_REVIVE_POLL_SECONDS)   # 还没被上游收录，再等等
+            await asyncio.sleep(_REVIVE_POLL_SECONDS)  # 还没被上游收录，再等等
             continue
         if not still:
-            return                                      # 没被禁用，无需处理
-        ok, msg, _ = await wb2api.revive_account(uid, base_url=base_url, api_key=api_key)
-        logger.info('重新登录后自动解除系统禁用 uid=%s：%s%s',
-                    uid[:8], '成功' if ok else '失败', f'（{msg}）' if msg else '')
+            return  # 没被禁用，无需处理
+        ok, msg, _ = await wb2api.revive_account(
+            uid, base_url=base_url, api_key=api_key
+        )
+        logger.info(
+            "重新登录后自动解除系统禁用 uid=%s：%s%s",
+            uid[:8],
+            "成功" if ok else "失败",
+            f"（{msg}）" if msg else "",
+        )
         return
-    logger.info('重新登录后等待账号入池超时，跳过自动解除禁用 uid=%s', uid[:8])
+    logger.info("重新登录后等待账号入池超时，跳过自动解除禁用 uid=%s", uid[:8])
 
 
 def _schedule_revive_after_login(uid: str, group: dict) -> None:
@@ -1020,7 +1175,7 @@ def _schedule_revive_after_login(uid: str, group: dict) -> None:
     整段都包在 try 里，不只包 `get_running_loop`：排任务那一步抛出来同样会
     顺着 `_save_and_finish` 冒到 `auth_poll`，把一次**已经成功**的登录变成 500。
     """
-    uid = str(uid or '').strip()
+    uid = str(uid or "").strip()
     if not uid:
         return
     try:
@@ -1032,12 +1187,18 @@ def _schedule_revive_after_login(uid: str, group: dict) -> None:
             _revive_tasks.add(task)
             task.add_done_callback(_revive_tasks.discard)
     except Exception:  # noqa: BLE001 —— 排不上就算了，登录本身已经成功
-        logger.debug('调度「登录后自动解除系统禁用」失败（不影响登录结果）',
-                     exc_info=True)
+        logger.debug(
+            "调度「登录后自动解除系统禁用」失败（不影响登录结果）", exc_info=True
+        )
 
 
-def _save_and_finish(result: dict, realm_of_result: str, region_msg: str,
-                     state: str, group: dict | None = None) -> dict:
+def _save_and_finish(
+    result: dict,
+    realm_of_result: str,
+    region_msg: str,
+    state: str,
+    group: dict | None = None,
+) -> dict:
     """落盘 + 收尾（重载上游、丢弃 state）。落盘失败时抛出**可执行**的提示。
 
     单独抽出来是因为它有两条进入路径：首次供给后、以及「上次就是败在落盘」
@@ -1057,9 +1218,9 @@ def _save_and_finish(result: dict, realm_of_result: str, region_msg: str,
         raise HTTPException(
             status_code=500,
             detail=(
-                f'账号已授权成功，但返回的账号标识形态异常，已拒绝写入：{exc}。'
-                f'这通常是上游接口返回了非预期的数据；请重试一次，'
-                f'若持续出现请把本条信息反馈给我们。'
+                f"账号已授权成功，但返回的账号标识形态异常，已拒绝写入：{exc}。"
+                f"这通常是上游接口返回了非预期的数据；请重试一次，"
+                f"若持续出现请把本条信息反馈给我们。"
             ),
         ) from exc
     except OSError as exc:
@@ -1068,37 +1229,41 @@ def _save_and_finish(result: dict, realm_of_result: str, region_msg: str,
         raise HTTPException(
             status_code=500,
             detail=(
-                f'账号已授权成功，但写入账号文件失败：{exc}。'
-                f'请检查 {auth_dir or config.AUTH_DIR} 的目录权限（容器部署见 compose 里 '
-                f'chown 10001:10001 的说明），修好后**直接重试本弹窗**即可，'
-                f'不需要重新扫码。'
+                f"账号已授权成功，但写入账号文件失败：{exc}。"
+                f"请检查 {auth_dir or config.AUTH_DIR} 的目录权限（容器部署见 compose 里 "
+                f"chown 10001:10001 的说明），修好后**直接重试本弹窗**即可，"
+                f"不需要重新扫码。"
             ),
         ) from exc
 
     if not existed:
-        db.record_account_added(str(result['uid']), auth_dir)
+        db.record_account_added(str(result["uid"]), auth_dir)
 
     # 账号已确实落盘，这时才丢 state（成功路径的收尾）
     tencent.drop_state(state)
     _provisioned_states.pop(state, None)
+    # 成功路径的记账可以立即回收；失败路径靠 _prune_login_polls 按 TTL 清
+    _login_delivered.pop(state, None)
+    _login_locks.pop(state, None)
 
     # 让上游加载新账号：**先等它的 auths 热加载，超时才重启**（后台执行，
     # 不阻塞本次响应）。此前无脑重启，而重启期间上游 /status 不可用 —— 前端
     # 收到成功立刻刷新账号列表，那一刷会一直挂到容器起来，用户看到的是
     # 「登录成功却要等 20-30 秒」。详见 reload.request_reload_or_restart。
-    reload.request_reload_or_restart(str(result.get('uid') or ''),
-                                     upstream=_reload_target(group))
+    reload.request_reload_or_restart(
+        str(result.get("uid") or ""), upstream=_reload_target(group)
+    )
     # 登录后尝试恢复会话失效导致的系统禁用；revive_account 会拒绝上游封禁账号。
-    _schedule_revive_after_login(str(result.get('uid') or ''), group)
+    _schedule_revive_after_login(str(result.get("uid") or ""), group)
 
     return {
-        'status': 'success',
-        'uid': result['uid'],
-        'nickname': result['nickname'],
-        'realm': realm_of_result,
-        'updated': existed,
-        'file': filename,
-        'region_note': region_msg,
+        "status": "success",
+        "uid": result["uid"],
+        "nickname": result["nickname"],
+        "realm": realm_of_result,
+        "updated": existed,
+        "file": filename,
+        "region_note": region_msg,
     }
 
 
@@ -1113,19 +1278,19 @@ def _auth_dict(raw: dict, directory: Path | None = None) -> dict:
     （`config.route_session_name` 要拿它算会话名）：会话名决定住宅代理的出口 IP，
     不带就等于每次按 uid 现算，界面显示的会话名与真实出口对不上。
     """
-    acct = raw.get('account') or {}
-    auth = raw.get('auth') or {}
+    acct = raw.get("account") or {}
+    auth = raw.get("auth") or {}
     return {
-        '_risk_auth_dir': str(directory or config.AUTH_DIR),
-        'access_token': auth.get('accessToken', ''),
-        'uid': acct.get('uid', ''),
-        'nickname': str(acct.get('nickname') or ''),
-        'enterprise_id': acct.get('enterpriseId', ''),
-        'domain': auth.get('domain', ''),
-        'realm': auth.get('realm'),
-        'device_token': str(raw.get('device_token') or ''),
-        'proxy': str(raw.get('proxy') or ''),
-        'proxy_session': str(raw.get('proxy_session') or ''),
+        "_risk_auth_dir": str(directory or config.AUTH_DIR),
+        "access_token": auth.get("accessToken", ""),
+        "uid": acct.get("uid", ""),
+        "nickname": str(acct.get("nickname") or ""),
+        "enterprise_id": acct.get("enterpriseId", ""),
+        "domain": auth.get("domain", ""),
+        "realm": auth.get("realm"),
+        "device_token": str(raw.get("device_token") or ""),
+        "proxy": str(raw.get("proxy") or ""),
+        "proxy_session": str(raw.get("proxy_session") or ""),
     }
 
 
@@ -1135,23 +1300,28 @@ def _load(filename: str, auth_dir: Path | None = None) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail='账号文件不存在') from exc
+        raise HTTPException(status_code=404, detail="账号文件不存在") from exc
 
 
-@router.post('/accounts/{filename}/checkin')
-async def account_checkin(filename: str, upstream_id: int | None = Query(None),
-                          user: dict = Depends(security.require_admin)) -> dict:
+@router.post("/accounts/{filename}/checkin")
+async def account_checkin(
+    filename: str,
+    upstream_id: int | None = Query(None),
+    user: dict = Depends(security.require_admin),
+) -> dict:
     base_dir = _require_dir(_group(upstream_id))
     raw = _load(filename, base_dir)
-    acct = raw.get('account') or {}
-    auth = raw.get('auth') or {}
-    token = auth.get('accessToken', '')
-    uid = str(acct.get('uid', ''))
-    nickname = str(acct.get('nickname', ''))
+    acct = raw.get("account") or {}
+    auth = raw.get("auth") or {}
+    token = auth.get("accessToken", "")
+    uid = str(acct.get("uid", ""))
+    nickname = str(acct.get("nickname", ""))
 
     if not token:
-        db.add_checkin_log(uid, nickname, 'manual', False, None, '该账号无有效 accessToken')
-        return {'code': -1, 'message': '该账号无有效 accessToken'}
+        db.add_checkin_log(
+            uid, nickname, "manual", False, None, "该账号无有效 accessToken"
+        )
+        return {"code": -1, "message": "该账号无有效 accessToken"}
 
     # 今天已经签过就不再打上游：腾讯对重复签到回 10001（幂等成功，不是错误），
     # 但每点一次都是一次真实 RPC，而且会在签到记录里堆出一串「今日已签到」，
@@ -1160,12 +1330,12 @@ async def account_checkin(filename: str, upstream_id: int | None = Query(None),
     done_at = db.checkin_done_since(_today_start()).get(uid)
     if done_at is not None:
         return {
-            'code': 10001,
-            'already': True,
-            'message': '今日已签到，无需重复',
-            'checkin_today': done_at,
-            'credits': None,
-            'expiries': [],
+            "code": 10001,
+            "already": True,
+            "message": "今日已签到，无需重复",
+            "checkin_today": done_at,
+            "credits": None,
+            "expiries": [],
         }
 
     # 传完整 auth dict：billing 域要带 X-User-Id 等身份头（对齐上游 BillingHeaders）
@@ -1173,7 +1343,7 @@ async def account_checkin(filename: str, upstream_id: int | None = Query(None),
     # 0 = 签到成功；10001 = 今日已签到，同样视为成功；
     # -2 = 该版本无签到体系（国际版），不是失败，也不该记成失败
     ok = code in (0, 10001)
-    db.add_checkin_log(uid, nickname, 'manual', ok, code, message)
+    db.add_checkin_log(uid, nickname, "manual", ok, code, message)
 
     # 签到后顺带查实时积分：上游只在它自己的定时任务里刷新 credits，
     # 手动签到不会带动它更新，所以这里主动查一次返回给前端。
@@ -1183,21 +1353,22 @@ async def account_checkin(filename: str, upstream_id: int | None = Query(None),
         # 签到会改变余额，先失效缓存再查实时值
         creditsvc.invalidate(uid)
         _, credits, _, _, _, expiries = await creditsvc.get_credits(
-            _auth_dict(raw, base_dir), nickname=str(acct.get('nickname') or ''),
+            _auth_dict(raw, base_dir),
+            nickname=str(acct.get("nickname") or ""),
         )
 
     return {
-        'code': code,
-        'message': message,
+        "code": code,
+        "message": message,
         # 10001 = 腾讯说「今天已签过」：这也是成功，但和「本次刚签上」在提示语上
         # 要分开说 —— 否则用户会以为自己的点击真的又签了一次。
-        'already': code == 10001,
-        'credits': credits,
-        'expiries': expiries,
+        "already": code == 10001,
+        "credits": credits,
+        "expiries": expiries,
     }
 
 
-@router.get('/accounts/{filename}/credits')
+@router.get("/accounts/{filename}/credits")
 async def account_credits(
     filename: str,
     force: bool = False,
@@ -1211,17 +1382,19 @@ async def account_credits(
     """
     base_dir = _require_dir(_group(upstream_id))
     raw = _load(filename, base_dir)
-    acct = raw.get('account') or {}
+    acct = raw.get("account") or {}
     ok, value, message, cached, age, expiries = await creditsvc.get_credits(
-        _auth_dict(raw, base_dir), force=force, nickname=str(acct.get('nickname') or ''),
+        _auth_dict(raw, base_dir),
+        force=force,
+        nickname=str(acct.get("nickname") or ""),
     )
     return {
-        'ok': ok,
-        'credits': value,
-        'message': message,
-        'cached': cached,
-        'cache_age': age,
-        'expiries': expiries,
+        "ok": ok,
+        "credits": value,
+        "message": message,
+        "cached": cached,
+        "cache_age": age,
+        "expiries": expiries,
     }
 
 
@@ -1238,15 +1411,16 @@ def _local_uids() -> set[str]:
         if directory is None:
             continue
         for account in wb2api.list_auth_accounts(directory):
-            uid = str(account.get('uid') or '').strip()
+            uid = str(account.get("uid") or "").strip()
             if uid:
                 found.add(uid)
     return found
 
 
-@router.get('/accounts/admin-api-status')
-def account_admin_api_status(upstream_id: int | None = Query(None),
-                             user: dict = Depends(security.require_admin)) -> dict:
+@router.get("/accounts/admin-api-status")
+def account_admin_api_status(
+    upstream_id: int | None = Query(None), user: dict = Depends(security.require_admin)
+) -> dict:
     """上游「账号管理接口」（admin.enabled）开关状态，供解禁队列提示用。
 
     revive / enable / disable 这组解封操作都依赖上游这组接口：开关没开时，
@@ -1261,15 +1435,15 @@ def account_admin_api_status(upstream_id: int | None = Query(None),
     这时返回 `enabled=None`（未知），前端就不会拿默认分组的开关状态去误导它。
     """
     group = _group(upstream_id)
-    if not group.get('is_default'):
-        return {'enabled': None}
+    if not group.get("is_default"):
+        return {"enabled": None}
     enabled, _ = wb2api.admin_enabled_in_config()
     # 只回开关状态，不回配置路径（`where`）——那是部署信息，前端也用不到，
     # 最小化接口暴露面。
-    return {'enabled': enabled}
+    return {"enabled": enabled}
 
 
-@router.get('/accounts/credits-snapshot')
+@router.get("/accounts/credits-snapshot")
 def credits_snapshot(user: dict = Depends(security.current_user)) -> dict:
     """已登记的积分快照（只读）。
 
@@ -1283,13 +1457,13 @@ def credits_snapshot(user: dict = Depends(security.current_user)) -> dict:
     """
     payload = creditsvc.snapshot_entries()
     known = _local_uids()
-    for row in payload['accounts']:
-        row['known'] = row['uid'] in known
-    payload['known_count'] = sum(1 for row in payload['accounts'] if row['known'])
+    for row in payload["accounts"]:
+        row["known"] = row["uid"] in known
+    payload["known_count"] = sum(1 for row in payload["accounts"] if row["known"])
     return payload
 
 
-@router.post('/accounts/refresh-credits')
+@router.post("/accounts/refresh-credits")
 async def refresh_all_credits(
     force: bool = True,
     upstream_id: int | None = Query(None),
@@ -1314,8 +1488,8 @@ async def refresh_all_credits(
     缓存、对所有账号发起一次真实查询，属于「主动触发外部调用」的动作，
     不该由只读账号驱动。
     """
-    if force and str(user.get('role') or '') != 'admin':
-        raise HTTPException(status_code=403, detail='刷新积分需要管理员权限')
+    if force and str(user.get("role") or "") != "admin":
+        raise HTTPException(status_code=403, detail="刷新积分需要管理员权限")
 
     base_dir = _require_dir(_group(upstream_id))
     accounts = wb2api.list_auth_accounts(base_dir)
@@ -1331,16 +1505,18 @@ async def refresh_all_credits(
         acc: dict,
     ) -> tuple[str, int | float | None, str, bool, int | None, list[dict]]:
         try:
-            raw = wb2api.read_account_file(acc['file'], base_dir)
+            raw = wb2api.read_account_file(acc["file"], base_dir)
         except Exception as exc:  # noqa: BLE001
-            return acc['uid'], None, f'读取失败: {exc}', False, None, []
+            return acc["uid"], None, f"读取失败: {exc}", False, None, []
         # 信号量包住**整次取数**而不是只包网络那一段：缓存命中时它几乎瞬时，
         # 冷启动时这才是真正要限流的窗口。
         async with sem:
             ok, value, message, cached, age, expiries = await creditsvc.get_credits(
-                _auth_dict(raw, base_dir), force=force, nickname=str(acc.get('nickname') or ''),
+                _auth_dict(raw, base_dir),
+                force=force,
+                nickname=str(acc.get("nickname") or ""),
             )
-        return acc['uid'], value if ok else None, message, cached, age, expiries
+        return acc["uid"], value if ok else None, message, cached, age, expiries
 
     results = await asyncio.gather(*(one(a) for a in accounts)) if accounts else []
 
@@ -1350,20 +1526,20 @@ async def refresh_all_credits(
     for uid, credits, message, cached, age, expiries in results:
         credits_map[uid] = credits
         meta[uid] = {
-            'cached': cached,
-            'cache_age': age,
-            'message': message,
-            'expiries': expiries,
+            "cached": cached,
+            "cache_age": age,
+            "message": message,
+            "expiries": expiries,
         }
         if credits is None:
-            failed.append(f'{uid[:12]}: {message}')
+            failed.append(f"{uid[:12]}: {message}")
 
     return {
-        'total': len(accounts),
-        'succeeded': len(accounts) - len(failed),
-        'credits': credits_map,
-        'meta': meta,
-        'failed': failed,
+        "total": len(accounts),
+        "succeeded": len(accounts) - len(failed),
+        "credits": credits_map,
+        "meta": meta,
+        "failed": failed,
     }
 
 
@@ -1388,9 +1564,10 @@ async def _checkin_with_retry(payload: dict, realm) -> tuple[int, str]:
     return code, message
 
 
-@router.post('/accounts/checkin-all')
-async def checkin_all(upstream_id: int | None = Query(None),
-                      user: dict = Depends(security.require_admin)) -> dict:
+@router.post("/accounts/checkin-all")
+async def checkin_all(
+    upstream_id: int | None = Query(None), user: dict = Depends(security.require_admin)
+) -> dict:
     """对所有账号执行一次签到，并逐条记录结果。
 
     上游的自动签到只在失败时打日志、成功静默，且没有可触发的 HTTP 接口；
@@ -1406,52 +1583,67 @@ async def checkin_all(upstream_id: int | None = Query(None),
     sem = _checkin_semaphore()
 
     async def one(acc: dict) -> dict:
-        filename = acc['file']
-        uid = acc.get('uid', '')
-        nickname = acc.get('nickname', '')
+        filename = acc["file"]
+        uid = acc.get("uid", "")
+        nickname = acc.get("nickname", "")
         try:
             raw = wb2api.read_account_file(filename, base_dir)
-            auth = raw.get('auth') or {}
-            token = auth.get('accessToken', '')
+            auth = raw.get("auth") or {}
+            token = auth.get("accessToken", "")
         except Exception as exc:  # noqa: BLE001
-            msg = f'读取失败: {exc}'
-            db.add_checkin_log(uid, nickname, 'manual-batch', False, None, msg)
-            return {'nickname': nickname, 'ok': False, 'message': msg}
+            msg = f"读取失败: {exc}"
+            db.add_checkin_log(uid, nickname, "manual-batch", False, None, msg)
+            return {"nickname": nickname, "ok": False, "message": msg}
 
         if not token:
-            msg = '无有效 accessToken'
-            db.add_checkin_log(uid, nickname, 'manual-batch', False, None, msg)
-            return {'nickname': nickname, 'ok': False, 'message': msg}
+            msg = "无有效 accessToken"
+            db.add_checkin_log(uid, nickname, "manual-batch", False, None, msg)
+            return {"nickname": nickname, "ok": False, "message": msg}
 
         # 国际版没有签到体系：直接跳过（不记失败，也不打上游请求）
         if not supports_checkin(realm_of(auth)):
-            msg = '国际版无签到体系，已跳过'
-            db.add_checkin_log(uid, nickname, 'manual-batch', False, -2, msg)
-            return {'nickname': nickname, 'ok': False, 'skipped': True,
-                    'code': -2, 'message': msg}
+            msg = "国际版无签到体系，已跳过"
+            db.add_checkin_log(uid, nickname, "manual-batch", False, -2, msg)
+            return {
+                "nickname": nickname,
+                "ok": False,
+                "skipped": True,
+                "code": -2,
+                "message": msg,
+            }
 
         # 今日已签到：跳过（理由同单账号签到 —— 重复点是白打的 RPC，
         # 还会在签到记录里堆出一串「今日已签到」把失败记录挤下去）。
         # 结果里照报，界面才能显示「N 个今日已签到」而不是让它们凭空消失。
         if uid and uid in done_today:
-            return {'nickname': nickname, 'ok': True, 'already': True,
-                    'code': 10001, 'message': '今日已签到，已跳过'}
+            return {
+                "nickname": nickname,
+                "ok": True,
+                "already": True,
+                "code": 10001,
+                "message": "今日已签到，已跳过",
+            }
 
         async with sem:
             # 传完整 auth dict：billing 域要带 X-User-Id 等身份头
             # 瞬时 10001（上游短时限流）在 sem 内退避重试：放掉信号量再睡会让
             # 其他账号涌入，重新制造并发峰值（issue #256）。
             code, message = await _checkin_with_retry(
-                _auth_dict(raw, base_dir), realm_of(auth))
+                _auth_dict(raw, base_dir), realm_of(auth)
+            )
         ok = code in (0, 10001)
-        db.add_checkin_log(uid, nickname, 'manual-batch', ok, code, message)
-        return {'nickname': nickname, 'ok': ok, 'code': code, 'message': message}
+        db.add_checkin_log(uid, nickname, "manual-batch", ok, code, message)
+        return {"nickname": nickname, "ok": ok, "code": code, "message": message}
 
     results = await taskpacing.run_accounts(
-        'checkin', accounts, one,
-        needs_request=lambda a: (a.get('uid') not in done_today
-                                 and a.get('checkin_supported') is not False
-                                 and not a.get('invalid_reason')),
+        "checkin",
+        accounts,
+        one,
+        needs_request=lambda a: (
+            a.get("uid") not in done_today
+            and a.get("checkin_supported") is not False
+            and not a.get("invalid_reason")
+        ),
     )
     # 两类账号都不进 `total` 分母，各自单独报数：
     #   · skipped：国际版没有签到体系，既不会成功也不是失败。算进 total 会显示成
@@ -1460,20 +1652,20 @@ async def checkin_all(upstream_id: int | None = Query(None),
     #     「刚签成功」，用户会以为这次点击真的又签了一次。
     # 于是 total 的含义收敛成「本次真正发起并需要结果的账号数」，
     # succeeded 自然就是「这次真签上了几个」。
-    applicable = [r for r in results if not r.get('skipped')]
-    already = [r for r in applicable if r.get('already')]
-    attempted = [r for r in applicable if not r.get('already')]
-    succeeded = sum(1 for r in attempted if r['ok'])
+    applicable = [r for r in results if not r.get("skipped")]
+    already = [r for r in applicable if r.get("already")]
+    attempted = [r for r in applicable if not r.get("already")]
+    succeeded = sum(1 for r in attempted if r["ok"])
     return {
-        'total': len(attempted),
-        'succeeded': succeeded,
-        'already': len(already),
-        'skipped': len(results) - len(applicable),
-        'results': list(results),
+        "total": len(attempted),
+        "succeeded": succeeded,
+        "already": len(already),
+        "skipped": len(results) - len(applicable),
+        "results": list(results),
     }
 
 
-@router.get('/checkin-logs')
+@router.get("/checkin-logs")
 def checkin_logs(
     limit: int = 200,
     uid: str | None = None,
@@ -1515,34 +1707,40 @@ def checkin_logs(
 
     local = db.list_checkin_logs(limit=want, uid=uid, offset=0, days=days)
     local_total = db.count_checkin_logs(uid=uid, days=days)
-    local_items = [{**r, 'auto': False} for r in local]
+    local_items = [{**r, "auto": False} for r in local]
 
     # 上游自动签到（采集器落库的 kind='checkin'）
-    auto_rows = db.list_task_logs(limit=want, uid=uid, kind='checkin', offset=0, days=days)
-    auto_total = db.count_task_logs(uid=uid, kind='checkin', days=days)
+    auto_rows = db.list_task_logs(
+        limit=want, uid=uid, kind="checkin", offset=0, days=days
+    )
+    auto_total = db.count_task_logs(uid=uid, kind="checkin", days=days)
     auto_items = [
         {
             # 与 checkin_logs 的 id 空间不同，加偏移前缀避免前端 key 冲突
-            'id': 10**9 + int(r['id']),
-            'ts': r['ts'],
-            'uid': r['uid'],
-            'nickname': r.get('nickname') or '',
-            'source': 'auto',
-            'kind': 'checkin',
+            "id": 10**9 + int(r["id"]),
+            "ts": r["ts"],
+            "uid": r["uid"],
+            "nickname": r.get("nickname") or "",
+            "source": "auto",
+            "kind": "checkin",
             # 汇总行不代表单个账号成功，success 仅用于界面着色，不参与判定
-            'success': r.get('level') != 'error',
-            'code': None,
-            'message': r.get('message_cn') or r.get('message') or '',
-            'auto': True,
+            "success": r.get("level") != "error",
+            "code": None,
+            "message": r.get("message_cn") or r.get("message") or "",
+            "auto": True,
         }
         for r in auto_rows
     ]
 
-    merged = sorted(local_items + auto_items, key=lambda x: x['ts'], reverse=True)
+    merged = sorted(local_items + auto_items, key=lambda x: x["ts"], reverse=True)
 
     # 按版本过滤（realm 为空则不过滤，保持既有调用行为）
     if realm_map is not None:
-        merged = [it for it in merged if _uid_matches_realm(str(it.get('uid') or ''), realm_map, realm)]
+        merged = [
+            it
+            for it in merged
+            if _uid_matches_realm(str(it.get("uid") or ""), realm_map, realm)
+        ]
 
     # total 必须与**列表同一口径**（issue #51 次要问题）：此前它统计在版本过滤之前，
     # 界面上「共 6 条 · 仅显示最近 2 条」而列表只有 2 条，用户以为记录丢了。
@@ -1553,30 +1751,30 @@ def checkin_logs(
     # 自动侧的行也要解析昵称（上游只带 uid 前 8 位）；本端的已有昵称
     resolve_nick = _nickname_resolver()
     for it in merged:
-        if not it.get('nickname'):
-            it['nickname'] = resolve_nick(str(it.get('uid') or ''))
+        if not it.get("nickname"):
+            it["nickname"] = resolve_nick(str(it.get("uid") or ""))
 
     start = max(0, int(offset))
     end = start + min(500, max(1, int(limit)))
     return {
-        'items': merged[start:end],
-        'total': total,
+        "items": merged[start:end],
+        "total": total,
         # 分别给出，便于界面说明「本端 N 条 / 自动 M 条」。
         #
         # **这两个数故意不按版本过滤**（与上面的 `total` 不同）：界面用它说明
         # 「清空会删掉多少条」，而清空是整表操作、不分版本——按版本过滤会让提示
         # 少说数量。两个口径各有用途，别把它们「统一」掉。
-        'local_total': local_total,
-        'auto_total': auto_total,
+        "local_total": local_total,
+        "auto_total": auto_total,
         # 两个版本合计的条数（版本筛选生效时，`total` 只数当前版本）
-        'unfiltered_total': unfiltered_total,
+        "unfiltered_total": unfiltered_total,
     }
 
 
-@router.post('/checkin-logs/clear')
+@router.post("/checkin-logs/clear")
 def clear_checkin_logs(user: dict = Depends(security.require_session_admin)) -> dict:
     db.clear_checkin_logs()
-    return {'ok': True}
+    return {"ok": True}
 
 
 def _nickname_resolver() -> object:
@@ -1594,13 +1792,13 @@ def _nickname_resolver() -> object:
         # 只扫默认目录会让分组账号在日志里显示成裸 uid。
         dirs: list[Path | None] = [None]
         for up in upstreamsvc.list_upstreams(include_default=False):
-            raw_dir = str(up.get('auth_dir') or '').strip()
+            raw_dir = str(up.get("auth_dir") or "").strip()
             if raw_dir:
                 dirs.append(Path(raw_dir))
         for base_dir in dirs:
             for acc in wb2api.list_auth_accounts(base_dir):
-                auid = str(acc.get('uid') or '')
-                nick = str(acc.get('nickname') or '')
+                auid = str(acc.get("uid") or "")
+                nick = str(acc.get("nickname") or "")
                 if not auid or not nick:
                     continue
                 nick_by_uid[auid] = nick
@@ -1614,11 +1812,11 @@ def _nickname_resolver() -> object:
 
     def resolve(uid: str) -> str:
         if not uid:
-            return ''
+            return ""
         if uid in nick_by_uid:
             return nick_by_uid[uid]
         prefix = uid[:8]
-        return '' if prefix in ambiguous else nick_by_prefix.get(prefix, '')
+        return "" if prefix in ambiguous else nick_by_prefix.get(prefix, "")
 
     return resolve
 
@@ -1635,15 +1833,13 @@ def _realm_uid_filter(realm: str | None) -> dict[str, str] | None:
     """
     if not realm:
         return None
-    r = 'global' if str(realm).strip().lower() == 'global' else 'cn'
+    r = "global" if str(realm).strip().lower() == "global" else "cn"
     try:
         accounts = wb2api.list_auth_accounts()
     except Exception:  # noqa: BLE001
         return {}
     return {
-        str(a.get('uid')): str(a.get('realm') or 'cn')
-        for a in accounts
-        if a.get('uid')
+        str(a.get("uid")): str(a.get("realm") or "cn") for a in accounts if a.get("uid")
     }
 
 
@@ -1660,10 +1856,10 @@ def _uid_matches_realm(uid: str, realm_map: dict[str, str] | None, realm: str) -
     """
     if realm_map is None:
         return True
-    u = str(uid or '')
+    u = str(uid or "")
     if not u:
         return True
-    want = 'global' if str(realm).strip().lower() == 'global' else 'cn'
+    want = "global" if str(realm).strip().lower() == "global" else "cn"
     full = realm_map.get(u)
     if full is not None:
         return full == want
@@ -1672,7 +1868,7 @@ def _uid_matches_realm(uid: str, realm_map: dict[str, str] | None, realm: str) -
     return len(hits) == 1 and hits.pop() == want
 
 
-@router.get('/task-logs')
+@router.get("/task-logs")
 def task_logs(
     limit: int = 200,
     offset: int = 0,
@@ -1697,15 +1893,18 @@ def task_logs(
     # 按版本过滤（realm 为空则不过滤）。日志表无 realm 列，按账号表映射 uid
     realm_map = _realm_uid_filter(realm)
     if realm_map is not None:
-        logs = [r for r in logs
-                if _uid_matches_realm(str(r.get('uid') or ''), realm_map, realm)]
+        logs = [
+            r
+            for r in logs
+            if _uid_matches_realm(str(r.get("uid") or ""), realm_map, realm)
+        ]
 
     resolve_nick = _nickname_resolver()
     for row in logs:
         # 结果文案中文化：数据库留英文原文（排查要看上游原话），
         # 接口额外给出 message_cn 供界面展示
-        row['message_cn'] = tasklog.translate_message(row.get('message', ''))
-        row['nickname'] = resolve_nick(str(row.get('uid') or ''))
+        row["message_cn"] = tasklog.translate_message(row.get("message", ""))
+        row["nickname"] = resolve_nick(str(row.get("uid") or ""))
 
     # `total` 是**当前筛选下**的条数（列表分页要用），而 `stats` 是**各类型**的
     # 汇总（筛选栏要用它显示每个类型的条数与总条数）。
@@ -1721,45 +1920,49 @@ def task_logs(
     if realm_map is not None:
         # 版本过滤只能按行做（日志表没有 realm 列）。注意这里**不带 kind**：
         # 要的就是「该版本下所有类型」的分布。
-        all_rows = db.list_task_logs(limit=2000, uid=uid, kind=None, offset=0, days=days)
-        kept = [r for r in all_rows
-                if _uid_matches_realm(str(r.get('uid') or ''), realm_map, realm)]
+        all_rows = db.list_task_logs(
+            limit=2000, uid=uid, kind=None, offset=0, days=days
+        )
+        kept = [
+            r
+            for r in all_rows
+            if _uid_matches_realm(str(r.get("uid") or ""), realm_map, realm)
+        ]
         by_kind: dict[str, dict] = {}
         for r in kept:
-            k = str(r.get('kind') or '')
-            slot = by_kind.setdefault(k, {'count': 0, 'credits': 0})
-            slot['count'] += 1
-            slot['credits'] += int(r.get('credits') or 0)
+            k = str(r.get("kind") or "")
+            slot = by_kind.setdefault(k, {"count": 0, "credits": 0})
+            slot["count"] += 1
+            slot["credits"] += int(r.get("credits") or 0)
         stats = {
-            'by_kind': by_kind,
-            'total': len(kept),
-            'total_credits': sum(v['credits'] for v in by_kind.values()),
+            "by_kind": by_kind,
+            "total": len(kept),
+            "total_credits": sum(v["credits"] for v in by_kind.values()),
         }
         # total 同样要按版本口径重算（带 kind），与列表一致
-        scoped = ([r for r in kept if str(r.get('kind') or '') == kind]
-                  if kind else kept)
+        scoped = [r for r in kept if str(r.get("kind") or "") == kind] if kind else kept
         total = len(scoped)
 
     return {
-        'logs': logs,
-        'total': total,
-        'stats': stats,
-        'kinds': tasklog.KIND_LABELS,
-        'collector': tasklog.state(),
+        "logs": logs,
+        "total": total,
+        "stats": stats,
+        "kinds": tasklog.KIND_LABELS,
+        "collector": tasklog.state(),
     }
 
 
-@router.post('/task-logs/collect')
+@router.post("/task-logs/collect")
 async def collect_task_logs(user: dict = Depends(security.require_admin)) -> dict:
     """立即采集一次（不等后台轮询），便于刚跑完任务就看结果。"""
     parsed, added = await tasklog._collect_once()
-    return {'ok': True, 'parsed': parsed, 'added': added}
+    return {"ok": True, "parsed": parsed, "added": added}
 
 
-@router.post('/task-logs/clear')
+@router.post("/task-logs/clear")
 def clear_task_logs(user: dict = Depends(security.require_session_admin)) -> dict:
     db.clear_task_logs()
-    return {'ok': True}
+    return {"ok": True}
 
 
 # 已完成「有副作用的供给」（签到 / 国际版 trial）的扫码 state。
@@ -1778,13 +1981,13 @@ _provisioned_states: dict[str, float] = {}
 # 全部仅管理员可用 —— 这些操作会对账号发起真实写请求。
 
 
-@router.get('/task-run')
+@router.get("/task-run")
 def task_run_status(user: dict = Depends(security.require_admin)) -> dict:
     """当前/上次执行状态与输出尾部（界面轮询）。"""
     return taskrun.status()
 
 
-@router.post('/task-run')
+@router.post("/task-run")
 async def task_run_start(
     body: dict = Body(...),
     user: dict = Depends(security.require_admin),
@@ -1797,67 +2000,71 @@ async def task_run_start(
     `upstream_id` 选分组（issue #274）：不传 = 默认分组；其他分组要求配置了
     本地账号目录（`_require_dir`），脚本通过 `WB2A_AUTHS` 读那一组账号。
     """
-    mode = str(body.get('mode') or '').strip()
-    target = str(body.get('target') or 'ALL').strip() or 'ALL'
-    if mode not in ('preview', 'claim', 'full'):
-        raise HTTPException(status_code=400, detail='模式只能是 preview / claim / full')
-    if mode == 'full' and body.get('confirm') is not True:
+    mode = str(body.get("mode") or "").strip()
+    target = str(body.get("target") or "ALL").strip() or "ALL"
+    if mode not in ("preview", "claim", "full"):
+        raise HTTPException(status_code=400, detail="模式只能是 preview / claim / full")
+    if mode == "full" and body.get("confirm") is not True:
         raise HTTPException(
             status_code=400,
-            detail='「点亮任务」会向腾讯发送活跃上报（造画布、连发对话等），'
-                   '请先确认：该操作有风控风险，建议先用「预览」看清将要做的事。',
+            detail="「点亮任务」会向腾讯发送活跃上报（造画布、连发对话等），"
+            "请先确认：该操作有风控风险，建议先用「预览」看清将要做的事。",
         )
     # 分组参数严格解析：字符串 "3" 静默落到默认分组会让用户在 B 组点任务、
     # 实际跑了 A 组的账号（且界面显示成功）——宁可报 400。
-    raw_uid = body.get('upstream_id')
+    raw_uid = body.get("upstream_id")
     upstream_id: int | None = None
-    if raw_uid not in (None, '', 0, '0'):
+    if raw_uid not in (None, "", 0, "0"):
         try:
             upstream_id = int(raw_uid)
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail='upstream_id 不合法') from None
+            raise HTTPException(status_code=400, detail="upstream_id 不合法") from None
     group = _group(upstream_id)
-    auth_dir = _require_dir(group) if not group.get('is_default') else _group_dir(group)
+    auth_dir = _require_dir(group) if not group.get("is_default") else _group_dir(group)
     # 走线程池版本：start() 内部会解析脚本路径（脚本缺失时还要 fork docker
     # 提取，最长 60 秒），本接口是 async，同步跑它会冻住整个事件循环——
     # 连带把对外网关一起卡住。
     ok, msg = await taskrun.start_async(
-        mode, target, auth_dir=auth_dir,
-        group_name='' if group.get('is_default') else str(group.get('name') or ''),
+        mode,
+        target,
+        auth_dir=auth_dir,
+        group_name="" if group.get("is_default") else str(group.get("name") or ""),
     )
     if not ok:
         # 前置拒绝（脚本缺失/已有任务在跑/参数不合法）用 409 表达「状态冲突」，
         # 与「请求本身有错」（400）区分开。
         raise HTTPException(status_code=409, detail=msg)
-    return {'ok': True, 'message': msg}
+    return {"ok": True, "message": msg}
 
 
-@router.post('/task-run/stop')
+@router.post("/task-run/stop")
 async def task_run_stop(user: dict = Depends(security.require_admin)) -> dict:
     stopped = await taskrun.stop()
-    return {'ok': stopped, 'message': '已停止' if stopped else '当前没有正在执行的任务'}
+    return {"ok": stopped, "message": "已停止" if stopped else "当前没有正在执行的任务"}
 
 
-@router.get('/task-claim-schedule')
+@router.get("/task-claim-schedule")
 def task_claim_schedule_get(user: dict = Depends(security.require_admin)) -> dict:
     """定时领奖配置（仅幂等领奖，不含点亮）。"""
     return taskrun.get_schedule()
 
 
-@router.put('/task-claim-schedule')
+@router.put("/task-claim-schedule")
 def task_claim_schedule_put(
     body: dict = Body(...),
     user: dict = Depends(security.require_admin),
 ) -> dict:
     """保存定时领奖配置。"""
     try:
-        return taskrun.set_schedule(body.get('enabled'), body.get('hours'))
+        return taskrun.set_schedule(body.get("enabled"), body.get("hours"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get('/upstream/logs')
-def upstream_logs(limit: int = 200, user: dict = Depends(security.current_user)) -> dict:
+@router.get("/upstream/logs")
+def upstream_logs(
+    limit: int = 200, user: dict = Depends(security.current_user)
+) -> dict:
     """上游容器日志中与自动任务相关的行（原始日志）。
 
     上游只在失败时打日志、成功大多静默（旅行与活跃上报除外，它们会记录
@@ -1865,19 +2072,22 @@ def upstream_logs(limit: int = 200, user: dict = Depends(security.current_user))
     """
     limit = max(1, min(int(limit), 2000))
     lines = wb2api.read_container_logs(limit=limit)
-    keywords = ('checkin', 'keepalive', 'user-resource', 'travel', 'activity')
+    keywords = ("checkin", "keepalive", "user-resource", "travel", "activity")
     interesting = [
         # 去掉 docker --timestamps 前缀（上游自己已带秒级时间，重复显示反而难读）
         tasklog.strip_docker_ts(ln)
         for ln in lines
         if any(k in ln.lower() for k in keywords)
     ]
-    return {'available': lines != [], 'lines': interesting, 'total': len(lines)}
+    return {"available": lines != [], "lines": interesting, "total": len(lines)}
 
 
-@router.post('/accounts/{filename}/test')
-async def account_test(filename: str, upstream_id: int | None = Query(None),
-                       user: dict = Depends(security.require_admin)) -> dict:
+@router.post("/accounts/{filename}/test")
+async def account_test(
+    filename: str,
+    upstream_id: int | None = Query(None),
+    user: dict = Depends(security.require_admin),
+) -> dict:
     base_dir = _require_dir(_group(upstream_id))
     raw = _load(filename, base_dir)
     # 探测需要 uid / enterpriseId / domain 以复刻上游请求头，
@@ -1885,7 +2095,7 @@ async def account_test(filename: str, upstream_id: int | None = Query(None),
     # 统一走 _auth_dict：nickname / proxy_session 必须带上，否则 {account}
     # 会回退到 UID，探测与聊天从两个出口 IP 出去。
     ok, message = await tencent.probe_account(_auth_dict(raw, base_dir))
-    return {'ok': ok, 'message': message}
+    return {"ok": ok, "message": message}
 
 
 # 主动探测一次最多的账号 × 模型组合数与规模上限（issue #270）。
@@ -1902,18 +2112,20 @@ _MODEL_PROBE_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 
 def _probe_model_name(raw: object) -> str:
     """规范化模型名：去掉 `cn:` / `global:` 前缀（issue #270 的合并展示）。"""
-    name = str(raw or '').strip()
-    for prefix in ('cn:', 'global:'):
+    name = str(raw or "").strip()
+    for prefix in ("cn:", "global:"):
         if name.lower().startswith(prefix):
-            name = name[len(prefix):].strip()
+            name = name[len(prefix) :].strip()
             break
     return name
 
 
-@router.post('/accounts/probe-models')
-async def probe_models(body: dict = Body(...),
-                       upstream_id: int | None = Query(None),
-                       user: dict = Depends(security.require_admin)) -> dict:
+@router.post("/accounts/probe-models")
+async def probe_models(
+    body: dict = Body(...),
+    upstream_id: int | None = Query(None),
+    user: dict = Depends(security.require_admin),
+) -> dict:
     """账号 × 模型主动探测：一次性回答「这个号能不能用这个模型」（issue #270）。
 
     结果分类与上游错误口径一致：ok / rate（6004 模型限流）/ credit（402 或
@@ -1924,35 +2136,39 @@ async def probe_models(body: dict = Body(...),
     """
     group = _group(upstream_id)
     base_dir = _require_dir(group)
-    raw_accounts = body.get('accounts')
-    raw_models = body.get('models')
+    raw_accounts = body.get("accounts")
+    raw_models = body.get("models")
     if not isinstance(raw_accounts, list) or not isinstance(raw_models, list):
-        raise HTTPException(status_code=400, detail='accounts / models 必须是数组')
+        raise HTTPException(status_code=400, detail="accounts / models 必须是数组")
     if not raw_accounts or not raw_models:
-        raise HTTPException(status_code=400, detail='请至少选择一个账号与一个模型')
+        raise HTTPException(status_code=400, detail="请至少选择一个账号与一个模型")
     if len(raw_accounts) > _PROBE_ACCOUNTS_MAX:
-        raise HTTPException(status_code=400,
-                            detail=f'一次最多探测 {_PROBE_ACCOUNTS_MAX} 个账号')
+        raise HTTPException(
+            status_code=400, detail=f"一次最多探测 {_PROBE_ACCOUNTS_MAX} 个账号"
+        )
     models: list[str] = []
     for item in raw_models:
         name = _probe_model_name(item)
         if not name:
             continue
         if len(name) > 120:
-            raise HTTPException(status_code=400, detail='模型名过长')
+            raise HTTPException(status_code=400, detail="模型名过长")
         if name not in models:
             models.append(name)
     if not models:
-        raise HTTPException(status_code=400, detail='请至少选择一个模型')
+        raise HTTPException(status_code=400, detail="请至少选择一个模型")
     if len(models) > _PROBE_MODELS_MAX:
-        raise HTTPException(status_code=400,
-                            detail=f'一次最多探测 {_PROBE_MODELS_MAX} 个模型')
+        raise HTTPException(
+            status_code=400, detail=f"一次最多探测 {_PROBE_MODELS_MAX} 个模型"
+        )
     if len(raw_accounts) * len(models) > _PROBE_COMBOS_MAX:
         raise HTTPException(
             status_code=400,
-            detail=(f'一次最多 {_PROBE_COMBOS_MAX} 条组合'
-                    f'（当前 {len(raw_accounts)} 个账号 × {len(models)} 个模型）；'
-                    '请分批探测'),
+            detail=(
+                f"一次最多 {_PROBE_COMBOS_MAX} 条组合"
+                f"（当前 {len(raw_accounts)} 个账号 × {len(models)} 个模型）；"
+                "请分批探测"
+            ),
         )
 
     targets: list[dict] = []
@@ -1963,63 +2179,81 @@ async def probe_models(body: dict = Body(...),
             continue
         seen_files.add(filename)
         raw = _load(filename, base_dir)  # 路径校验 + 不存在时报 404
-        acct = raw.get('account') or {}
-        auth = raw.get('auth') or {}
-        targets.append({
-            'file': filename,
-            'uid': str(acct.get('uid') or ''),
-            'nickname': str(acct.get('nickname') or ''),
-            'realm': realm_of(auth),
-            'auth': _auth_dict(raw, base_dir),
-        })
+        acct = raw.get("account") or {}
+        auth = raw.get("auth") or {}
+        targets.append(
+            {
+                "file": filename,
+                "uid": str(acct.get("uid") or ""),
+                "nickname": str(acct.get("nickname") or ""),
+                "realm": realm_of(auth),
+                "auth": _auth_dict(raw, base_dir),
+            }
+        )
 
     sem = asyncio.Semaphore(min(_PROBE_CONCURRENCY, len(targets)))
     results: list[dict] = []
 
     async def one(target: dict) -> None:
-        lock = _MODEL_PROBE_LOCKS.setdefault((group['base_url'], target['uid']), asyncio.Lock())
+        lock = _MODEL_PROBE_LOCKS.setdefault(
+            (group["base_url"], target["uid"]), asyncio.Lock()
+        )
         async with sem, lock:
             for idx, model in enumerate(models):
                 if idx:
                     await asyncio.sleep(_PROBE_ACCOUNT_GAP_SECONDS)
                 try:
                     detail = await asyncio.wait_for(
-                        tencent.probe_model(target['auth'], model),
+                        tencent.probe_model(target["auth"], model),
                         timeout=_PROBE_REQUEST_TIMEOUT,
                     )
                 except asyncio.TimeoutError:
-                    detail = {'status': 'error', 'code': None,
-                              'message': f'探测超时（>{_PROBE_REQUEST_TIMEOUT}s）',
-                              'latency_ms': _PROBE_REQUEST_TIMEOUT * 1000}
-                if detail.get('status') == 'ok':
-                    recovered, recovery_message, recovery_code = await wb2api.clear_model_block(
-                        target['uid'], model, base_url=group['base_url'],
-                        api_key=group['api_key'])
-                    if recovery_code == 'no_route':
+                    detail = {
+                        "status": "error",
+                        "code": None,
+                        "message": f"探测超时（>{_PROBE_REQUEST_TIMEOUT}s）",
+                        "latency_ms": _PROBE_REQUEST_TIMEOUT * 1000,
+                    }
+                if detail.get("status") == "ok":
+                    (
+                        recovered,
+                        recovery_message,
+                        recovery_code,
+                    ) = await wb2api.clear_model_block(
+                        target["uid"],
+                        model,
+                        base_url=group["base_url"],
+                        api_key=group["api_key"],
+                    )
+                    if recovery_code == "no_route":
                         # admin.enabled 默认 false：没有这条同步通道≠同步失败。
-                        detail['gateway_sync_skipped'] = True
+                        detail["gateway_sync_skipped"] = True
                     else:
-                        detail['gateway_synced'] = recovered
+                        detail["gateway_synced"] = recovered
                     if recovery_message:
-                        detail['gateway_sync_message'] = recovery_message
-                results.append({
-                    'file': target['file'],
-                    'uid': target['uid'],
-                    'nickname': target['nickname'],
-                    'realm': target['realm'],
-                    'model': model,
-                    **detail,
-                })
+                        detail["gateway_sync_message"] = recovery_message
+                results.append(
+                    {
+                        "file": target["file"],
+                        "uid": target["uid"],
+                        "nickname": target["nickname"],
+                        "realm": target["realm"],
+                        "model": model,
+                        **detail,
+                    }
+                )
 
     await asyncio.gather(*(one(t) for t in targets))
 
-    order = {t['file']: i for i, t in enumerate(targets)}
+    order = {t["file"]: i for i, t in enumerate(targets)}
     model_order = {m: i for i, m in enumerate(models)}
-    results.sort(key=lambda r: (order.get(r['file'], 0), model_order.get(r['model'], 0)))
-    summary = {k: 0 for k in ('ok', 'rate', 'credit', 'auth', 'no_model', 'error')}
+    results.sort(
+        key=lambda r: (order.get(r["file"], 0), model_order.get(r["model"], 0))
+    )
+    summary = {k: 0 for k in ("ok", "rate", "credit", "auth", "no_model", "error")}
     for r in results:
-        summary[r['status']] = summary.get(r['status'], 0) + 1
-    return {'results': results, 'summary': summary, 'requests': len(results)}
+        summary[r["status"]] = summary.get(r["status"], 0) + 1
+    return {"results": results, "summary": summary, "requests": len(results)}
 
 
 async def _refresh_one_token(filename: str, base_dir: Path) -> dict:
@@ -2034,51 +2268,83 @@ async def _refresh_one_token(filename: str, base_dir: Path) -> dict:
     try:
         raw = _load(filename, base_dir)
     except HTTPException as exc:
-        return {'ok': False, 'message': str(exc.detail), 'nickname': '',
-                'uid': '', 'expires_at': None}
-    acct = raw.get('account') or {}
-    auth = raw.get('auth') or {}
-    nickname = str(acct.get('nickname') or '')
-    uid = str(acct.get('uid') or '')
-    if not auth.get('accessToken'):
-        return {'ok': False, 'message': '该账号无有效 accessToken', 'nickname': nickname,
-                'uid': uid, 'expires_at': None}
-    if not str(auth.get('refreshToken') or '').strip():
-        return {'ok': False, 'message': '该账号没有 refreshToken —— 只能重新扫码或登录',
-                'nickname': nickname, 'uid': uid, 'expires_at': None}
+        return {
+            "ok": False,
+            "message": str(exc.detail),
+            "nickname": "",
+            "uid": "",
+            "expires_at": None,
+        }
+    acct = raw.get("account") or {}
+    auth = raw.get("auth") or {}
+    nickname = str(acct.get("nickname") or "")
+    uid = str(acct.get("uid") or "")
+    if not auth.get("accessToken"):
+        return {
+            "ok": False,
+            "message": "该账号无有效 accessToken",
+            "nickname": nickname,
+            "uid": uid,
+            "expires_at": None,
+        }
+    if not str(auth.get("refreshToken") or "").strip():
+        return {
+            "ok": False,
+            "message": "该账号没有 refreshToken —— 只能重新扫码或登录",
+            "nickname": nickname,
+            "uid": uid,
+            "expires_at": None,
+        }
 
     refresh_auth = _auth_dict(raw, base_dir)
-    refresh_auth['refresh_token'] = auth.get('refreshToken', '')
+    refresh_auth["refresh_token"] = auth.get("refreshToken", "")
     ok, message, fields = await tencent.refresh_token(refresh_auth)
     if not ok:
-        return {'ok': False, 'message': message, 'nickname': nickname,
-                'uid': uid, 'expires_at': None}
+        return {
+            "ok": False,
+            "message": message,
+            "nickname": nickname,
+            "uid": uid,
+            "expires_at": None,
+        }
 
     try:
         tencent.update_auth_tokens(filename, fields, base_dir)
     except (ValueError, FileNotFoundError, OSError) as exc:
         # 刷新成功但写不进去：如实说清。**不能报成功**——用户以为续期了，
         # 而磁盘上还是旧 token，重启后又变回过期状态，比直接失败更难查。
-        return {'ok': False,
-                'message': f'{message}，但写入账号文件失败：{exc}（有效期未保存）',
-                'nickname': nickname, 'uid': uid, 'expires_at': None}
-    return {'ok': True, 'message': message, 'nickname': nickname,
-            'uid': uid, 'expires_at': fields.get('expires_at')}
+        return {
+            "ok": False,
+            "message": f"{message}，但写入账号文件失败：{exc}（有效期未保存）",
+            "nickname": nickname,
+            "uid": uid,
+            "expires_at": None,
+        }
+    return {
+        "ok": True,
+        "message": message,
+        "nickname": nickname,
+        "uid": uid,
+        "expires_at": fields.get("expires_at"),
+    }
 
 
 def _refresh_reload_tail(group: dict, reloaded: bool, reload_error: str) -> str:
     """重载结果 → 追在成功文案后面的那句话（单账号 / 批量共用）。"""
     if reloaded:
-        return '，上游已重载生效'
-    if group['is_default'] or str(group.get('container') or '').strip():
-        return f'；上游重载失败：{reload_error}，请在宿主机重启上游容器'
+        return "，上游已重载生效"
+    if group["is_default"] or str(group.get("container") or "").strip():
+        return f"；上游重载失败：{reload_error}，请在宿主机重启上游容器"
     # 分组没登记容器名：不猜也不冒报错——上游的 auths 热加载会自己收录
-    return f'；{reload_error}；新凭证将由该分组的上游热加载（约 5 秒）自动收录'
+    return f"；{reload_error}；新凭证将由该分组的上游热加载（约 5 秒）自动收录"
 
 
-@router.post('/accounts/{filename}/refresh')
-async def account_refresh(filename: str, upstream_id: int | None = Query(None),
-                          user: dict = Depends(security.require_admin)) -> dict:
+@router.post("/accounts/{filename}/refresh")
+async def account_refresh(
+    filename: str,
+    upstream_id: int | None = Query(None),
+    user: dict = Depends(security.require_admin),
+) -> dict:
     """刷新该账号的 accessToken（issue #40）。
 
     **这里真的去续期了**。此前这个端点只是 `reload.restart_now()`——触发一次
@@ -2095,18 +2361,19 @@ async def account_refresh(filename: str, upstream_id: int | None = Query(None),
     group = _group(upstream_id)
     base_dir = _require_dir(group)
     result = await _refresh_one_token(filename, base_dir)
-    if not result['ok']:
-        return {'ok': False, 'message': result['message']}
+    if not result["ok"]:
+        return {"ok": False, "message": result["message"]}
 
     # restart_now() 返回 (ok, message) 二元组，必须解包：直接当布尔用会因为
     # 非空元组恒为真，从而在重载失败时仍报「已重载生效」（且 reload_triggered
     # 会变成数组、与前端声明的 boolean 不符）。
     reloaded, reload_error = await reload.restart_now(upstream=_reload_target(group))
     return {
-        'ok': True,
-        'message': result['message'] + _refresh_reload_tail(group, reloaded, reload_error),
-        'reload_triggered': reloaded,
-        'expires_at': result.get('expires_at'),
+        "ok": True,
+        "message": result["message"]
+        + _refresh_reload_tail(group, reloaded, reload_error),
+        "reload_triggered": reloaded,
+        "expires_at": result.get("expires_at"),
     }
 
 
@@ -2115,9 +2382,10 @@ def _refresh_semaphore() -> asyncio.Semaphore:
     return asyncio.Semaphore(config.REFRESH_CONCURRENCY)
 
 
-@router.post('/accounts/refresh-tokens')
-async def refresh_all_tokens(upstream_id: int | None = Query(None),
-                             user: dict = Depends(security.require_admin)) -> dict:
+@router.post("/accounts/refresh-tokens")
+async def refresh_all_tokens(
+    upstream_id: int | None = Query(None), user: dict = Depends(security.require_admin)
+) -> dict:
     """一键刷新**所有**账号的 accessToken（issue #40 的批量版）。
 
     单个账号的「刷新 Token」已经在真续期（见 `account_refresh`），但账号一多就得
@@ -2134,34 +2402,39 @@ async def refresh_all_tokens(upstream_id: int | None = Query(None),
     sem = _refresh_semaphore()
 
     async def one(acc: dict) -> dict:
-        filename = acc['file']
+        filename = acc["file"]
         async with sem:
             r = await _refresh_one_token(filename, base_dir)
         return {
-            'file': filename,
-            'nickname': r['nickname'] or str(acc.get('nickname') or ''),
-            'uid': r['uid'] or str(acc.get('uid') or ''),
-            'ok': r['ok'],
-            'message': r['message'],
+            "file": filename,
+            "nickname": r["nickname"] or str(acc.get("nickname") or ""),
+            "uid": r["uid"] or str(acc.get("uid") or ""),
+            "ok": r["ok"],
+            "message": r["message"],
         }
 
     results = await asyncio.gather(*(one(a) for a in accounts)) if accounts else []
-    succeeded = sum(1 for r in results if r['ok'])
-    failed = [f"{r['nickname'] or r['uid'][:12]}: {r['message']}"
-              for r in results if not r['ok']]
+    succeeded = sum(1 for r in results if r["ok"])
+    failed = [
+        f"{r['nickname'] or r['uid'][:12]}: {r['message']}"
+        for r in results
+        if not r["ok"]
+    ]
 
     # 一个都没成功就不重载：重载既不续期，也治不了 refreshToken 失效。
-    reloaded, reload_error = False, ''
+    reloaded, reload_error = False, ""
     if succeeded > 0:
-        reloaded, reload_error = await reload.restart_now(upstream=_reload_target(group))
+        reloaded, reload_error = await reload.restart_now(
+            upstream=_reload_target(group)
+        )
 
     return {
-        'total': len(results),
-        'succeeded': succeeded,
-        'failed': failed,
-        'results': results,
-        'reload_triggered': reloaded,
-        'reload_error': '' if (not succeeded or reloaded) else reload_error,
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": failed,
+        "results": results,
+        "reload_triggered": reloaded,
+        "reload_error": "" if (not succeeded or reloaded) else reload_error,
     }
 
 
@@ -2172,32 +2445,36 @@ async def refresh_all_tokens(upstream_id: int | None = Query(None),
 # 这里只做读写配置与「立即执行一次」。
 
 
-@router.get('/accounts/refresh-plan')
+@router.get("/accounts/refresh-plan")
 def get_refresh_plan(user: dict = Depends(security.current_user)) -> dict:
     """令牌刷新计划：开关 + 间隔天数 + 执行整点 + 上次/下次执行时刻。
 
     只读，任何已登录用户可看（只读账号也能知道计划开着没）——改计划要管理员。
     """
     plan = renew.get_plan()
-    return {**plan, 'next_run': renew.plan_next_run(plan)}
+    return {**plan, "next_run": renew.plan_next_run(plan)}
 
 
-@router.put('/accounts/refresh-plan')
-def save_refresh_plan(body: dict,
-                      user: dict = Depends(security.require_admin)) -> dict:
+@router.put("/accounts/refresh-plan")
+def save_refresh_plan(body: dict, user: dict = Depends(security.require_admin)) -> dict:
     """保存计划（校验失败 400）。改的是调度意图，限管理员。"""
     try:
-        plan = renew.set_plan(body.get('enabled'), body.get('interval_days'),
-                              body.get('hour'))
+        plan = renew.set_plan(
+            body.get("enabled"), body.get("interval_days"), body.get("hour")
+        )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    security.audit(user, 'update_refresh_plan', '',
-                   f"enabled={plan['enabled']} interval={plan['interval_days']}d "
-                   f"hour={plan['hour']}")
-    return {**plan, 'next_run': renew.plan_next_run(plan)}
+    security.audit(
+        user,
+        "update_refresh_plan",
+        "",
+        f"enabled={plan['enabled']} interval={plan['interval_days']}d "
+        f"hour={plan['hour']}",
+    )
+    return {**plan, "next_run": renew.plan_next_run(plan)}
 
 
-@router.post('/accounts/refresh-plan/run')
+@router.post("/accounts/refresh-plan/run")
 async def run_refresh_plan_now(user: dict = Depends(security.require_admin)) -> dict:
     """立即执行一次全量刷新（不等下一个整点），并把它算作本轮。
 
@@ -2208,8 +2485,11 @@ async def run_refresh_plan_now(user: dict = Depends(security.require_admin)) -> 
     stats = await renew.refresh_all(force=True)
     renew.mark_plan_ran()
     plan = renew.get_plan()
-    return {**stats, 'last_run': plan['last_run'],
-            'next_run': renew.plan_next_run(plan)}
+    return {
+        **stats,
+        "last_run": plan["last_run"],
+        "next_run": renew.plan_next_run(plan),
+    }
 
 
 # ── 每日任务计划（签到 / 领取补偿 / 领奖 / 做任务）──────────────
@@ -2218,9 +2498,10 @@ async def run_refresh_plan_now(user: dict = Depends(security.require_admin)) -> 
 # 显式开；领取补偿是幂等的「有则领」（见该任务的说明），默认开启。
 
 
-@router.post('/accounts/claim-compensation')
-async def claim_compensation_all(upstream_id: int | None = Query(None),
-                                 user: dict = Depends(security.require_admin)) -> dict:
+@router.post("/accounts/claim-compensation")
+async def claim_compensation_all(
+    upstream_id: int | None = Query(None), user: dict = Depends(security.require_admin)
+) -> dict:
     """对所有账号领一次「活动补偿」（有则领，没有就跳过）。
 
     **为什么管理端要自己再做一遍**：上游调度器的活跃上报里本来就会调同一个接口
@@ -2237,53 +2518,74 @@ async def claim_compensation_all(upstream_id: int | None = Query(None),
     sem = _checkin_semaphore()
 
     async def one(acc: dict) -> dict:
-        filename = acc['file']
-        uid = acc.get('uid', '')
-        nickname = acc.get('nickname', '')
+        filename = acc["file"]
+        uid = acc.get("uid", "")
+        nickname = acc.get("nickname", "")
         try:
             raw = wb2api.read_account_file(filename, base_dir)
-            auth = raw.get('auth') or {}
-            token = auth.get('accessToken', '')
+            auth = raw.get("auth") or {}
+            token = auth.get("accessToken", "")
         except Exception as exc:  # noqa: BLE001
-            return {'nickname': nickname, 'status': 'failed', 'credit': 0,
-                    'message': f'读取失败: {exc}'}
+            return {
+                "nickname": nickname,
+                "status": "failed",
+                "credit": 0,
+                "message": f"读取失败: {exc}",
+            }
         if not token:
-            return {'nickname': nickname, 'status': 'failed', 'credit': 0,
-                    'message': '无有效 accessToken'}
+            return {
+                "nickname": nickname,
+                "status": "failed",
+                "credit": 0,
+                "message": "无有效 accessToken",
+            }
         # 传完整 auth dict：billing 域要带 X-User-Id 等身份头（与签到同口径）
         self_auth = _auth_dict(raw, base_dir)
         realm = realm_of(auth)
         async with sem:
             ok, data, _msg = await tencent.compensation_status(self_auth, realm)
             if ok and tencent.compensation_already_claimed(data):
-                return {'nickname': nickname, 'status': 'already', 'credit': 0,
-                        'message': '这个补偿已经领过了'}
+                return {
+                    "nickname": nickname,
+                    "status": "already",
+                    "credit": 0,
+                    "message": "这个补偿已经领过了",
+                }
             status, credit, message = await tencent.claim_compensation(self_auth, realm)
-        return {'nickname': nickname, 'status': status, 'credit': credit, 'message': message}
+        return {
+            "nickname": nickname,
+            "status": status,
+            "credit": credit,
+            "message": message,
+        }
 
     results = await taskpacing.run_accounts(
-        'compensation', accounts, one,
-        needs_request=lambda a: supports_checkin(realm_of(a)) and not a.get('invalid_reason'),
+        "compensation",
+        accounts,
+        one,
+        needs_request=lambda a: (
+            supports_checkin(realm_of(a)) and not a.get("invalid_reason")
+        ),
     )
     # 分母只算**真的发了请求**的账号：already / skipped 既不是成功也不是失败，
     # 算进 total 会让界面显示成「5/6 成功」，用户以为有个号没领到（与签到同口径）。
-    tried = [r for r in results if r['status'] in ('claimed', 'nothing', 'failed')]
-    claimed = [r for r in results if r['status'] == 'claimed']
-    failed = [r for r in results if r['status'] == 'failed']
+    tried = [r for r in results if r["status"] in ("claimed", "nothing", "failed")]
+    claimed = [r for r in results if r["status"] == "claimed"]
+    failed = [r for r in results if r["status"] == "failed"]
     return {
-        'ok': not failed,
-        'total': len(tried),
-        'claimed': len(claimed),
-        'credit': sum(r.get('credit') or 0 for r in claimed),
-        'already': len([r for r in results if r['status'] == 'already']),
-        'skipped': len([r for r in results if r['status'] == 'skipped']),
-        'nothing': len([r for r in results if r['status'] == 'nothing']),
-        'failed': len(failed),
-        'results': results,
+        "ok": not failed,
+        "total": len(tried),
+        "claimed": len(claimed),
+        "credit": sum(r.get("credit") or 0 for r in claimed),
+        "already": len([r for r in results if r["status"] == "already"]),
+        "skipped": len([r for r in results if r["status"] == "skipped"]),
+        "nothing": len([r for r in results if r["status"] == "nothing"]),
+        "failed": len(failed),
+        "results": results,
     }
 
 
-@router.get('/accounts/daily-plan')
+@router.get("/accounts/daily-plan")
 def get_daily_plan(user: dict = Depends(security.current_user)) -> dict:
     """每日任务计划：每个任务的开关 + 执行整点 + 本小时是否已跑。
 
@@ -2292,23 +2594,29 @@ def get_daily_plan(user: dict = Depends(security.current_user)) -> dict:
     return dailyplan.get_plan()
 
 
-@router.put('/accounts/daily-plan')
-def save_daily_plan(body: dict,
-                    user: dict = Depends(security.require_admin)) -> dict:
+@router.put("/accounts/daily-plan")
+def save_daily_plan(body: dict, user: dict = Depends(security.require_admin)) -> dict:
     """保存每日任务计划（校验失败 400）。跑的是**无人值守的写操作**，限管理员。"""
     try:
         plan = dailyplan.set_plan(body)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    security.audit(user, 'update_daily_plan', '',
-                   '; '.join(f"{t}={plan[t]['enabled']}@{plan[t]['hour']}h"
-                             for t in ('checkin', 'compensation', 'claim', 'full')))
+    security.audit(
+        user,
+        "update_daily_plan",
+        "",
+        "; ".join(
+            f"{t}={plan[t]['enabled']}@{plan[t]['hour']}h"
+            for t in ("checkin", "compensation", "claim", "full")
+        ),
+    )
     return plan
 
 
-@router.post('/accounts/daily-plan/run')
-async def run_daily_task_now(body: dict = Body(...),
-                             user: dict = Depends(security.require_admin)) -> dict:
+@router.post("/accounts/daily-plan/run")
+async def run_daily_task_now(
+    body: dict = Body(...), user: dict = Depends(security.require_admin)
+) -> dict:
     """立即执行一次某个每日任务（不等定时）。
 
     body 形如 `{"task": "checkin" | "compensation" | "claim" | "full"}`。用 **body 而不是 query**
@@ -2318,18 +2626,19 @@ async def run_daily_task_now(body: dict = Body(...),
     执行后把这个任务标记为「本小时已跑」——与「令牌刷新计划」的「立即执行」同一
     口径，避免刚手动跑完到点又跑一次。
     """
-    task = str((body or {}).get('task') or '').strip()
+    task = str((body or {}).get("task") or "").strip()
     if task not in dailyplan.TASKS:
         # 允许清单只此一份（dailyplan.TASKS）：这里再抄一遍就会在加任务时漏掉，
         # 而漏掉的症状是「计划里能开、手动执行按钮报 400」。
-        raise HTTPException(status_code=400,
-                            detail='task 只能是 ' + ' / '.join(dailyplan.TASKS))
+        raise HTTPException(
+            status_code=400, detail="task 只能是 " + " / ".join(dailyplan.TASKS)
+        )
     ok, message = await dailyplan.run_task(task)
     plan = dailyplan.mark_ran(task)
-    return {'ok': ok, 'message': message, 'task': task, 'plan': plan}
+    return {"ok": ok, "message": message, "task": task, "plan": plan}
 
 
-@router.post('/accounts/{filename}/clear-cooling')
+@router.post("/accounts/{filename}/clear-cooling")
 async def account_clear_cooling(
     filename: str,
     upstream_id: int | None = Query(None),
@@ -2342,28 +2651,32 @@ async def account_clear_cooling(
     验证实时状态。只改目标 uid，不碰凭证、积分、禁用位或其它账号。
     """
     group = _group(upstream_id)
-    if not group['is_default']:
+    if not group["is_default"]:
         # 清冷却要「停上游 → 改 state.json → 启上游」。分组的登记信息里没有
         # state.json 的路径（只有地址 / 密钥 / 账号目录），去改默认实例的
         # state.json 是**改错对象**——那种「成功」比失败更危险。明确拒绝。
         raise HTTPException(
             status_code=409,
-            detail=('该分组暂不支持从面板清除冷却（需要该实例的 state.json 路径）；'
-                    '可等它自然冷却，或在宿主机上重启该分组的上游实例'),
+            detail=(
+                "该分组暂不支持从面板清除冷却（需要该实例的 state.json 路径）；"
+                "可等它自然冷却，或在宿主机上重启该分组的上游实例"
+            ),
         )
     try:
         raw = wb2api.read_account_file_any(filename)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail='账号文件不存在') from exc
-    uid = str((raw.get('account') or {}).get('uid') or '').strip()
+        raise HTTPException(status_code=404, detail="账号文件不存在") from exc
+    uid = str((raw.get("account") or {}).get("uid") or "").strip()
     if not uid:
-        raise HTTPException(status_code=400, detail='该账号文件缺少 uid，无法定位上游状态')
+        raise HTTPException(
+            status_code=400, detail="该账号文件缺少 uid，无法定位上游状态"
+        )
 
     ok, message, detail = await wb2api.force_clear_account_cooling(uid)
-    return {'ok': ok, 'message': message, **(detail or {})}
+    return {"ok": ok, "message": message, **(detail or {})}
 
 
-@router.post('/accounts/{filename}/force-cooling')
+@router.post("/accounts/{filename}/force-cooling")
 async def account_force_cooling(
     filename: str,
     body: dict = Body(...),
@@ -2378,66 +2691,86 @@ async def account_force_cooling(
       reason: str 可选，冷却原因（缺省为「手动设置冷却」）
     """
     group = _group(upstream_id)
-    if not group['is_default']:
+    if not group["is_default"]:
         raise HTTPException(
             status_code=409,
-            detail=('该分组暂不支持从面板设置冷却（需要该实例的 state.json 路径）；'
-                    '可等它自然冷却，或在宿主机上维护该分组的实例'),
+            detail=(
+                "该分组暂不支持从面板设置冷却（需要该实例的 state.json 路径）；"
+                "可等它自然冷却，或在宿主机上维护该分组的实例"
+            ),
         )
     try:
         raw = wb2api.read_account_file_any(filename)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail='账号文件不存在') from exc
-    uid = str((raw.get('account') or {}).get('uid') or '').strip()
+        raise HTTPException(status_code=404, detail="账号文件不存在") from exc
+    uid = str((raw.get("account") or {}).get("uid") or "").strip()
     if not uid:
-        raise HTTPException(status_code=400, detail='该账号文件缺少 uid，无法定位上游状态')
+        raise HTTPException(
+            status_code=400, detail="该账号文件缺少 uid，无法定位上游状态"
+        )
 
-    duration_seconds = body.get('duration_seconds') if isinstance(body, dict) else None
-    until_str = str(body.get('until') or '').strip() if isinstance(body, dict) else ''
-    is_permanent = bool(body.get('permanent')) or until_str.lower() in ('permanent', 'forever')
-    reason = (str(body.get('reason') or '').strip() if isinstance(body, dict) else '')
+    duration_seconds = body.get("duration_seconds") if isinstance(body, dict) else None
+    until_str = str(body.get("until") or "").strip() if isinstance(body, dict) else ""
+    is_permanent = bool(body.get("permanent")) or until_str.lower() in (
+        "permanent",
+        "forever",
+    )
+    reason = str(body.get("reason") or "").strip() if isinstance(body, dict) else ""
 
     target_dt: datetime.datetime | None = None
     if is_permanent:
-        target_dt = datetime.datetime(2099, 12, 31, 23, 59, 59, tzinfo=datetime.timezone.utc)
-        reason = reason or '手动永久冷却'
+        target_dt = datetime.datetime(
+            2099, 12, 31, 23, 59, 59, tzinfo=datetime.timezone.utc
+        )
+        reason = reason or "手动永久冷却"
     elif until_str:
         try:
-            parsed = datetime.datetime.fromisoformat(until_str.replace('Z', '+00:00'))
+            parsed = datetime.datetime.fromisoformat(until_str.replace("Z", "+00:00"))
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=datetime.timezone.utc)
             target_dt = parsed
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=f'无效的截止时间格式（需要 ISO 8601 / RFC 3339）：{exc}') from exc
-        reason = reason or '手动设置冷却'
+            raise HTTPException(
+                status_code=400,
+                detail=f"无效的截止时间格式（需要 ISO 8601 / RFC 3339）：{exc}",
+            ) from exc
+        reason = reason or "手动设置冷却"
     elif duration_seconds is not None:
         try:
             sec = int(duration_seconds)
             if sec <= 0:
                 raise ValueError()
         except (ValueError, TypeError) as exc:
-            raise HTTPException(status_code=400, detail='冷却时长必须为正整数（秒）') from exc
-        target_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=sec)
-        reason = reason or '手动设置冷却'
+            raise HTTPException(
+                status_code=400, detail="冷却时长必须为正整数（秒）"
+            ) from exc
+        target_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+            seconds=sec
+        )
+        reason = reason or "手动设置冷却"
     else:
-        raise HTTPException(status_code=400, detail='请提供 duration_seconds、until 或 permanent 参数')
+        raise HTTPException(
+            status_code=400, detail="请提供 duration_seconds、until 或 permanent 参数"
+        )
 
     now = datetime.datetime.now(datetime.timezone.utc)
     if target_dt <= now:
-        raise HTTPException(status_code=400, detail='冷却截止时间必须在未来')
+        raise HTTPException(status_code=400, detail="冷却截止时间必须在未来")
 
     # 回写与回显统一按 **UTC** 格式化（`astimezone()` 跟随面板所在时区）：
     # 「永久」用的 2099-12-31T23:59:59Z 在东八区会被写成 2100-01-01T07:59:59+08:00 ——
     # 同一瞬间，但年份跳到 2100 会让人以为"永久"被算错了，接口返回值也随部署时区变。
     # （贡献者的环境是 UTC，所以在 +08 才暴露；那条断言 '2099' 也只在 UTC 下绿。）
     until_formatted = target_dt.astimezone(datetime.timezone.utc).isoformat()
-    ok, message, detail = await wb2api.force_set_account_cooling(uid, until_formatted, reason)
+    ok, message, detail = await wb2api.force_set_account_cooling(
+        uid, until_formatted, reason
+    )
     if not ok:
         raise HTTPException(status_code=400, detail=message)
-    return {'ok': ok, 'message': message, 'until': until_formatted, **(detail or {})}
+    return {"ok": ok, "message": message, "until": until_formatted, **(detail or {})}
 
 
-@router.put('/accounts/{filename}/note')
+@router.put("/accounts/{filename}/note")
 async def account_set_note(
     filename: str,
     body: dict = Body(...),
@@ -2455,13 +2788,12 @@ async def account_set_note(
     空串 = 删除备注（不留空行）。
     """
     try:
-        raw = wb2api.read_account_file_any(
-            filename, _require_dir(_group(upstream_id)))
+        raw = wb2api.read_account_file_any(filename, _require_dir(_group(upstream_id)))
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail='账号文件不存在') from exc
-    uid = str((raw.get('account') or {}).get('uid') or '').strip()
+        raise HTTPException(status_code=404, detail="账号文件不存在") from exc
+    uid = str((raw.get("account") or {}).get("uid") or "").strip()
     if not uid:
-        raise HTTPException(status_code=400, detail='该账号文件缺少 uid，无法保存备注')
+        raise HTTPException(status_code=400, detail="该账号文件缺少 uid，无法保存备注")
 
     # 先把**所有空白收起成单个空格**（审查补）：备注在列表里是单行展示 + 悬停看
     # 全文，粘进来的多行文本（或中间一串空格）会让它看起来像坏数据；顺带把
@@ -2469,29 +2801,32 @@ async def account_set_note(
     #
     # 截断而不是拒绝：备注是给人看的短文本，粘多了不该报错丢掉整句。
     # 上限取 100 字符（界面上也是这个 maxLength），够写清是谁/做什么用。
-    note = ' '.join(str(body.get('note') or '').split())[:100]
+    note = " ".join(str(body.get("note") or "").split())[:100]
     if note:
         db.set_account_note(uid, note)
     else:
         db.delete_account_note(uid)
-    return {'ok': True, 'uid': uid, 'note': note}
+    return {"ok": True, "uid": uid, "note": note}
 
 
-@router.delete('/accounts/{filename}')
-async def account_delete(filename: str, upstream_id: int | None = Query(None),
-                         user: dict = Depends(security.require_session_admin)) -> dict:
+@router.delete("/accounts/{filename}")
+async def account_delete(
+    filename: str,
+    upstream_id: int | None = Query(None),
+    user: dict = Depends(security.require_session_admin),
+) -> dict:
     group = _group(upstream_id)
     try:
         removed = wb2api.delete_auth_account(filename, _require_dir(group))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not removed:
-        raise HTTPException(status_code=404, detail='账号文件不存在')
+        raise HTTPException(status_code=404, detail="账号文件不存在")
     reload.request_restart(upstream=_reload_target(group))
-    return {'success': True}
+    return {"success": True}
 
 
-@router.post('/accounts/{filename}/move')
+@router.post("/accounts/{filename}/move")
 async def account_move(
     filename: str,
     body: dict = Body(...),
@@ -2509,30 +2844,36 @@ async def account_move(
     它；这里走 request_reload_or_restart——新上游不必等，旧版本回退重启。
     """
     src = _group(upstream_id)
-    to_raw = body.get('to_upstream_id')
-    if 'to_upstream_id' not in body or to_raw is None:
+    to_raw = body.get("to_upstream_id")
+    if "to_upstream_id" not in body or to_raw is None:
         raise HTTPException(
             status_code=400,
-            detail='to_upstream_id 必填（要移动到哪个分组；0 = 默认分组）',
+            detail="to_upstream_id 必填（要移动到哪个分组；0 = 默认分组）",
         )
     try:
         # 0 是**显式**的「默认分组」写法；「没填」（None / 键缺失）必须报错 ——
         # 两者语义不同，把「没填」当默认池会把账号悄悄移错组。
-        to_id = None if to_raw in (0, '0') else int(to_raw)
+        to_id = None if to_raw in (0, "0") else int(to_raw)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail='to_upstream_id 必须是分组 id') from None
+        raise HTTPException(
+            status_code=400, detail="to_upstream_id 必须是分组 id"
+        ) from None
     dst = _group(to_id)
-    same = (src.get('id') is None and dst.get('id') is None) or (
-        src.get('id') is not None and src.get('id') == dst.get('id'))
+    same = (src.get("id") is None and dst.get("id") is None) or (
+        src.get("id") is not None and src.get("id") == dst.get("id")
+    )
     if same:
-        raise HTTPException(status_code=400, detail='源分组与目标分组相同，无需移动')
+        raise HTTPException(status_code=400, detail="源分组与目标分组相同，无需移动")
     src_dir = _require_dir(src)
     dst_dir = _require_dir(dst)
 
     # 找到磁盘上的真实文件（两种形态都试，与 read_account_file_any 同口径）
     name = str(filename)
-    candidates = ([name, name[: -len('.disabled')]] if name.endswith('.disabled')
-                  else [name, name + '.disabled'])
+    candidates = (
+        [name, name[: -len(".disabled")]]
+        if name.endswith(".disabled")
+        else [name, name + ".disabled"]
+    )
     src_path: Path | None = None
     for cand in candidates:
         cand_path = wb2api._safe_file(cand, src_dir)
@@ -2540,44 +2881,48 @@ async def account_move(
             src_path = cand_path
             break
     if src_path is None:
-        raise HTTPException(status_code=404, detail='账号文件不存在')
+        raise HTTPException(status_code=404, detail="账号文件不存在")
 
     dst_path = dst_dir / src_path.name
     if dst_path.exists():
         raise HTTPException(
             status_code=409,
-            detail=(f'目标分组「{dst["name"]}」里已有同名文件 {src_path.name}；'
-                    '请先处理它（改名或删除）再移动，避免覆盖掉那份凭据'),
+            detail=(
+                f"目标分组「{dst['name']}」里已有同名文件 {src_path.name}；"
+                "请先处理它（改名或删除）再移动，避免覆盖掉那份凭据"
+            ),
         )
     try:
         dst_dir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src_path), str(dst_path))
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f'移动失败：{exc}') from exc
+        raise HTTPException(status_code=500, detail=f"移动失败：{exc}") from exc
 
-    uid = ''
+    uid = ""
     try:
-        moved = json.loads(dst_path.read_text(encoding='utf-8'))
-        uid = str((moved.get('account') or {}).get('uid') or '')
+        moved = json.loads(dst_path.read_text(encoding="utf-8"))
+        uid = str((moved.get("account") or {}).get("uid") or "")
     except Exception:  # noqa: BLE001 —— 读不出 uid 不影响移动，只是少了重载收尾
-        uid = ''
+        uid = ""
     db.move_account_added(uid, src_dir, dst_dir)
     reload.request_reload_or_restart(uid, upstream=_reload_target(dst))
     return {
-        'ok': True,
-        'file': src_path.name,
-        'uid': uid,
-        'from': {'id': src['id'], 'name': src['name']},
-        'to': {'id': dst['id'], 'name': dst['name']},
+        "ok": True,
+        "file": src_path.name,
+        "uid": uid,
+        "from": {"id": src["id"], "name": src["name"]},
+        "to": {"id": dst["id"], "name": dst["name"]},
     }
 
 
-@router.post('/restart')
-async def restart(upstream_id: int | None = Query(None),
-                  user: dict = Depends(security.require_session_admin)) -> dict:
+@router.post("/restart")
+async def restart(
+    upstream_id: int | None = Query(None),
+    user: dict = Depends(security.require_session_admin),
+) -> dict:
     group = _group(upstream_id)
     ok, message = await reload.restart_now(upstream=_reload_target(group))
-    return {'ok': ok, 'message': message}
+    return {"ok": ok, "message": message}
 
 
 def _fallback_why(bit_code: str, disabled: bool, group: dict | None = None) -> str:
@@ -2595,33 +2940,42 @@ def _fallback_why(bit_code: str, disabled: bool, group: dict | None = None) -> s
     **启用**时账号已经恢复，再说「再重新停用」是说不通的（用户点的是启用），
     只提示「以后想让它保留签到与保活，去哪儿开开关」。
     """
-    if bit_code != 'no_route':
-        return ''
+    if bit_code != "no_route":
+        return ""
     if disabled:
-        tail = '已改用改名方式：账号将完全退出账号池，签到与保活也会一并停止。'
-        next_step = ('若要保留签到与保活，请到「设置 → 账号管理接口」开启后'
-                     '重启上游容器，再重新停用')
+        tail = "已改用改名方式：账号将完全退出账号池，签到与保活也会一并停止。"
+        next_step = (
+            "若要保留签到与保活，请到「设置 → 账号管理接口」开启后"
+            "重启上游容器，再重新停用"
+        )
     else:
-        tail = '已改用改名方式启用（该方式下账号退出账号池，任务也不执行）。'
-        next_step = ('若希望以后停用时保留签到与保活，请到「设置 → 账号管理接口」'
-                     '开启后重启上游容器')
-    if group is not None and not group.get('is_default'):
+        tail = "已改用改名方式启用（该方式下账号退出账号池，任务也不执行）。"
+        next_step = (
+            "若希望以后停用时保留签到与保活，请到「设置 → 账号管理接口」"
+            "开启后重启上游容器"
+        )
+    if group is not None and not group.get("is_default"):
         # 分组的上游配置文件路径不在登记信息里：这里**不能**引用默认实例的
         # 配置路径（用户照着改的是另一个文件，改完仍无效）。
-        return (f'（该分组「{group["name"]}」的上游未提供管理接口：' + tail
-                + '；如需「只摘流量、任务照常」的语义，请在这个分组自己的上游'
-                '实例里开启 admin 后重启它）')
+        return (
+            f"（该分组「{group['name']}」的上游未提供管理接口："
+            + tail
+            + "；如需「只摘流量、任务照常」的语义，请在这个分组自己的上游"
+            "实例里开启 admin 后重启它）"
+        )
     enabled, where = wb2api.admin_enabled_in_config()
     if enabled:
-        return (f'（上游配置里已开启管理接口（{where}），但运行中的上游没有提供它：'
-                '上游只在启动时读这个开关，改完配置需要重启上游容器才生效；'
-                '若已重启仍如此，说明上游镜像早于 2026-09-19。' + tail + '）')
+        return (
+            f"（上游配置里已开启管理接口（{where}），但运行中的上游没有提供它："
+            "上游只在启动时读这个开关，改完配置需要重启上游容器才生效；"
+            "若已重启仍如此，说明上游镜像早于 2026-09-19。" + tail + "）"
+        )
     if enabled is None:
-        return f'（{where}。' + tail + next_step + '）'
-    return '（该上游未启用管理接口，' + tail + next_step + '）'
+        return f"（{where}。" + tail + next_step + "）"
+    return "（该上游未启用管理接口，" + tail + next_step + "）"
 
 
-@router.post('/accounts/{filename}/disabled')
+@router.post("/accounts/{filename}/disabled")
 async def account_set_disabled(
     filename: str,
     body: dict = Body(...),
@@ -2648,47 +3002,56 @@ async def account_set_disabled(
     不重载就不生效；新上游有 5 秒热加载，重载只是为了不等那 5 秒）。
     状态位路径不需要重载——它走的是上游自己的接口。要批量操作时可先传 false。
     """
-    if not isinstance(body.get('disabled'), bool):
-        raise HTTPException(status_code=400, detail='disabled 必须是布尔值')
-    disabled = bool(body['disabled'])
-    reason = str(body.get('reason') or '').strip() or '面板手动停用'
+    if not isinstance(body.get("disabled"), bool):
+        raise HTTPException(status_code=400, detail="disabled 必须是布尔值")
+    disabled = bool(body["disabled"])
+    reason = str(body.get("reason") or "").strip() or "面板手动停用"
     group = _group(upstream_id)
     base_dir = _require_dir(group)
 
     # uid 用于调上游的状态位接口。用 any 版本读：用户手里的文件名可能与磁盘
     # 形态不一致（刚停用/刚启用时界面仍持旧名），只按一个名字读会解析不出 uid，
     # 于是状态位那条路被静默跳过——「点了启用但没恢复」正是这么来的。
-    uid = ''
+    uid = ""
     try:
-        uid = str((wb2api.read_account_file_any(filename, base_dir).get('account') or {}).get('uid') or '')
+        uid = str(
+            (wb2api.read_account_file_any(filename, base_dir).get("account") or {}).get(
+                "uid"
+            )
+            or ""
+        )
     except Exception:  # noqa: BLE001
-        uid = ''
+        uid = ""
 
     reloaded = False
-    bit_msg = ''
-    bit_code = 'skipped'
+    bit_msg = ""
+    bit_code = "skipped"
 
     if disabled:
         # 停用：先试状态位（语义更精确，且不影响任务）；不行再改名。
         if uid:
             ok, bit_msg, bit_code = await wb2api.set_manual_disabled(
-                uid, True, reason, base_url=group['base_url'],
-                api_key=upstreamsvc.forward_api_key(group))
+                uid,
+                True,
+                reason,
+                base_url=group["base_url"],
+                api_key=upstreamsvc.forward_api_key(group),
+            )
             if ok:
                 return {
-                    'ok': True,
-                    'file': filename,
-                    'disabled': True,
-                    'changed': True,
-                    'via': 'manual_disabled',
-                    'reload_triggered': False,  # 状态位由上游自己管，无需重载
-                    'message': f'已停用该账号（{bit_msg}）',
+                    "ok": True,
+                    "file": filename,
+                    "disabled": True,
+                    "changed": True,
+                    "via": "manual_disabled",
+                    "reload_triggered": False,  # 状态位由上游自己管，无需重载
+                    "message": f"已停用该账号（{bit_msg}）",
                 }
         try:
             result = wb2api.set_account_disabled(filename, True, base_dir)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if result['changed'] and body.get('reload', True) is not False:
+        if result["changed"] and body.get("reload", True) is not False:
             reloaded = reload.request_restart(upstream=_reload_target(group))
     else:
         # 启用：两条路都要清。先解掉改名标记（本地、幂等），再清状态位——
@@ -2698,14 +3061,15 @@ async def account_set_disabled(
             result = wb2api.set_account_disabled(filename, False, base_dir)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        renamed_back = bool(result['changed'])
-        if renamed_back and body.get('reload', True) is not False:
+        renamed_back = bool(result["changed"])
+        if renamed_back and body.get("reload", True) is not False:
             reloaded = reload.request_restart(upstream=_reload_target(group))
         if uid:
-            base_url = group['base_url']
+            base_url = group["base_url"]
             api_key = upstreamsvc.forward_api_key(group)
             ok, bit_msg, bit_code = await wb2api.set_manual_disabled(
-                uid, False, base_url=base_url, api_key=api_key)
+                uid, False, base_url=base_url, api_key=api_key
+            )
             if ok:
                 # 「启用」要清的是**两位**，上面那步只清了 manual_disabled。
                 # 上游的 enable **不管系统自动禁用**（其 admin.go 原话：「若账号仍被
@@ -2714,77 +3078,92 @@ async def account_set_disabled(
                 # 或 11140 被封）点「启用」看着成功、实际还在池外 —— 这正是用户报的
                 # 「重新登录后连通性测试通过、账号池就是调不动」。
                 revived, revive_msg, still_disabled = await _revive_if_disabled(
-                    uid, base_url=base_url, api_key=api_key)
+                    uid, base_url=base_url, api_key=api_key
+                )
                 if still_disabled:
                     # 两位都清了才算真的启用。清不掉就**如实说**，不再像以前那样
                     # 无条件回一句「已启用」——那正是用户被误导的来源。
                     return {
-                        'ok': False,
-                        'file': result['file'],
-                        'disabled': True,
-                        'changed': True,
-                        'via': 'manual_disabled',
-                        'reload_triggered': reloaded,
-                        'bit_code': bit_code,
+                        "ok": False,
+                        "file": result["file"],
+                        "disabled": True,
+                        "changed": True,
+                        "via": "manual_disabled",
+                        "reload_triggered": reloaded,
+                        "bit_code": bit_code,
                         # 文案走 toast（纯文本），别用 markdown 记号
-                        'message': (f'已解除面板停用，但该账号仍被上游系统禁用，'
-                                    f'现在仍不会被调用。{revive_msg}'),
+                        "message": (
+                            f"已解除面板停用，但该账号仍被上游系统禁用，"
+                            f"现在仍不会被调用。{revive_msg}"
+                        ),
                     }
                 return {
-                    'ok': True,
-                    'file': result['file'],
-                    'disabled': False,
-                    'changed': True,
-                    'via': 'manual_disabled',
-                    'reload_triggered': reloaded,
-                    'revived': revived,
+                    "ok": True,
+                    "file": result["file"],
+                    "disabled": False,
+                    "changed": True,
+                    "via": "manual_disabled",
+                    "reload_triggered": reloaded,
+                    "revived": revived,
                     # 两位都清了才算真的回到池子：`still_disabled is None` 表示这一趟
                     # **没读到**上游状态，那就别把话说满（上面 True 的分支已如实报失败）。
-                    'message': (f'已启用该账号（{bit_msg}'
-                                + ('；并已解除系统禁用' if revived else '')
-                                + ('；但读不到上游状态，未能确认它是否仍被系统禁用'
-                                   if still_disabled is None else '')
-                                + '）')
-                               + ('，正在重载上游使其生效' if reloaded else ''),
+                    "message": (
+                        f"已启用该账号（{bit_msg}"
+                        + ("；并已解除系统禁用" if revived else "")
+                        + (
+                            "；但读不到上游状态，未能确认它是否仍被系统禁用"
+                            if still_disabled is None
+                            else ""
+                        )
+                        + "）"
+                    )
+                    + ("，正在重载上游使其生效" if reloaded else ""),
                 }
             # 状态位没走通（多半是上游没开管理接口）。这时**必须先看一眼**它是不是
             # 被系统禁用了：若是，下面的改名回退救不了它 —— 改名只管「文件在不在
             # 池里」，管不了上游的 disabled 位；而 revive 与 enable 同属那组没注册
             # 的接口，所以此刻确实无解。如实说清，别跟着兜底文案一起报「已启用」。
-            still = await wb2api.account_disabled(uid, base_url=base_url, api_key=api_key)
+            still = await wb2api.account_disabled(
+                uid, base_url=base_url, api_key=api_key
+            )
             if still:
                 return {
-                    'ok': False,
-                    'file': result['file'],
-                    'disabled': True,
-                    'changed': renamed_back,
-                    'via': 'rename',
-                    'reload_triggered': reloaded,
-                    'bit_code': bit_code,
-                    'message': ('该账号被上游系统禁用，而解除它需要上游的「账号管理接口」；'
-                                '当前上游没有提供这组接口，面板无法把它放回账号池。'
-                                + _fallback_why(bit_code, False, group)),
+                    "ok": False,
+                    "file": result["file"],
+                    "disabled": True,
+                    "changed": renamed_back,
+                    "via": "rename",
+                    "reload_triggered": reloaded,
+                    "bit_code": bit_code,
+                    "message": (
+                        "该账号被上游系统禁用，而解除它需要上游的「账号管理接口」；"
+                        "当前上游没有提供这组接口，面板无法把它放回账号池。"
+                        + _fallback_why(bit_code, False, group)
+                    ),
                 }
 
     return {
-        'ok': True,
+        "ok": True,
         **result,
         # 生效方式：manual_disabled = 上游状态位（任务照常）；rename = 改名（回退）
-        'via': 'rename',
+        "via": "rename",
         # 状态位没走通的原因码（no_route / not_found / error / skipped），
         # 前端据此区分「上游没开管理接口」（给开启提示）与真失败。
-        'bit_code': bit_code,
-        'bit_message': bit_msg,
+        "bit_code": bit_code,
+        "bit_message": bit_msg,
         # 是否已触发上游重载。未触发时调用方要自己重启，否则改名不生效。
-        'reload_triggered': reloaded,
-        'message': (
+        "reload_triggered": reloaded,
+        "message": (
             f"已{'停用' if disabled else '启用'}该账号"
             # 回退路径要如实说清代价：这条路会让账号退出账号池，任务也停。
             # 回退路径要如实说清代价，并给出**可操作的下一步**：「该上游未启用管理
             # 接口」只说了现状，用户不知道去哪儿开（实测反馈正是这个——看到提示后
             # 只能来问）。所以带上开关位置与生效条件。
             + _fallback_why(bit_code, disabled, group)
-            + ('，正在重载上游使其生效' if reloaded
-               else ('；请手动重启上游以生效' if result.get('changed') else ''))
+            + (
+                "，正在重载上游使其生效"
+                if reloaded
+                else ("；请手动重启上游以生效" if result.get("changed") else "")
+            )
         ),
     }

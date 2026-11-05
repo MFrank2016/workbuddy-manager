@@ -15,6 +15,7 @@
   4. 同一个 state 只有一个后台轮询；用户重新发码时旧轮询要收掉；
   5. 国际版的地区（auth/start 带的或前端轮询补的）必须传进地区登记。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -31,15 +32,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from server import config  # noqa: E402
 from server.services import tencent  # noqa: E402
 
-_USER = {'username': 'admin', 'role': 'admin'}
+_USER = {"username": "admin", "role": "admin"}
 
 _READY = {
-    'status': 'ready', 'uid': 'u-bg', 'nickname': '背景账号', 'enterprise_id': '',
-    'access_token': 'AT', 'refresh_token': 'RT',
-    'expires_at': 9999999999, 'domain': 'copilot.tencent.com', 'realm': 'cn',
+    "status": "ready",
+    "uid": "u-bg",
+    "nickname": "背景账号",
+    "enterprise_id": "",
+    "access_token": "AT",
+    "refresh_token": "RT",
+    "expires_at": 9999999999,
+    "domain": "copilot.tencent.com",
+    "realm": "cn",
 }
-_READY_GLOBAL = {**_READY, 'uid': 'u-gl', 'realm': 'global',
-                 'domain': 'www.workbuddy.ai'}
+_READY_GLOBAL = {
+    **_READY,
+    "uid": "u-gl",
+    "realm": "global",
+    "domain": "www.workbuddy.ai",
+}
 
 
 class LoginPollTestCase(unittest.TestCase):
@@ -55,15 +66,19 @@ class LoginPollTestCase(unittest.TestCase):
         accounts_mod._login_regions.clear()
         accounts_mod._login_owner.clear()
         accounts_mod._provisioned_states.clear()
+        accounts_mod._login_delivered.clear()
+        accounts_mod._login_locks.clear()
+        accounts_mod._login_completed.clear()
 
         self._tmp = tempfile.TemporaryDirectory()
         self._orig_auth = config.AUTH_DIR
         self._orig_db = config.DB_PATH
         self._orig_users = config.USERS_FILE
-        config.AUTH_DIR = Path(self._tmp.name) / 'auths'
-        config.DB_PATH = Path(self._tmp.name) / 'm.db'
-        config.USERS_FILE = Path(self._tmp.name) / 'users.json'
+        config.AUTH_DIR = Path(self._tmp.name) / "auths"
+        config.DB_PATH = Path(self._tmp.name) / "m.db"
+        config.USERS_FILE = Path(self._tmp.name) / "users.json"
         from server import db
+
         db._conn = None
         db.connect()
         self._db = db
@@ -77,6 +92,9 @@ class LoginPollTestCase(unittest.TestCase):
         self.accounts._login_owner.clear()
         self.accounts._provisioned_states.clear()
         self.accounts._login_ready.clear()
+        self.accounts._login_delivered.clear()
+        self.accounts._login_locks.clear()
+        self.accounts._login_completed.clear()
         if self._db._conn is not None:
             self._db._conn.close()
         self._db._conn = None
@@ -86,18 +104,23 @@ class LoginPollTestCase(unittest.TestCase):
         self._tmp.cleanup()
 
     # ── 小工具 ────────────────────────────────────────────────────────
-    def _run_poller(self, state: str, realm: str = 'cn',
-                    region: str | None = None) -> mock.Mock:
+    def _run_poller(
+        self, state: str, realm: str = "cn", region: str | None = None
+    ) -> mock.Mock:
         """跑一遍真实的后台轮询（间隔压到 10ms），返回 reload 的 patch。"""
-        with mock.patch.object(self.accounts, '_LOGIN_POLL_SECONDS', 0.01), \
-             mock.patch.object(tencent, 'checkin',
-                               mock.AsyncMock(return_value=(0, 'ok'))), \
-             mock.patch.object(tencent, 'write_auth_file',
-                               return_value=('workbuddy-u-bg.json', False)), \
-             mock.patch.object(self.accounts.reload,
-                               'request_reload_or_restart') as rr:
-            asyncio.run(self.accounts._poll_login_background(
-                state, realm, region, None, _USER))
+        with (
+            mock.patch.object(self.accounts, "_LOGIN_POLL_SECONDS", 0.01),
+            mock.patch.object(
+                tencent, "checkin", mock.AsyncMock(return_value=(0, "ok"))
+            ),
+            mock.patch.object(
+                tencent, "write_auth_file", return_value=("workbuddy-u-bg.json", False)
+            ),
+            mock.patch.object(self.accounts.reload, "request_reload_or_restart") as rr,
+        ):
+            asyncio.run(
+                self.accounts._poll_login_background(state, realm, region, None, _USER)
+            )
         return rr
 
     def _client(self):
@@ -105,12 +128,26 @@ class LoginPollTestCase(unittest.TestCase):
         from server import security
         from server.main import app
 
-        security.save_users({'secret': 'S', 'users': [
-            {'username': 'admin', 'role': 'admin',
-             'pwd_hash': security.make_hash('p')}], 'api_keys': []})
+        security.save_users(
+            {
+                "secret": "S",
+                "users": [
+                    {
+                        "username": "admin",
+                        "role": "admin",
+                        "pwd_hash": security.make_hash("p"),
+                    }
+                ],
+                "api_keys": [],
+            }
+        )
         c = TestClient(app)
-        assert c.post('/api/login', json={'username': 'admin',
-                                          'password': 'p'}).status_code == 200
+        assert (
+            c.post(
+                "/api/login", json={"username": "admin", "password": "p"}
+            ).status_code
+            == 200
+        )
         return c
 
 
@@ -125,21 +162,26 @@ class BackgroundPollerTest(LoginPollTestCase):
 
         async def fake_poll(state, realm=None):
             calls.append(state)
-            return dict(_READY) if len(calls) >= 3 else {'status': 'waiting'}
+            return dict(_READY) if len(calls) >= 3 else {"status": "waiting"}
 
-        with mock.patch.object(tencent, 'poll_login', fake_poll):
-            rr = self._run_poller('s-bg')
+        with mock.patch.object(tencent, "poll_login", fake_poll):
+            rr = self._run_poller("s-bg")
 
-        self.assertEqual(len(calls), 3, f'后台轮询次数异常：{len(calls)}')
-        cached = self.accounts._login_polls.get('s-bg')
-        self.assertIsNotNone(cached, '后台跑出了终态却什么都没存 —— 前端读不到结果')
+        self.assertEqual(len(calls), 3, f"后台轮询次数异常：{len(calls)}")
+        cached = self.accounts._login_polls.get("s-bg")
+        self.assertIsNotNone(cached, "后台跑出了终态却什么都没存 —— 前端读不到结果")
         assert cached is not None
-        self.assertEqual(cached['status'], 'success')
-        self.assertEqual(cached['nickname'], '背景账号')
-        self.assertAlmostEqual(float(cached['_at']), time.time(), delta=30,
-                               msg='终态要带时间戳，TTL 清理靠它')
+        self.assertEqual(cached["status"], "success")
+        self.assertEqual(cached["nickname"], "背景账号")
+        self.assertAlmostEqual(
+            float(cached["_at"]),
+            time.time(),
+            delta=30,
+            msg="终态要带时间戳，TTL 清理靠它",
+        )
         rr.assert_called_once_with(
-            'u-bg', upstream=mock.ANY)      # 落盘后的收尾（等热加载、超时才重启）
+            "u-bg", upstream=mock.ANY
+        )  # 落盘后的收尾（等热加载、超时才重启）
 
     def test_terminal_result_does_not_ask_tencent_again(self) -> None:
         """前端来读结果时不能再问腾讯第二次（这是「避免重复调用」的兑现）。
@@ -147,62 +189,76 @@ class BackgroundPollerTest(LoginPollTestCase):
         用 TestClient 走真实路由：前端在 1.0.71 里每 2 秒打一次，若每次都转发给
         腾讯，多窗口叠加起来就是重复调用。
         """
-        self.accounts._login_polls['s-done'] = {
-            'status': 'success', 'uid': 'u-bg', 'nickname': '背景账号',
-            'realm': 'cn', 'updated': False, 'file': 'workbuddy-u-bg.json',
-            'region_note': '', '_at': time.time(),
+        self.accounts._login_polls["s-done"] = {
+            "status": "success",
+            "uid": "u-bg",
+            "nickname": "背景账号",
+            "realm": "cn",
+            "updated": False,
+            "file": "workbuddy-u-bg.json",
+            "region_note": "",
+            "_at": time.time(),
         }
 
-        async def boom(state, realm=None):        # pragma: no cover - 调用即失败
-            raise AssertionError('终态已缓存，不该再问腾讯')
+        async def boom(state, realm=None):  # pragma: no cover - 调用即失败
+            raise AssertionError("终态已缓存，不该再问腾讯")
 
-        with mock.patch.object(tencent, 'poll_login', boom):
-            r = self._client().get('/api/auth/poll', params={'state': 's-done'})
+        with mock.patch.object(tencent, "poll_login", boom):
+            r = self._client().get("/api/auth/poll", params={"state": "s-done"})
 
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
-        self.assertEqual(body['status'], 'success')
-        self.assertEqual(body['uid'], 'u-bg')
-        self.assertNotIn('_at', body, '内部记账字段不该漏给前端')
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["uid"], "u-bg")
+        self.assertNotIn("_at", body, "内部记账字段不该漏给前端")
 
     def test_only_terminal_state_short_circuits(self) -> None:
         """非终态照样走原路径 —— 否则「等待」会被当成结果返回。
 
         与上一条配成一对：只对终态短路，是这次改动的边界。
         """
-        self.accounts._login_polls['s-wait'] = {'status': 'waiting',
-                                                '_at': time.time()}
+        self.accounts._login_polls["s-wait"] = {"status": "waiting", "_at": time.time()}
         calls: list[str] = []
 
         async def fake_poll(state, realm=None):
             calls.append(state)
             return dict(_READY)
 
-        with mock.patch.object(tencent, 'poll_login', fake_poll), \
-             mock.patch.object(tencent, 'checkin',
-                               mock.AsyncMock(return_value=(0, 'ok'))), \
-             mock.patch.object(tencent, 'write_auth_file',
-                               return_value=('workbuddy-u-bg.json', False)), \
-             mock.patch.object(self.accounts.reload,
-                               'request_reload_or_restart'):
-            out = asyncio.run(self.accounts.auth_poll(
-                state='s-wait', realm='cn', region=None, upstream_id=None,
-                user=_USER))
+        with (
+            mock.patch.object(tencent, "poll_login", fake_poll),
+            mock.patch.object(
+                tencent, "checkin", mock.AsyncMock(return_value=(0, "ok"))
+            ),
+            mock.patch.object(
+                tencent, "write_auth_file", return_value=("workbuddy-u-bg.json", False)
+            ),
+            mock.patch.object(self.accounts.reload, "request_reload_or_restart"),
+        ):
+            out = asyncio.run(
+                self.accounts.auth_poll(
+                    state="s-wait",
+                    realm="cn",
+                    region=None,
+                    upstream_id=None,
+                    user=_USER,
+                )
+            )
 
-        self.assertEqual(calls, ['s-wait'], '非终态的缓存把腾讯查询短路了')
-        self.assertEqual(out['status'], 'success')
+        self.assertEqual(calls, ["s-wait"], "非终态的缓存把腾讯查询短路了")
+        self.assertEqual(out["status"], "success")
 
     def test_expired_results_are_pruned(self) -> None:
         """终态结果有 TTL：state 是短命的，别让这几张表无限涨。"""
-        self.accounts._login_polls['s-old'] = {
-            'status': 'success', '_at': time.time() - self.accounts._LOGIN_RESULT_TTL - 1,
+        self.accounts._login_polls["s-old"] = {
+            "status": "success",
+            "_at": time.time() - self.accounts._LOGIN_RESULT_TTL - 1,
         }
-        self.accounts._login_owner['s-old'] = 'admin|'
-        self.accounts._login_regions['s-old'] = 'HK'
+        self.accounts._login_owner["s-old"] = "admin|"
+        self.accounts._login_regions["s-old"] = "HK"
         self.accounts._prune_login_polls()
-        self.assertNotIn('s-old', self.accounts._login_polls)
-        self.assertNotIn('s-old', self.accounts._login_owner)
-        self.assertNotIn('s-old', self.accounts._login_regions)
+        self.assertNotIn("s-old", self.accounts._login_polls)
+        self.assertNotIn("s-old", self.accounts._login_owner)
+        self.assertNotIn("s-old", self.accounts._login_regions)
 
 
 class SaveFailureRetryTest(LoginPollTestCase):
@@ -212,41 +268,59 @@ class SaveFailureRetryTest(LoginPollTestCase):
         后台轮询复用 auth_poll，因此默认继承了 issue #26 的两条语义：失败时
         保留 state（重试不该被引导去重新扫码）、且重试不重跑签到等副作用。
         """
-        tencent._state_cache['s-fail'] = (time.time(), 'cn')
+        tencent._state_cache["s-fail"] = (time.time(), "cn")
 
         async def fake_poll(state, realm=None):
             return dict(_READY)
 
-        checkin = mock.AsyncMock(return_value=(0, 'ok'))
-        with mock.patch.object(self.accounts, '_LOGIN_POLL_SECONDS', 0.01), \
-             mock.patch.object(tencent, 'poll_login', fake_poll), \
-             mock.patch.object(tencent, 'checkin', checkin), \
-             mock.patch.object(tencent, 'write_auth_file',
-                               side_effect=PermissionError('permission denied')), \
-             mock.patch.object(self.accounts.reload,
-                               'request_reload_or_restart'):
-            asyncio.run(self.accounts._poll_login_background(
-                's-fail', 'cn', None, None, _USER))
+        checkin = mock.AsyncMock(return_value=(0, "ok"))
+        with (
+            mock.patch.object(self.accounts, "_LOGIN_POLL_SECONDS", 0.01),
+            mock.patch.object(tencent, "poll_login", fake_poll),
+            mock.patch.object(tencent, "checkin", checkin),
+            mock.patch.object(
+                tencent,
+                "write_auth_file",
+                side_effect=PermissionError("permission denied"),
+            ),
+            mock.patch.object(self.accounts.reload, "request_reload_or_restart"),
+        ):
+            asyncio.run(
+                self.accounts._poll_login_background("s-fail", "cn", None, None, _USER)
+            )
 
-        self.assertNotIn('s-fail', self.accounts._login_polls,
-                         '落盘失败被当成终态存住了 —— 前端会看到成功，账号却没进来')
-        self.assertTrue(tencent.is_pending('s-fail'),
-                        '落盘失败后 state 被丢了 —— 用户重试会看到「二维码已失效」')
+        self.assertNotIn(
+            "s-fail",
+            self.accounts._login_polls,
+            "落盘失败被当成终态存住了 —— 前端会看到成功，账号却没进来",
+        )
+        self.assertTrue(
+            tencent.is_pending("s-fail"),
+            "落盘失败后 state 被丢了 —— 用户重试会看到「二维码已失效」",
+        )
 
         # 用户点「重试」：前端再轮询一次，这次落盘成功
-        with mock.patch.object(tencent, 'poll_login', fake_poll), \
-             mock.patch.object(tencent, 'checkin', checkin), \
-             mock.patch.object(tencent, 'write_auth_file',
-                               return_value=('workbuddy-u-bg.json', False)), \
-             mock.patch.object(self.accounts.reload,
-                               'request_reload_or_restart'):
-            out = asyncio.run(self.accounts.auth_poll(
-                state='s-fail', realm='cn', region=None, upstream_id=None,
-                user=_USER))
+        with (
+            mock.patch.object(tencent, "poll_login", fake_poll),
+            mock.patch.object(tencent, "checkin", checkin),
+            mock.patch.object(
+                tencent, "write_auth_file", return_value=("workbuddy-u-bg.json", False)
+            ),
+            mock.patch.object(self.accounts.reload, "request_reload_or_restart"),
+        ):
+            out = asyncio.run(
+                self.accounts.auth_poll(
+                    state="s-fail",
+                    realm="cn",
+                    region=None,
+                    upstream_id=None,
+                    user=_USER,
+                )
+            )
 
-        self.assertEqual(out['status'], 'success', out)
-        self.assertEqual(checkin.call_count, 1, '重试又签到了一次（会重复写记录）')
-        self.assertFalse(tencent.is_pending('s-fail'), '成功落盘后 state 应被丢弃')
+        self.assertEqual(out["status"], "success", out)
+        self.assertEqual(checkin.call_count, 1, "重试又签到了一次（会重复写记录）")
+        self.assertFalse(tencent.is_pending("s-fail"), "成功落盘后 state 应被丢弃")
 
 
 class DuplicateStartTest(LoginPollTestCase):
@@ -259,45 +333,58 @@ class DuplicateStartTest(LoginPollTestCase):
         seen: list[tuple] = []
         # 真实 start_login 每次都会给出**新的** state；这里手动切换，用来模拟
         # 「前端 effect 重跑拿到同一张码」与「用户改地区后重新发码」两种情形。
-        current = {'state': 'state-a'}
+        current = {"state": "state-a"}
 
-        async def fake_start(realm='cn'):
-            return {'state': current['state'], 'authUrl': 'https://x/y', 'realm': realm}
+        async def fake_start(realm="cn"):
+            return {"state": current["state"], "authUrl": "https://x/y", "realm": realm}
 
         async def fake_poller(state, realm, region, upstream_id, user):
             seen.append((state, realm, region, upstream_id))
-            await asyncio.Event().wait()          # 永不返回：模拟还在盯着
+            await asyncio.Event().wait()  # 永不返回：模拟还在盯着
 
         async def scenario() -> None:
-            with mock.patch.object(tencent, 'start_login', fake_start), \
-                 mock.patch.object(self.accounts, '_poll_login_background',
-                                   fake_poller):
+            with (
+                mock.patch.object(tencent, "start_login", fake_start),
+                mock.patch.object(self.accounts, "_poll_login_background", fake_poller),
+            ):
                 # 第一次：国内版，没选地区
-                await self.accounts.auth_start(realm='cn', region=None,
-                                               upstream_id=None, body=None,
-                                               user=_USER)
+                await self.accounts.auth_start(
+                    realm="cn", region=None, upstream_id=None, body=None, user=_USER
+                )
                 # 让刚起的后台任务真正跑起来（交给事件循环一次）——
                 # 「还在跑」才是下面那条去重判断要覆盖的状态
                 await asyncio.sleep(0)
                 self.assertEqual(len(self.accounts._login_tasks), 1)
-                self.assertIn('state-a', self.accounts._login_tasks)
+                self.assertIn("state-a", self.accounts._login_tasks)
 
                 # 再来一次一模一样的（前端 effect 重跑/用户连点）：仍只有一个
-                await self.accounts.auth_start(realm='cn', region=None,
-                                               upstream_id=None,
-                                               body={'realm': 'cn'}, user=_USER)
+                await self.accounts.auth_start(
+                    realm="cn",
+                    region=None,
+                    upstream_id=None,
+                    body={"realm": "cn"},
+                    user=_USER,
+                )
                 await asyncio.sleep(0)
-                self.assertEqual(len(self.accounts._login_tasks), 1,
-                                 '同一个 state 起了两个后台轮询')
+                self.assertEqual(
+                    len(self.accounts._login_tasks), 1, "同一个 state 起了两个后台轮询"
+                )
 
                 # 用户改成国际版 + 地区 HK：旧码作废，旧轮询要被收掉
-                current['state'] = 'state-b'
+                current["state"] = "state-b"
                 await self.accounts.auth_start(
-                    realm='global', region=None, upstream_id=None,
-                    body={'realm': 'global', 'region': 'HK'}, user=_USER)
-                self.assertNotIn('state-a', self.accounts._login_tasks,
-                                 '旧码的后台轮询没收掉（会一直问腾讯到超时）')
-                self.assertIn('state-b', self.accounts._login_tasks)
+                    realm="global",
+                    region=None,
+                    upstream_id=None,
+                    body={"realm": "global", "region": "HK"},
+                    user=_USER,
+                )
+                self.assertNotIn(
+                    "state-a",
+                    self.accounts._login_tasks,
+                    "旧码的后台轮询没收掉（会一直问腾讯到超时）",
+                )
+                self.assertIn("state-b", self.accounts._login_tasks)
                 await asyncio.sleep(0)
                 for task in list(self.accounts._login_tasks.values()):
                     task.cancel()
@@ -305,9 +392,11 @@ class DuplicateStartTest(LoginPollTestCase):
                         await task
 
         asyncio.run(scenario())
-        self.assertEqual(seen, [('state-a', 'cn', None, None),
-                                ('state-b', 'global', 'HK', None)],
-                         '后台轮询拿到的参数不对（realm/地区要传对）')
+        self.assertEqual(
+            seen,
+            [("state-a", "cn", None, None), ("state-b", "global", "HK", None)],
+            "后台轮询拿到的参数不对（realm/地区要传对）",
+        )
 
 
 class RegionPlumbingTest(LoginPollTestCase):
@@ -319,59 +408,83 @@ class RegionPlumbingTest(LoginPollTestCase):
     """
 
     def test_poller_uses_region_from_start(self) -> None:
-        submit = mock.AsyncMock(return_value=(True, '地区已提交'))
-        with mock.patch.object(tencent, 'poll_login',
-                               mock.AsyncMock(return_value=dict(_READY_GLOBAL))), \
-             mock.patch.object(tencent, 'submit_region', submit), \
-             mock.patch.object(tencent, 'claim_trial',
-                               mock.AsyncMock(return_value=(True, '已领取'))), \
-             mock.patch.object(self.accounts, '_LOGIN_POLL_SECONDS', 0.01), \
-             mock.patch.object(tencent, 'checkin',
-                               mock.AsyncMock(return_value=(0, 'ok'))), \
-             mock.patch.object(tencent, 'write_auth_file',
-                               return_value=('workbuddy-u-gl.json', False)), \
-             mock.patch.object(self.accounts.reload,
-                               'request_reload_or_restart'):
-            asyncio.run(self.accounts._poll_login_background(
-                's-gl', 'global', 'HK', None, _USER))
+        submit = mock.AsyncMock(return_value=(True, "地区已提交"))
+        with (
+            mock.patch.object(
+                tencent, "poll_login", mock.AsyncMock(return_value=dict(_READY_GLOBAL))
+            ),
+            mock.patch.object(tencent, "submit_region", submit),
+            mock.patch.object(
+                tencent, "claim_trial", mock.AsyncMock(return_value=(True, "已领取"))
+            ),
+            mock.patch.object(self.accounts, "_LOGIN_POLL_SECONDS", 0.01),
+            mock.patch.object(
+                tencent, "checkin", mock.AsyncMock(return_value=(0, "ok"))
+            ),
+            mock.patch.object(
+                tencent, "write_auth_file", return_value=("workbuddy-u-gl.json", False)
+            ),
+            mock.patch.object(self.accounts.reload, "request_reload_or_restart"),
+        ):
+            asyncio.run(
+                self.accounts._poll_login_background(
+                    "s-gl", "global", "HK", None, _USER
+                )
+            )
 
-        self.assertTrue(submit.called, '国际版没做地区登记 —— 新号聊天会报 14017')
-        self.assertEqual(submit.call_args[0][1], 'HK')
+        self.assertTrue(submit.called, "国际版没做地区登记 —— 新号聊天会报 14017")
+        self.assertEqual(submit.call_args[0][1], "HK")
 
     def test_poller_picks_up_region_that_arrives_later(self) -> None:
         """/auth/poll 带来的地区也要记下来给后台用（auth_start 时可能还没选）。"""
-        self.accounts._login_regions['s-gl2'] = 'SG'
-        submit = mock.AsyncMock(return_value=(True, '地区已提交'))
-        with mock.patch.object(tencent, 'poll_login',
-                               mock.AsyncMock(return_value=dict(_READY_GLOBAL))), \
-             mock.patch.object(tencent, 'submit_region', submit), \
-             mock.patch.object(tencent, 'claim_trial',
-                               mock.AsyncMock(return_value=(True, '已领取'))), \
-             mock.patch.object(self.accounts, '_LOGIN_POLL_SECONDS', 0.01), \
-             mock.patch.object(tencent, 'checkin',
-                               mock.AsyncMock(return_value=(0, 'ok'))), \
-             mock.patch.object(tencent, 'write_auth_file',
-                               return_value=('workbuddy-u-gl.json', False)), \
-             mock.patch.object(self.accounts.reload,
-                               'request_reload_or_restart'):
-            asyncio.run(self.accounts._poll_login_background(
-                's-gl2', 'global', None, None, _USER))
+        self.accounts._login_regions["s-gl2"] = "SG"
+        submit = mock.AsyncMock(return_value=(True, "地区已提交"))
+        with (
+            mock.patch.object(
+                tencent, "poll_login", mock.AsyncMock(return_value=dict(_READY_GLOBAL))
+            ),
+            mock.patch.object(tencent, "submit_region", submit),
+            mock.patch.object(
+                tencent, "claim_trial", mock.AsyncMock(return_value=(True, "已领取"))
+            ),
+            mock.patch.object(self.accounts, "_LOGIN_POLL_SECONDS", 0.01),
+            mock.patch.object(
+                tencent, "checkin", mock.AsyncMock(return_value=(0, "ok"))
+            ),
+            mock.patch.object(
+                tencent, "write_auth_file", return_value=("workbuddy-u-gl.json", False)
+            ),
+            mock.patch.object(self.accounts.reload, "request_reload_or_restart"),
+        ):
+            asyncio.run(
+                self.accounts._poll_login_background(
+                    "s-gl2", "global", None, None, _USER
+                )
+            )
 
-        self.assertEqual(submit.call_args[0][1], 'SG',
-                         '后台轮询没读后来的地区（国际版会漏登记）')
+        self.assertEqual(
+            submit.call_args[0][1], "SG", "后台轮询没读后来的地区（国际版会漏登记）"
+        )
 
     def test_poll_route_remembers_region(self) -> None:
         """前端轮询带的地区要落到 state 上，供后台轮询下一轮读取。"""
+
         async def fake_poll(state, realm=None):
-            return {'status': 'waiting'}
+            return {"status": "waiting"}
 
-        with mock.patch.object(tencent, 'poll_login', fake_poll):
-            out = asyncio.run(self.accounts.auth_poll(
-                state='s-gl3', realm='global', region='TH', upstream_id=None,
-                user=_USER))
+        with mock.patch.object(tencent, "poll_login", fake_poll):
+            out = asyncio.run(
+                self.accounts.auth_poll(
+                    state="s-gl3",
+                    realm="global",
+                    region="TH",
+                    upstream_id=None,
+                    user=_USER,
+                )
+            )
 
-        self.assertEqual(out['status'], 'waiting')
-        self.assertEqual(self.accounts._login_regions.get('s-gl3'), 'TH')
+        self.assertEqual(out["status"], "waiting")
+        self.assertEqual(self.accounts._login_regions.get("s-gl3"), "TH")
 
 
 class SaveFailureRetryTest(LoginPollTestCase):
@@ -386,52 +499,69 @@ class SaveFailureRetryTest(LoginPollTestCase):
     失败仍如实报错、重试不再问腾讯、权限修好后能自己走通。
     """
 
-    _BOOM = PermissionError(1, 'Operation not permitted', '/opt/workbuddy2api/auths/.x.json.ab.tmp')
+    _BOOM = PermissionError(
+        1, "Operation not permitted", "/opt/workbuddy2api/auths/.x.json.ab.tmp"
+    )
 
-    def _poll(self, state: str = 's-savefail'):
-        return self._client().get('/api/auth/poll', params={'state': state})
+    def _poll(self, state: str = "s-savefail"):
+        return self._client().get("/api/auth/poll", params={"state": state})
 
     def test_retry_after_save_failure_still_reports_it(self) -> None:
-        calls = {'n': 0}
+        calls = {"n": 0}
 
         async def fake_poll(state, realm=None):
-            calls['n'] += 1
+            calls["n"] += 1
             # 第一次给 ready；之后模拟「腾讯不再报 ready」——这正是报障现场
-            return dict(_READY) if calls['n'] == 1 else {'status': 'waiting'}
+            return dict(_READY) if calls["n"] == 1 else {"status": "waiting"}
 
-        with mock.patch.object(tencent, 'poll_login', fake_poll),              mock.patch.object(tencent, 'checkin',
-                               mock.AsyncMock(return_value=(0, 'ok'))),              mock.patch.object(tencent, 'write_auth_file', side_effect=self._BOOM):
+        with (
+            mock.patch.object(tencent, "poll_login", fake_poll),
+            mock.patch.object(
+                tencent, "checkin", mock.AsyncMock(return_value=(0, "ok"))
+            ),
+            mock.patch.object(tencent, "write_auth_file", side_effect=self._BOOM),
+        ):
             first = self._poll()
             second = self._poll()
 
         self.assertEqual(first.status_code, 500, first.text)
-        self.assertIn('目录权限', first.json()['detail'])
-        self.assertEqual(second.status_code, 500,
-                         '第二次掉回了「等待中」——用户会一直等下去（#146 的现象）')
-        self.assertIn('目录权限', second.json()['detail'])
-        self.assertEqual(calls['n'], 1, '重试不该再问腾讯第二次')
+        self.assertIn("目录权限", first.json()["detail"])
+        self.assertEqual(
+            second.status_code,
+            500,
+            "第二次掉回了「等待中」——用户会一直等下去（#146 的现象）",
+        )
+        self.assertIn("目录权限", second.json()["detail"])
+        self.assertEqual(calls["n"], 1, "重试不该再问腾讯第二次")
 
     def test_recovery_once_permissions_are_fixed(self) -> None:
         """修好权限后，前端再轮询一次就应当成功（提示里承诺的就是这个）。"""
-        state = 's-recover'
+        state = "s-recover"
         boom_then_ok = [self._BOOM]
 
         def write(account, auth_dir=None):  # noqa: ANN001
             if boom_then_ok:
                 boom_then_ok.pop()
                 raise self._BOOM
-            return ('workbuddy-u-bg.json', False)
+            return ("workbuddy-u-bg.json", False)
 
-        with mock.patch.object(tencent, 'poll_login',
-                               mock.AsyncMock(return_value=dict(_READY))),              mock.patch.object(tencent, 'checkin',
-                               mock.AsyncMock(return_value=(0, 'ok'))),              mock.patch.object(tencent, 'write_auth_file', side_effect=write),              mock.patch.object(self.accounts.reload, 'request_reload_or_restart'):
+        with (
+            mock.patch.object(
+                tencent, "poll_login", mock.AsyncMock(return_value=dict(_READY))
+            ),
+            mock.patch.object(
+                tencent, "checkin", mock.AsyncMock(return_value=(0, "ok"))
+            ),
+            mock.patch.object(tencent, "write_auth_file", side_effect=write),
+            mock.patch.object(self.accounts.reload, "request_reload_or_restart"),
+        ):
             failed = self._poll(state)
             recovered = self._poll(state)
 
         self.assertEqual(failed.status_code, 500)
         self.assertEqual(recovered.status_code, 200, recovered.text)
-        self.assertEqual(recovered.json()['status'], 'success')
+        self.assertEqual(recovered.json()["status"], "success")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
