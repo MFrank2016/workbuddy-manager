@@ -146,3 +146,6 @@ start-all.cmd
 stop-all.cmd
 dev/.weight-task
 dev/.shots-weight-task
+
+# superpowers 隔离工作区（勿提交）
+.worktrees/
