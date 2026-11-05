@@ -1556,13 +1556,45 @@ def _is_channel_check(code: object, raw: str) -> bool:
     return ('渠道校验' in raw or 'channel verification' in low or 'official client' in low)
 
 def _parse_error_body(raw: str, status: int) -> tuple[int | str, str]:
-    """错误响应可能是 {code,msg} 信封，也可能是纯文本。"""
+    """错误响应可能是 {code,msg} 信封，也可能是纯文本。
+
+    腾讯 upstream 常见的几种形态（2026-11-05 实测）：
+
+      · 顶层信封：{"code":11102,"msg":"..."}（老接口，保持原样）；
+      · 嵌套信封：{"error":{"data":{"code":14017,"msg":"..."}}}
+        —— 国际版新号未激活时，HTTP 状态码是 429，真实业务码 14017 藏在
+        error.data.code。只读顶层码会回退成 429，把「试用未激活」误显示成
+        「限流」。上游 Go 侧（client.go:683）也注明「14017 常带 429 状态码，
+        必须先于 status==429 判定」；
+      · 只有 error.message、无业务码：回退状态码，但保留文案；
+      · 非 JSON：回退状态码 + 原文。
+
+    嵌套形态优先取 error.data.code / error.code，再退回顶层 code。
+    """
     try:
         env = json.loads(raw)
-        if isinstance(env, dict):
-            return env.get('code', status), str(env.get('msg') or env.get('message') or '')
     except Exception:  # noqa: BLE001
-        pass
+        return status, raw.strip()[:200]
+    if not isinstance(env, dict):
+        return status, raw.strip()[:200]
+
+    # 顶层码仍在（老接口）——直接沿用，零回归
+    top_code = env.get('code')
+    top_msg = str(env.get('msg') or env.get('message') or '')
+    if top_code is not None:
+        return top_code, top_msg
+
+    err = env.get('error')
+    if isinstance(err, dict):
+        data = err.get('data')
+        payload = data if isinstance(data, dict) else err
+        code = payload.get('code')
+        msg = str(payload.get('msg') or payload.get('message') or '')
+        if code is not None:
+            return code, msg
+        if msg:
+            return status, msg
+        return status, str(err.get('message') or '') or raw.strip()[:200]
     return status, raw.strip()[:200]
 
 
@@ -1579,6 +1611,9 @@ _CODE_HINTS: dict[int | str, str] = {
     # 不靠文案猜——429 上「额度不足」的措辞跨计费与限流两界）。本端跟着翻译：
     # 连通性测试打到欠费号时，用户要知道是没积分了，而不是「账号坏了」。
     14018: '账号积分耗尽（等签到恢复或换账号）',
+    # 14017：国际版新号「试用未激活」，常以 HTTP 429 返回（业务码藏在
+    # error.data.code）。不是限流——等量重置没用，需要完成地区注册/激活试用。
+    14017: '试用未激活（国际版新号需完成地区注册并激活，否则聊天一直报 429）',
     '11-128': '首条消息必须是 system（网关提示词未注入时客户端需自带）',
     12153: '会话已失效，需重新登录',
 }

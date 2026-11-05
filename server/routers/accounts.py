@@ -836,14 +836,29 @@ async def auth_poll(
     # 国际版：先做地区注册（未注册会导致后续聊天报 14017）
     region_msg = ''
     if realm_of_result == 'global':
+        activated = False
         if region:
             ok_r, region_msg = await tencent.submit_region(auth_probe, region)
+            # 提交地区后必须**再调一次注册激活 GET** 并复核：该端点
+            # （GET /auth/realms/copilot/overseas/user/register）本身就是激活动作，
+            # 不是纯只读查询（上游 scripts/global_region.py 的 activate_region、
+            # Go 侧 GlobalCompleteRegistration 都是「提交地区 → 重新 register 验证」）。
+            # 只 submit_region 而跳过它，新号会卡在「试用未激活」，对任何 chat
+            # 返回 HTTP 429 + code=14017——表现正是「选了地区还是 429」。
+            if ok_r:
+                activated, act_msg = await tencent.registration_status(auth_probe)
+                if not activated:
+                    region_msg = f'{region_msg}；注册激活未完成：{act_msg}'.strip('；')
+                else:
+                    region_msg = f'{region_msg}；注册已激活'.strip('；')
         else:
-            done, why = await tencent.registration_status(auth_probe)
-            if not done:
+            activated, _why = await tencent.registration_status(auth_probe)
+            if not activated:
                 region_msg = '尚未完成地区注册，请在弹窗中选择地区后重试（否则聊天会报 14017）'
-        # 注册完成后再领一次性 trial（失败不阻断，已领过按幂等）
-        if region_msg == '' or region_msg.startswith('地区已提交'):
+        # 注册完成后再领一次性 trial（失败不阻断，已领过按幂等）。
+        # 激活没确认时不要领——对未激活的号领 trial 也是白跑，且会把「没修好」
+        # 伪装成「已领过」。
+        if activated:
             ok_t, trial_msg = await tencent.claim_trial(auth_probe)
             if ok_t:
                 region_msg = f'{region_msg}；{trial_msg}'.strip('；')
