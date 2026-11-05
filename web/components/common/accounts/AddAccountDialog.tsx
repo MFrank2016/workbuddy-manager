@@ -3,6 +3,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
 import {notify} from '@/lib/toast';
+import {createPollGuard, classifyTerminal, createClientId} from '@/lib/poll-guard';
 import {useT} from '@/lib/i18n/provider';
 import {Loader2, CheckCircle2, AlertTriangle, ExternalLink} from 'lucide-react';
 import {
@@ -73,6 +74,19 @@ function wakeEvents(): Array<[EventTarget, string]> {
   ];
 }
 
+/**
+ * 浏览器实例 id（每扇标签页一份，sessionStorage 天然按标签页隔离）。
+ *
+ * 服务端用它区分「同一个窗口的重复轮询」（降级为 already_handled，别再弹一次
+ * 「授权成功」）与「另一个窗口也在等这张码」（仍要正常拿到 success 并收尾）。
+ * 放 sessionStorage 而不是 localStorage：后者同源共享，会把两个窗口误判成同一个，
+ * 第二个窗口就永远停在「等待授权完成」。
+ */
+const clientId = createClientId(
+  () => (typeof window === 'undefined' ? null : window.sessionStorage),
+  () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+);
+
 export function AddAccountDialog({
   open,
   onOpenChange,
@@ -99,6 +113,13 @@ export function AddAccountDialog({
   const [message, setMessage] = useState('');
   const stateRef = useRef('');
   const timerRef = useRef<number | null>(null);
+  /** 轮询代次：start() 重入或弹窗关闭时递增，令在途的旧 tick 一律失效。
+   *  effect 依赖（realm/region/proxy/routesReady）连续变化会并发重入 start()，
+   *  单值 timerRef/tickRef 清不掉「await 还没回来」的那一代 —— 那正是「授权
+   *  成功」toast 每 2 秒弹一次的根源。 */
+  const guardRef = useRef(createPollGuard());
+  /** 本轮是否已收尾：成功分支（含 quiet 收尾）只准跑一次 */
+  const deliveredRef = useRef(false);
   /** 上一次 poll 是否还在飞：单次超过 2 秒时避免请求叠加 */
   const pollingRef = useRef(false);
   /** 连续轮询失败次数：偶发抖动不该打断用户，持续失败才报出来 */
@@ -112,6 +133,10 @@ export function AddAccountDialog({
   const tickRef = useRef<(() => void) | null>(null);
 
   const stopPoll = useCallback(() => {
+    // 先作废旧代：即使某个 start() 还卡在 await accountApi.start()，它回来后
+    // 也不会再装上 interval / 唤醒监听。与下面的 clearInterval 是两件事，
+    // 少了这一句，重入时「后一次 stopPoll 清不掉前一次尚未登记的定时器」。
+    guardRef.current.invalidate();
     if (timerRef.current !== null) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
@@ -151,6 +176,9 @@ export function AddAccountDialog({
 
   const start = useCallback(async () => {
     stopPoll();
+    deliveredRef.current = false;
+    // 代次必须在 await 之前登记：stopPoll() 已让上一代失效，这里开启本代。
+    const generation = guardRef.current.begin();
     failsRef.current = 0;
     setPhase('loading');
     setMessage(t('addAccount.requesting'));
@@ -159,12 +187,17 @@ export function AddAccountDialog({
       // region 一起发：服务端要替这张码盯着（前端被节流也不影响），而地区
       // 登记必须在落盘前完成，它那条路径读不到弹窗里的 state，只能在这里给。
       const data = await accountApi.start(realm, upstreamId, region || undefined, proxy);
+      // 网络在飞期间用户改了地区 / 切了版本 / 关了弹窗 → 这一代已作废，
+      // 绝不能再 setAuthUrl / 装 interval（否则就是泄漏的那一代）。
+      if (guardRef.current.isStale(generation)) return;
       stateRef.current = data.state;
       setAuthUrl(data.authUrl);
       setPhase('waiting');
       setMessage(t('addAccount.waiting'));
 
       const tick = async () => {
+        // 旧代 / 已收尾：一律不再发请求、不再 setState。
+        if (guardRef.current.isStale(generation) || deliveredRef.current) return;
         // 标签页在后台就不查：浏览器本来也会把定时器节流到约 1 次/分钟，
         // 与其让它零星触发，不如等用户切回来时补一次（与 useHeartbeat 同口径）。
         // 判断放在 tick 内部而不是调用处 —— 因为 visibilitychange 在**隐藏与
@@ -174,12 +207,19 @@ export function AddAccountDialog({
         pollingRef.current = true;
         try {
           const res = await accountApi.poll(stateRef.current, realm, region || undefined,
-                                            upstreamId);
+                                            upstreamId, clientId());
+          // await 期间又发生重入 / 收尾：这一轮的响应作废。
+          if (guardRef.current.isStale(generation) || deliveredRef.current) return;
           // 拿到任何一次正常响应就清零：计数要表达的是「**连续**失败」，
           // 而不是「累计失败了几次」。不清零的话，几分钟内零散抖三次
           // （每次之间都恢复正常）也会触发中断，把一次正常的扫码打断。
           failsRef.current = 0;
-          if (res.status === 'success') {
+          if (res.status === 'success' || res.status === 'already_handled') {
+            // classifyTerminal：正常成功 → 弹 toast；已被本客户端消费过 → 静默
+            // 收尾（不弹 toast，但照样关弹窗、刷列表）；本轮已完成 → 直接忽略。
+            const action = classifyTerminal(res.status, deliveredRef.current);
+            if (action === 'ignore') return;
+            deliveredRef.current = true;
             stopPoll();
             setPhase('success');
             const accountName = res.nickname || res.uid || '';
@@ -188,14 +228,16 @@ export function AddAccountDialog({
                 ? t('addAccount.successUpdated', {name: accountName})
                 : t('addAccount.success', {name: accountName}),
             );
-            notify.ok(
-              t('addAccount.success', {name: accountName}),
-              res.realm === 'global'
-                ? t('addAccount.successGlobal')
-                : res.updated
-                  ? t('addAccount.successToken')
-                  : t('addAccount.successCheckin'),
-            );
+            if (action === 'announce') {
+              notify.ok(
+                t('addAccount.success', {name: accountName}),
+                res.realm === 'global'
+                  ? t('addAccount.successGlobal')
+                  : res.updated
+                    ? t('addAccount.successToken')
+                    : t('addAccount.successCheckin'),
+              );
+            }
             window.dispatchEvent(new Event('workbuddy-manager:accounts-changed'));
             onSuccess?.();
             window.setTimeout(() => onOpenChange(false), 1600);

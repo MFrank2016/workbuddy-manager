@@ -291,10 +291,13 @@ export const accountApi = {
   start: (realm: Realm = 'cn', upstreamId?: number | null, region?: string, proxy?: string) =>
     post<{state: string; authUrl: string; realm: Realm}>(
       '/api/auth/start' + groupQs(upstreamId), {realm, region, proxy}),
-  /** 轮询扫码结果。region 仅国际版需要（新号必须先做地区注册） */
-  poll: (state: string, realm?: Realm, region?: string, upstreamId?: number | null) =>
+  /** 轮询扫码结果。region 仅国际版需要（新号必须先做地区注册）；
+   *  client 是浏览器实例 id：服务端据此把「同一窗口的重复轮询」降级为
+   *  already_handled（不重复弹「授权成功」），又不影响别的窗口正常收尾。 */
+  poll: (state: string, realm?: Realm, region?: string, upstreamId?: number | null,
+         client?: string) =>
     get<{
-      status: 'waiting' | 'success' | 'expired' | 'invalid' | 'realm_mismatch';
+      status: 'waiting' | 'success' | 'already_handled' | 'expired' | 'invalid' | 'realm_mismatch';
       uid?: string;
       nickname?: string;
       updated?: boolean;
@@ -302,7 +305,8 @@ export const accountApi = {
       region_note?: string;
       expected?: Realm;
       got?: Realm;
-    }>('/api/auth/poll', {state, realm, region, upstream_id: upstreamId ?? undefined}),
+    }>('/api/auth/poll', {state, realm, region, upstream_id: upstreamId ?? undefined,
+                          client: client ?? undefined}),
   remove: (file: string, upstreamId?: number | null) =>
     del<{success: boolean}>(`/api/accounts/${encodeURIComponent(file)}${groupQs(upstreamId)}`),
   /**

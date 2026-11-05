@@ -408,6 +408,52 @@ _login_regions: dict[str, str] = {}
 # 成功了就完成，失败则把「去修目录权限」那条可执行提示原样报给前端。
 _login_ready: dict[str, tuple[dict, str, str, float]] = {}      # state → 国际版地区（可能晚于 auth/start 到达）
 _login_owner: dict[str, str] = {}        # state → 发起人，用于收掉同一用户的旧轮询
+# 同一个 state 的「ready 判定 → 供给 → 落盘」必须串行：后台任务与前端 HTTP
+# 轮询会并发进来，中间还夹着 submit_region / checkin 等 await，早先无锁时
+# 两次都会各自落盘一次（现场：同一个号被写了两条 checkin_logs）。
+_login_locks: dict[str, asyncio.Lock] = {}
+# state → 已经领取过该终态的浏览器实例 id 集合。按客户端去重，而不是按 state
+# 全局只发一次：多开窗口时每个窗口都要能各自收一次尾（CHANGELOG 1.0.71）。
+_login_delivered: dict[str, set[str]] = {}
+# state → 该 state 已成功落盘的终态响应。锁内第一件事就查它：两次并发轮询
+# 即使被锁串行放行，第二次也不能再跑一遍签到/trial/落盘。只在成功路径写，
+# 落盘失败绝不写（保留 issue #26「重试只补落盘」的语义）。
+_login_completed: dict[str, dict] = {}
+# state → 最后一次触碰时间。上面四张表都可能在没有 _login_polls / _login_ready
+# 锚点的情况下存在（例如用户开了弹窗却没扫码，只留下一把 waiting 锁），
+# 所以必须自己带时间戳，才能在 _prune_login_polls 里被回收（终审 #3）。
+_login_touch: dict[str, float] = {}
+
+
+def _touch_login_state(state: str) -> None:
+    """记一次触碰时间：所有按 state 索引的记账表都靠它回收。"""
+    _login_touch[state] = time.time()
+
+
+def _login_lock(state: str) -> asyncio.Lock:
+    """取（并按需创建）某个 state 的落盘锁。"""
+    _touch_login_state(state)
+    return _login_locks.setdefault(state, asyncio.Lock())
+
+
+def _deliver_terminal(state: str, client: str | None, clean: dict) -> dict:
+    """按浏览器实例去重交付终态。
+
+    - 只有 **success** 才降级为 already_handled：expired / invalid /
+      realm_mismatch 是失败态，前端要靠它们显示对应错误，降级会让一次
+      失败的登录显示成「授权成功」（终审 #1）。
+    - 不带 client 的旧调用方（含后台任务直呼）不参与去重（终审 #4）。
+    - 返回体始终带完整账号字段，供前端 quiet 收尾拼文案。
+    """
+    key = client if isinstance(client, str) and client else None
+    if key is None or clean.get('status') != 'success':
+        return clean
+    seen = _login_delivered.setdefault(state, set())
+    _touch_login_state(state)
+    if key in seen:
+        return {**clean, 'status': 'already_handled'}
+    seen.add(key)
+    return clean
 
 
 def _owner_key(user: dict, upstream_id: int | None) -> str:
@@ -434,22 +480,39 @@ def _cancel_other_login_polls(state: str, owner: str) -> None:
         _login_polls.pop(st, None)
         _login_regions.pop(st, None)
         _login_owner.pop(st, None)
+        _login_delivered.pop(st, None)
+        _login_locks.pop(st, None)
+        _login_completed.pop(st, None)
+        _login_touch.pop(st, None)
         logger.info('同一用户重新发码，旧轮询已收掉（state=%s）', st)
 
 
 def _prune_login_polls() -> None:
     # 清掉过期结果（state 是短命的，但别让它无限增长）
     now = time.time()
+    # 先按 _login_touch 回收四张没有独立锚点的表（终审 #3）
+    for st in [k for k, at in _login_touch.items() if now - at > _LOGIN_RESULT_TTL]:
+        for table in (_login_polls, _login_tasks, _login_regions, _login_owner,
+                      _login_delivered, _login_locks, _login_completed,
+                      _login_ready, _provisioned_states):
+            table.pop(st, None)
+        _login_touch.pop(st, None)
     for st in [k for k, v in _login_polls.items()
                if now - float(v.get('_at') or 0) > _LOGIN_RESULT_TTL]:
         _login_polls.pop(st, None)
         _login_tasks.pop(st, None)
         _login_regions.pop(st, None)
         _login_owner.pop(st, None)
+        _login_delivered.pop(st, None)
+        _login_locks.pop(st, None)
+        _login_completed.pop(st, None)
     # 「等重试落盘」的备忘也要按同样的 TTL 清（它没有 _login_polls 条目，
     # 上面那轮扫不到它）
     for st in [k for k, v in _login_ready.items() if now - float(v[3]) > _LOGIN_RESULT_TTL]:
         _login_ready.pop(st, None)
+        _login_delivered.pop(st, None)
+        _login_locks.pop(st, None)
+        _login_completed.pop(st, None)
 
 
 def _today_start() -> int:
@@ -765,6 +828,7 @@ async def auth_poll(
     realm: str | None = None,
     region: str | None = None,
     upstream_id: int | None = Query(None),
+    client: str | None = Query(None),
     user: dict = Depends(security.require_admin),
 ) -> dict:
     """轮询扫码结果；成功则落盘并触发上游重载。
@@ -774,6 +838,11 @@ async def auth_poll(
     """
     if not state:
         return {'status': 'invalid'}
+    # Query(None) 是个真值哨兵：直呼本函数（后台任务/测试）时 client 会是它，
+    # `client or ''` 会把哨兵混进去、还让「旧调用方不参与去重」的分支失效。
+    if not isinstance(client, str) or not client:
+        client = None
+    _prune_login_polls()
     # 出站网络失败（线路连不上等）→ 502 + 中文原因：与 /auth/start 同一口径。
     # 不转的话前端拿到的是英文 500，用户看不出「是线路的问题、该换线路」。
 
@@ -783,102 +852,121 @@ async def auth_poll(
     cached = _login_polls.get(state)
     if cached and cached.get('status') not in (None, 'waiting'):
         # 去掉内部记账字段（`_at`）再返回，别把实现细节漏给前端
-        return {k: v for k, v in cached.items() if not k.startswith('_')}
+        clean = {k: v for k, v in cached.items() if not k.startswith('_')}
+        return _deliver_terminal(state, client, clean)
 
-    # 地区可能比 auth/start 更晚到（用户在弹窗里选、或另一扇窗口带上来）：
-    # 记下来给后台轮询用 —— 国际版漏了地区注册，聊天会报 14017。
-    if region:
-        _login_regions[state] = region
-    group = _group(upstream_id)
-
-    # 落盘成功后 state 会在下面被丢弃，但如果**落盘失败**（issue #26），
-    # 前端会继续轮询同一个 state 让用户重试 —— 那条路径不能把签到、领 trial
-    # 这些**有副作用**的动作重跑一遍（会重复写签到记录、重复调腾讯接口）。
-    # 所以记一笔「这个 state 已经做过供给」，重试时直接跳到落盘。
-    provisioned = _provisioned_states.get(state)
-
-    r = None
-    if realm is not None:
-        r = 'global' if str(realm).strip().lower() == 'global' else 'cn'
-    ready = _login_ready.get(state)
-    if ready is not None:
-        # 上次已经拿到授权、只是没落盘：直接重试落盘（不再问腾讯——那边可能已经
-        # 不再报 ready，继续问只会让用户一直「等待中」）。
-        memo_result, memo_realm, memo_msg = ready[0], ready[1], ready[2]
-        return _save_and_finish(memo_result, memo_realm, memo_msg, state, group=group)
-
-    try:
-        result = await tencent.poll_login(state, r)
-    except RuntimeError as exc:
-        # 线路/网络层失败：转 502 + 中文原因（与 /auth/start 同一口径）。
-        # 不转的话界面上只有一句英文 500，用户看不出「是线路的问题、该换线路」。
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    if result.get('status') != 'ready':
-        return result
-
-    realm_of_result = result.get('realm') or 'cn'
-    if provisioned:
-        # 已经供给过：只补落盘（上次就是败在这一步），其余一律不重做
-        return _save_and_finish(result, realm_of_result, region_msg='', state=state,
-                                group=group)
-
-    # 探测 dict：billing 域身份头（X-User-Id / X-Domain 等）需要这些字段，
-    # 与 _auth_dict 同构；device_token 此刻还没有（落盘时由外部写入）
-    auth_probe = {
-        'access_token': result['access_token'],
-        'uid': result['uid'],
-        'enterprise_id': result.get('enterprise_id', ''),
-        'realm': realm_of_result,
-        'domain': result.get('domain', ''),
-        'proxy': result.get('proxy', ''),
-    }
-
-    # 国际版：先做地区注册（未注册会导致后续聊天报 14017）
-    region_msg = ''
-    if realm_of_result == 'global':
-        activated = False
+    # 同一个 state 的「ready → 供给 → 落盘」串行化：后台任务与前端
+    # HTTP 轮询会并发进来，无锁时两次都会各自落盘（现场：两条 add 记录）。
+    async with _login_lock(state):
+        # 锁内第一件事：上一次已经把该 state 落盘成功，直接回同一份结果。
+        # 锁只保证串行，不保证幂等；少了这查，两次并发仍会各跑一遍供给/落盘。
+        completed = _login_completed.get(state)
+        if completed is not None:
+            clean = {k: v for k, v in completed.items() if not k.startswith('_')}
+            return _deliver_terminal(state, client, clean)
+        # 地区可能比 auth/start 更晚到（用户在弹窗里选、或另一扇窗口带上来）：
+        # 记下来给后台轮询用 —— 国际版漏了地区注册，聊天会报 14017。
         if region:
-            ok_r, region_msg = await tencent.submit_region(auth_probe, region)
-            # 提交地区后必须**再调一次注册激活 GET** 并复核：该端点
-            # （GET /auth/realms/copilot/overseas/user/register）本身就是激活动作，
-            # 不是纯只读查询（上游 scripts/global_region.py 的 activate_region、
-            # Go 侧 GlobalCompleteRegistration 都是「提交地区 → 重新 register 验证」）。
-            # 只 submit_region 而跳过它，新号会卡在「试用未激活」，对任何 chat
-            # 返回 HTTP 429 + code=14017——表现正是「选了地区还是 429」。
-            if ok_r:
-                activated, act_msg = await tencent.registration_status(auth_probe)
+            _login_regions[state] = region
+        group = _group(upstream_id)
+
+        # 落盘成功后 state 会在下面被丢弃，但如果**落盘失败**（issue #26），
+        # 前端会继续轮询同一个 state 让用户重试 —— 那条路径不能把签到、领 trial
+        # 这些**有副作用**的动作重跑一遍（会重复写签到记录、重复调腾讯接口）。
+        # 所以记一笔「这个 state 已经做过供给」，重试时直接跳到落盘。
+        provisioned = _provisioned_states.get(state)
+
+        r = None
+        if realm is not None:
+            r = 'global' if str(realm).strip().lower() == 'global' else 'cn'
+        ready = _login_ready.get(state)
+        if ready is not None:
+            # 上次已经拿到授权、只是没落盘：直接重试落盘（不再问腾讯——那边可能已经
+            # 不再报 ready，继续问只会让用户一直「等待中」）。
+            memo_result, memo_realm, memo_msg = ready[0], ready[1], ready[2]
+            out = _save_and_finish(memo_result, memo_realm, memo_msg, state, group=group)
+            _login_ready.pop(state, None)
+            _login_completed[state] = out
+            _touch_login_state(state)
+            return out
+
+        try:
+            result = await tencent.poll_login(state, r)
+        except RuntimeError as exc:
+            # 线路/网络层失败：转 502 + 中文原因（与 /auth/start 同一口径）。
+            # 不转的话界面上只有一句英文 500，用户看不出「是线路的问题、该换线路」。
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if result.get('status') != 'ready':
+            return result
+
+        realm_of_result = result.get('realm') or 'cn'
+        if provisioned:
+            # 已经供给过：只补落盘（上次就是败在这一步），其余一律不重做
+            return _save_and_finish(result, realm_of_result, region_msg='', state=state,
+                                    group=group)
+
+        # 探测 dict：billing 域身份头（X-User-Id / X-Domain 等）需要这些字段，
+        # 与 _auth_dict 同构；device_token 此刻还没有（落盘时由外部写入）
+        auth_probe = {
+            'access_token': result['access_token'],
+            'uid': result['uid'],
+            'enterprise_id': result.get('enterprise_id', ''),
+            'realm': realm_of_result,
+            'domain': result.get('domain', ''),
+            'proxy': result.get('proxy', ''),
+        }
+
+        # 国际版：先做地区注册（未注册会导致后续聊天报 14017）
+        region_msg = ''
+        if realm_of_result == 'global':
+            activated = False
+            if region:
+                ok_r, region_msg = await tencent.submit_region(auth_probe, region)
+                # 提交地区后必须**再调一次注册激活 GET** 并复核：该端点
+                # （GET /auth/realms/copilot/overseas/user/register）本身就是激活动作，
+                # 不是纯只读查询（上游 scripts/global_region.py 的 activate_region、
+                # Go 侧 GlobalCompleteRegistration 都是「提交地区 → 重新 register 验证」）。
+                # 只 submit_region 而跳过它，新号会卡在「试用未激活」，对任何 chat
+                # 返回 HTTP 429 + code=14017——表现正是「选了地区还是 429」。
+                if ok_r:
+                    activated, act_msg = await tencent.registration_status(auth_probe)
+                    if not activated:
+                        region_msg = f'{region_msg}；注册激活未完成：{act_msg}'.strip('；')
+                    else:
+                        region_msg = f'{region_msg}；注册已激活'.strip('；')
+            else:
+                activated, _why = await tencent.registration_status(auth_probe)
                 if not activated:
-                    region_msg = f'{region_msg}；注册激活未完成：{act_msg}'.strip('；')
-                else:
-                    region_msg = f'{region_msg}；注册已激活'.strip('；')
-        else:
-            activated, _why = await tencent.registration_status(auth_probe)
-            if not activated:
-                region_msg = '尚未完成地区注册，请在弹窗中选择地区后重试（否则聊天会报 14017）'
-        # 注册完成后再领一次性 trial（失败不阻断，已领过按幂等）。
-        # 激活没确认时不要领——对未激活的号领 trial 也是白跑，且会把「没修好」
-        # 伪装成「已领过」。
-        if activated:
-            ok_t, trial_msg = await tencent.claim_trial(auth_probe)
-            if ok_t:
-                region_msg = f'{region_msg}；{trial_msg}'.strip('；')
+                    region_msg = '尚未完成地区注册，请在弹窗中选择地区后重试（否则聊天会报 14017）'
+            # 注册完成后再领一次性 trial（失败不阻断，已领过按幂等）。
+            # 激活没确认时不要领——对未激活的号领 trial 也是白跑，且会把「没修好」
+            # 伪装成「已领过」。
+            if activated:
+                ok_t, trial_msg = await tencent.claim_trial(auth_probe)
+                if ok_t:
+                    region_msg = f'{region_msg}；{trial_msg}'.strip('；')
 
-    # 自动签到（幂等，不阻断落盘）。国际版无签到体系，checkin 会直接跳过
-    code, message = await tencent.checkin(auth_probe, realm_of_result)
-    db.add_checkin_log(
-        str(result.get('uid', '')), str(result.get('nickname', '')),
-        'add', code in (0, 10001), code, message,
-    )
+        # 自动签到（幂等，不阻断落盘）。国际版无签到体系，checkin 会直接跳过
+        code, message = await tencent.checkin(auth_probe, realm_of_result)
+        db.add_checkin_log(
+            str(result.get('uid', '')), str(result.get('nickname', '')),
+            'add', code in (0, 10001), code, message,
+        )
 
-    # 供给（签到 / trial）做完了才允许重试时跳过它们 —— 标记要在**动副作用之前**
-    # 落位，否则「签到成功但标记没写」的窗口里重试仍会重跑一次。
-    _mark_provisioned(state)
-    creditsvc.invalidate(str(result.get('uid', '')))
-    # 落盘前记下这份结果：万一落盘失败，重试要能只重做落盘（见 _login_ready 注释）
-    _login_ready[state] = (result, realm_of_result, region_msg, time.time())
-    out = _save_and_finish(result, realm_of_result, region_msg, state, group=group)
-    _login_ready.pop(state, None)
-    return out
+        # 供给（签到 / trial）做完了才允许重试时跳过它们 —— 标记要在**动副作用之前**
+        # 落位，否则「签到成功但标记没写」的窗口里重试仍会重跑一次。
+        _mark_provisioned(state)
+        creditsvc.invalidate(str(result.get('uid', '')))
+        # 落盘前记下这份结果：万一落盘失败，重试要能只重做落盘（见 _login_ready 注释）
+        _login_ready[state] = (result, realm_of_result, region_msg, time.time())
+        out = _save_and_finish(result, realm_of_result, region_msg, state, group=group)
+        _login_ready.pop(state, None)
+        # 只在**确实落盘成功**之后记：并发的第二轮进来直接回这份结果。
+        # 落盘失败时 _save_and_finish 抛 HTTPException，这行不会执行，
+        # 用户点「重试」仍能重新走落盘（issue #26 的语义不变）。
+        _login_completed[state] = out
+        _touch_login_state(state)
+        return out
 
 
 def _mark_provisioned(state: str) -> None:
