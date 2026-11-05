@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createPollGuard, classifyTerminal } from "../poll-guard.ts";
 
 test("re-entry invalidates the previous generation", () => {
@@ -44,4 +45,24 @@ test("terminal classification: first success announces, later ones are quiet/ign
   assert.equal(classifyTerminal("already_handled", false), "quiet");
   assert.equal(classifyTerminal("already_handled", true), "ignore");
   assert.equal(classifyTerminal("waiting", false), "ignore");
+});
+
+test("AddAccountDialog actually uses the guard", () => {
+  const src = readFileSync(
+    new URL(
+      "../../components/common/accounts/AddAccountDialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(src, /createPollGuard/);
+  assert.match(src, /classifyTerminal/);
+});
+
+test("accountApi.poll forwards the client id", () => {
+  const src = readFileSync(
+    new URL("../../lib/api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /client:\s*client/);
 });
