@@ -58,6 +58,7 @@ class LoginPollTestCase(unittest.TestCase):
         accounts_mod._login_delivered.clear()
         accounts_mod._login_locks.clear()
         accounts_mod._login_completed.clear()
+        accounts_mod._login_touch.clear()
 
         self._tmp = tempfile.TemporaryDirectory()
         self._orig_auth = config.AUTH_DIR
@@ -83,6 +84,7 @@ class LoginPollTestCase(unittest.TestCase):
         self.accounts._login_delivered.clear()
         self.accounts._login_locks.clear()
         self.accounts._login_completed.clear()
+        self.accounts._login_touch.clear()
         if self._db._conn is not None:
             self._db._conn.close()
         self._db._conn = None

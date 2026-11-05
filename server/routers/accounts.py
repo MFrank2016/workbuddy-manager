@@ -419,11 +419,41 @@ _login_delivered: dict[str, set[str]] = {}
 # 即使被锁串行放行，第二次也不能再跑一遍签到/trial/落盘。只在成功路径写，
 # 落盘失败绝不写（保留 issue #26「重试只补落盘」的语义）。
 _login_completed: dict[str, dict] = {}
+# state → 最后一次触碰时间。上面四张表都可能在没有 _login_polls / _login_ready
+# 锚点的情况下存在（例如用户开了弹窗却没扫码，只留下一把 waiting 锁），
+# 所以必须自己带时间戳，才能在 _prune_login_polls 里被回收（终审 #3）。
+_login_touch: dict[str, float] = {}
+
+
+def _touch_login_state(state: str) -> None:
+    """记一次触碰时间：所有按 state 索引的记账表都靠它回收。"""
+    _login_touch[state] = time.time()
 
 
 def _login_lock(state: str) -> asyncio.Lock:
     """取（并按需创建）某个 state 的落盘锁。"""
+    _touch_login_state(state)
     return _login_locks.setdefault(state, asyncio.Lock())
+
+
+def _deliver_terminal(state: str, client: str | None, clean: dict) -> dict:
+    """按浏览器实例去重交付终态。
+
+    - 只有 **success** 才降级为 already_handled：expired / invalid /
+      realm_mismatch 是失败态，前端要靠它们显示对应错误，降级会让一次
+      失败的登录显示成「授权成功」（终审 #1）。
+    - 不带 client 的旧调用方（含后台任务直呼）不参与去重（终审 #4）。
+    - 返回体始终带完整账号字段，供前端 quiet 收尾拼文案。
+    """
+    key = client if isinstance(client, str) and client else None
+    if key is None or clean.get('status') != 'success':
+        return clean
+    seen = _login_delivered.setdefault(state, set())
+    _touch_login_state(state)
+    if key in seen:
+        return {**clean, 'status': 'already_handled'}
+    seen.add(key)
+    return clean
 
 
 def _owner_key(user: dict, upstream_id: int | None) -> str:
@@ -450,12 +480,23 @@ def _cancel_other_login_polls(state: str, owner: str) -> None:
         _login_polls.pop(st, None)
         _login_regions.pop(st, None)
         _login_owner.pop(st, None)
+        _login_delivered.pop(st, None)
+        _login_locks.pop(st, None)
+        _login_completed.pop(st, None)
+        _login_touch.pop(st, None)
         logger.info('同一用户重新发码，旧轮询已收掉（state=%s）', st)
 
 
 def _prune_login_polls() -> None:
     # 清掉过期结果（state 是短命的，但别让它无限增长）
     now = time.time()
+    # 先按 _login_touch 回收四张没有独立锚点的表（终审 #3）
+    for st in [k for k, at in _login_touch.items() if now - at > _LOGIN_RESULT_TTL]:
+        for table in (_login_polls, _login_tasks, _login_regions, _login_owner,
+                      _login_delivered, _login_locks, _login_completed,
+                      _login_ready, _provisioned_states):
+            table.pop(st, None)
+        _login_touch.pop(st, None)
     for st in [k for k, v in _login_polls.items()
                if now - float(v.get('_at') or 0) > _LOGIN_RESULT_TTL]:
         _login_polls.pop(st, None)
@@ -797,6 +838,10 @@ async def auth_poll(
     """
     if not state:
         return {'status': 'invalid'}
+    # Query(None) 是个真值哨兵：直呼本函数（后台任务/测试）时 client 会是它，
+    # `client or ''` 会把哨兵混进去、还让「旧调用方不参与去重」的分支失效。
+    if not isinstance(client, str) or not client:
+        client = None
     _prune_login_polls()
     # 出站网络失败（线路连不上等）→ 502 + 中文原因：与 /auth/start 同一口径。
     # 不转的话前端拿到的是英文 500，用户看不出「是线路的问题、该换线路」。
@@ -806,18 +851,9 @@ async def auth_poll(
     # `provisioned` 重试语义（用户点「重试」时重新落盘，而不是重扫二维码）。
     cached = _login_polls.get(state)
     if cached and cached.get('status') not in (None, 'waiting'):
-        # 终态按「浏览器实例」去重：同一个窗口重复轮询（定时器泄漏 / 唤醒事件
-        # 叠加）不该再弹一次「授权成功」，但另一个窗口首次来读仍要拿到 success。
-        key = client or ''  # 旧调用方不带 client：保持原语义，不参与去重
-        seen = _login_delivered.setdefault(state, set())
+        # 去掉内部记账字段（`_at`）再返回，别把实现细节漏给前端
         clean = {k: v for k, v in cached.items() if not k.startswith('_')}
-        if key and key in seen:
-            # 仍带回账号字段：前端 quiet 收尾要拼文案，只回 status 会显示
-            # 「账号「」授权成功」。
-            return {**clean, 'status': 'already_handled'}
-        if key:
-            seen.add(key)
-        return clean
+        return _deliver_terminal(state, client, clean)
 
     # 同一个 state 的「ready → 供给 → 落盘」串行化：后台任务与前端
     # HTTP 轮询会并发进来，无锁时两次都会各自落盘（现场：两条 add 记录）。
@@ -826,7 +862,8 @@ async def auth_poll(
         # 锁只保证串行，不保证幂等；少了这查，两次并发仍会各跑一遍供给/落盘。
         completed = _login_completed.get(state)
         if completed is not None:
-            return completed
+            clean = {k: v for k, v in completed.items() if not k.startswith('_')}
+            return _deliver_terminal(state, client, clean)
         # 地区可能比 auth/start 更晚到（用户在弹窗里选、或另一扇窗口带上来）：
         # 记下来给后台轮询用 —— 国际版漏了地区注册，聊天会报 14017。
         if region:
@@ -847,7 +884,11 @@ async def auth_poll(
             # 上次已经拿到授权、只是没落盘：直接重试落盘（不再问腾讯——那边可能已经
             # 不再报 ready，继续问只会让用户一直「等待中」）。
             memo_result, memo_realm, memo_msg = ready[0], ready[1], ready[2]
-            return _save_and_finish(memo_result, memo_realm, memo_msg, state, group=group)
+            out = _save_and_finish(memo_result, memo_realm, memo_msg, state, group=group)
+            _login_ready.pop(state, None)
+            _login_completed[state] = out
+            _touch_login_state(state)
+            return out
 
         try:
             result = await tencent.poll_login(state, r)
@@ -924,6 +965,7 @@ async def auth_poll(
         # 落盘失败时 _save_and_finish 抛 HTTPException，这行不会执行，
         # 用户点「重试」仍能重新走落盘（issue #26 的语义不变）。
         _login_completed[state] = out
+        _touch_login_state(state)
         return out
 
 
@@ -1127,9 +1169,6 @@ def _save_and_finish(result: dict, realm_of_result: str, region_msg: str,
     # 账号已确实落盘，这时才丢 state（成功路径的收尾）
     tencent.drop_state(state)
     _provisioned_states.pop(state, None)
-    # 成功路径的记账可以立即回收；失败路径靠 _prune_login_polls 按 TTL 清
-    _login_delivered.pop(state, None)
-    _login_locks.pop(state, None)
 
     # 让上游加载新账号：**先等它的 auths 热加载，超时才重启**（后台执行，
     # 不阻塞本次响应）。此前无脑重启，而重启期间上游 /status 不可用 —— 前端

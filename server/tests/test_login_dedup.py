@@ -204,3 +204,130 @@ class ConcurrentPollTest(LoginPollTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFindingsTest(LoginPollTestCase):
+    """终审发现的回归钉子：只降级 success、重试幂等、记账可回收、
+    不带 client 的直呼不参与去重、_login_completed 路径也按 client 去重。"""
+
+    def _client_get(self, state, client=None):
+        params = {'state': state}
+        if client is not None:
+            params['client'] = client
+        return self._client().get('/api/auth/poll', params=params).json()
+
+    # #1 非 success 终态不能被降级成 already_handled（否则失败的登录会显示授权成功）
+    def test_non_success_terminal_is_never_downgraded(self) -> None:
+        for status in ('expired', 'invalid', 'realm_mismatch'):
+            with self.subTest(status=status):
+                self.accounts._login_polls.clear()
+                self.accounts._login_delivered.clear()
+                self.accounts._login_polls[f's-{status}'] = {
+                    'status': status, '_at': time.time(),
+                }
+                first = self._client_get(f's-{status}', 'win-A')
+                second = self._client_get(f's-{status}', 'win-A')
+                self.assertEqual(first['status'], status)
+                self.assertEqual(second['status'], status,
+                                 f'{status} 被当成 success 降级了 —— 会误报「授权成功」')
+
+    # #4 直呼 auth_poll（不带 client）不该参与去重，Query 哨兵也不能混进 seen
+    def test_direct_call_without_client_is_not_deduped(self) -> None:
+        self.accounts._login_polls['s-direct'] = _terminal('s-direct')
+        with mock.patch.object(tencent, 'poll_login',
+                               mock.AsyncMock(return_value={'status': 'waiting'})):
+            a = asyncio.run(self.accounts.auth_poll(
+                state='s-direct', realm='cn', region=None,
+                upstream_id=None, user=_USER))
+            b = asyncio.run(self.accounts.auth_poll(
+                state='s-direct', realm='cn', region=None,
+                upstream_id=None, user=_USER))
+        self.assertEqual(a['status'], 'success')
+        self.assertEqual(b['status'], 'success',
+                         '不带 client 的旧调用方被误去重了')
+        seen = self.accounts._login_delivered.get('s-direct', set())
+        self.assertTrue(all(isinstance(x, str) for x in seen),
+                        f'seen 里混进了非字符串（Query 哨兵）: {seen!r}')
+
+    # #7 _login_completed 路径也要按 client 去重（前端赢下竞态时）
+    def test_completed_path_dedupes_per_client(self) -> None:
+        self.accounts._login_completed['s-comp'] = _terminal('s-comp')
+        a = self._client_get('s-comp', 'win-A')
+        b = self._client_get('s-comp', 'win-A')
+        c = self._client_get('s-comp', 'win-B')
+        self.assertEqual(a['status'], 'success')
+        self.assertEqual(b['status'], 'already_handled',
+                         '_login_completed 路径重复交付了 success')
+        self.assertEqual(c['status'], 'success', '另一个窗口被挡掉了')
+
+    # #2 落盘失败后的重试：成功后只落盘一次、只回一次 success
+    def test_retry_after_save_failure_is_idempotent(self) -> None:
+        writes = {'n': 0}
+        ready = dict(_READY)
+
+        def write(account, auth_dir=None):  # noqa: ANN001
+            writes['n'] += 1
+            if writes['n'] == 1:
+                raise PermissionError('permission denied')
+            return ('workbuddy-u-bg.json', False)
+
+        p1 = mock.patch.object(tencent, 'poll_login',
+                               mock.AsyncMock(return_value=ready))
+        p2 = mock.patch.object(tencent, 'checkin',
+                               mock.AsyncMock(return_value=(0, 'ok')))
+        p3 = mock.patch.object(tencent, 'write_auth_file', side_effect=write)
+        p4 = mock.patch.object(self.accounts.reload, 'request_reload_or_restart')
+        tencent._state_cache['s-retry'] = (time.time(), 'cn')
+
+        async def scenario():
+            with p1, p2, p3, p4:
+                out = []
+                for _ in range(3):
+                    try:
+                        out.append(await self.accounts.auth_poll(
+                            state='s-retry', realm='cn', region=None,
+                            upstream_id=None, user=_USER))
+                    except Exception:
+                        out.append('FAILED')
+                return out
+
+        outs = asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+        self.assertEqual(writes['n'], 2,
+                         f'重试把同一个号又落盘了多次: {writes["n"]}')
+        # 直呼 auth_poll 不带 client，按约定不参与去重（#4），所以两次都回
+        # success；关键是**第三次没有再落盘**，且备忘已清（终审 #2）。
+        self.assertEqual([o if o == 'FAILED' else o['status'] for o in outs],
+                         ['FAILED', 'success', 'success'], f'重试路径异常: {outs}')
+        self.assertNotIn('s-retry', self.accounts._login_ready,
+                         '成功后没清掉 _login_ready 备忘')
+
+    # #3 所有新增记账表都要能按 TTL 回收（含 waiting-only 的锁）
+    def test_all_login_bookkeeping_is_reclaimed(self) -> None:
+        self.accounts._login_locks['s-w'] = asyncio.Lock()
+        self.accounts._login_completed['s-c'] = _terminal('s-c')
+        self.accounts._login_delivered['s-d'] = {'win-A'}
+        # 模拟这些 state 已经过期
+        old = time.time() - self.accounts._LOGIN_RESULT_TTL - 1
+        self.accounts._login_touch['s-w'] = old
+        self.accounts._login_touch['s-c'] = old
+        self.accounts._login_touch['s-d'] = old
+        self.accounts._prune_login_polls()
+        for name in ('_login_locks', '_login_completed', '_login_delivered', '_login_touch'):
+            self.assertNotIn(
+                {'_login_locks': 's-w', '_login_completed': 's-c',
+                 '_login_delivered': 's-d', '_login_touch': 's-w'}[name],
+                getattr(self.accounts, name),
+                f'{name} 没被回收 —— 长期运行会无限增长')
+
+    # #3 重新发码取消旧轮询时，三张新表也要一起收掉
+    def test_cancel_other_polls_cleans_new_tables(self) -> None:
+        self.accounts._login_owner['old'] = 'admin|'
+        self.accounts._login_tasks['old'] = mock.MagicMock(done=lambda: False)
+        self.accounts._login_locks['old'] = asyncio.Lock()
+        self.accounts._login_delivered['old'] = {'win-A'}
+        self.accounts._login_completed['old'] = _terminal('old')
+        self.accounts._login_touch['old'] = time.time()
+        self.accounts._cancel_other_login_polls('new', 'admin|')
+        for name in ('_login_locks', '_login_delivered', '_login_completed', '_login_touch'):
+            self.assertNotIn('old', getattr(self.accounts, name),
+                             f'{name} 在收掉旧轮询时没清 —— 会一直占位')

@@ -66,3 +66,46 @@ test("accountApi.poll forwards the client id", () => {
   );
   assert.match(src, /client:\s*client/);
 });
+
+
+
+test("clientId returns a stable id and survives storage throwing", async () => {
+  // clientId 是纯逻辑（放在 poll-guard.ts），可直接测真实行为。
+  const {createClientId} = await import("../poll-guard.ts");
+  const storage = {
+    getItem: () => "stored-id",
+    setItem: () => {},
+  };
+  const nextId = createClientId(() => storage, () => "generated-id");
+  assert.equal(nextId(), "stored-id");
+
+  const throwing = {
+    getItem: () => {
+      throw new Error("SecurityError");
+    },
+    setItem: () => {
+      throw new Error("SecurityError");
+    },
+  };
+  const withFallback = createClientId(() => throwing, () => "fallback-id");
+  assert.equal(withFallback(), "fallback-id");
+  assert.equal(withFallback(), "fallback-id", "内存兜底要稳定，不能每次换一个");
+});
+
+test("clientId tolerates absent window (SSR / static export build)", async () => {
+  const {createClientId} = await import("../poll-guard.ts");
+  assert.equal(createClientId(() => null, () => "x")(), "");
+});
+
+
+test("clientId reads storage lazily (module may load during SSR prerender)", async () => {
+  // 静态导出时模块在构建期被求值，那会儿没有 window。若 createClientId 在
+  // 调用时就捕获 storage，浏览器里会永远返回空串，去重整体失效。
+  const {createClientId} = await import("../poll-guard.ts");
+  let storageAvailable = false;
+  const getStorage = () => (storageAvailable ? {getItem: () => "late-id", setItem: () => {}} : null);
+  const nextId = createClientId(getStorage, () => "gen");
+  assert.equal(nextId(), "", "SSR 阶段应返回空串");
+  storageAvailable = true;
+  assert.equal(nextId(), "late-id", "浏览器里应能迟到地读到 storage");
+});

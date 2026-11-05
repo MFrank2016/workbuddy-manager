@@ -3,7 +3,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {QRCodeSVG} from 'qrcode.react';
 import {notify} from '@/lib/toast';
-import {createPollGuard, classifyTerminal} from '@/lib/poll-guard';
+import {createPollGuard, classifyTerminal, createClientId} from '@/lib/poll-guard';
 import {useT} from '@/lib/i18n/provider';
 import {Loader2, CheckCircle2, AlertTriangle, ExternalLink} from 'lucide-react';
 import {
@@ -82,16 +82,10 @@ function wakeEvents(): Array<[EventTarget, string]> {
  * 放 sessionStorage 而不是 localStorage：后者同源共享，会把两个窗口误判成同一个，
  * 第二个窗口就永远停在「等待授权完成」。
  */
-function clientId(): string {
-  if (typeof window === 'undefined') return '';
-  const KEY = 'wb.add-account.client';
-  let id = window.sessionStorage.getItem(KEY) || '';
-  if (!id) {
-    id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
-    window.sessionStorage.setItem(KEY, id);
-  }
-  return id;
-}
+const clientId = createClientId(
+  () => (typeof window === 'undefined' ? null : window.sessionStorage),
+  () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+);
 
 export function AddAccountDialog({
   open,
